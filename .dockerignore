@@ -1,0 +1,8 @@
+.git
+.docker_ws
+build
+install
+log
+models
+**/__pycache__
+.venv

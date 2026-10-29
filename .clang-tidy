@@ -1,0 +1,23 @@
+# clang-tidy 18 configuration (scripts/tidy.sh, lint workflow). Any finding fails the check.
+# modernize-pass-by-value is off: Landfall passes Eigen fixed-size types by const reference, as
+# Eigen recommends, and "moving" them is a plain copy.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
+  modernize-*,
+  -modernize-pass-by-value,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-avoid-c-arrays,
+  performance-*,
+  readability-container-size-empty,
+  readability-redundant-*,
+  readability-simplify-boolean-expr,
+  misc-unused-*,
+  misc-redundant-expression
+WarningsAsErrors: '*'
+HeaderFilterRegex: '.*/landfall_[a-z]+/(include|src|test)/.*'
+FormatStyle: file

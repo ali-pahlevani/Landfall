@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>landfall_nav2</name>
+  <version>0.0.0</version>
+  <description>
+    Nav2 integration for Landfall: behavior tree nodes (BehaviorTree.CPP v3 and v4) and example
+    trees for startup relocalization and recovery.
+  </description>
+  <maintainer email="a.pahlevani1998@gmail.com">Ali Pahlevani</maintainer>
+  <license>Apache-2.0</license>
+  <url type="repository">https://github.com/ali-pahlevani/Landfall</url>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>landfall_core</depend>
+  <depend>landfall_msgs</depend>
+  <depend>nav2_behavior_tree</depend>
+  <depend condition="$ROS_DISTRO == humble">behaviortree_cpp_v3</depend>
+  <depend condition="$ROS_DISTRO != humble">behaviortree_cpp</depend>
+  <!-- nav2_behavior_tree 1.5.x (Lyrical) exports nav2_common in its CMake config, but its binary
+       package doesn't depend on it, so find_package(nav2_behavior_tree) fails without this.
+       TODO(T-004): drop once the Nav2 Lyrical package declares the dependency itself. -->
+  <build_depend condition="$ROS_DISTRO != humble and $ROS_DISTRO != jazzy">nav2_common</build_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

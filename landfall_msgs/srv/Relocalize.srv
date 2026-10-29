@@ -1,0 +1,7 @@
+# Run one relocalization query and, unless dry_run is set, publish /initialpose on SUCCESS.
+
+uint8 num_frames   # frames to accumulate; 0 = node parameter consistency.num_frames
+float32 timeout    # seconds for the whole request; 0 = node parameter query.timeout
+bool dry_run       # run every check but never publish
+---
+landfall_msgs/RelocalizationResult result

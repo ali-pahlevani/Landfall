@@ -1,0 +1,60 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policies:
+    name: Repository policies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: TODOs are registered in docs/TODO.md
+        run: scripts/check_todos.sh
+      - name: No ament_target_dependencies, Python only where allowed
+        run: scripts/check_policies.sh
+
+  format:
+    name: clang-format 18
+    runs-on: ubuntu-latest
+    # Jazzy's Ubuntu 24.04 ships clang-format 18, the pinned version.
+    container: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format
+        run: apt-get update && apt-get install -y --no-install-recommends clang-format
+      - name: Check formatting
+        run: scripts/format.sh --check
+
+  tidy:
+    name: clang-tidy 18
+    runs-on: ubuntu-latest
+    container: ros:jazzy-ros-base
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/landfall
+      - name: Install dependencies and clang-tidy
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends clang-tidy
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src --rosdistro "${ROS_DISTRO}" -y
+      - name: Build (compile databases)
+        run: |
+          source "/opt/ros/${ROS_DISTRO}/setup.bash"
+          colcon build --base-paths src --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Run clang-tidy
+        env:
+          LANDFALL_WS: ${{ github.workspace }}
+        run: src/landfall/scripts/tidy.sh

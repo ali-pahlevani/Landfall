@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: ${{ matrix.distro }} ${{ matrix.arch }}${{ matrix.variant && format(' ({0})', matrix.variant) || '' }}
+    runs-on: ${{ matrix.runner }}
+    container: ros:${{ matrix.distro }}-ros-base
+    # Lyrical is Tier 2 until its build is green; then it becomes required (docs/PLAN.md D4).
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {distro: humble, arch: amd64, runner: ubuntu-latest, experimental: false}
+          - {distro: jazzy, arch: amd64, runner: ubuntu-latest, experimental: false}
+          - {distro: lyrical, arch: amd64, runner: ubuntu-latest, experimental: true}
+          - {distro: humble, arch: arm64, runner: ubuntu-22.04-arm, experimental: false}
+          - {distro: jazzy, arch: arm64, runner: ubuntu-24.04-arm, experimental: false}
+          - distro: jazzy
+            arch: amd64
+            runner: ubuntu-latest
+            experimental: false
+            variant: C++20
+            cmake_args: -DCMAKE_CXX_STANDARD=20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/landfall
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ccache
+          rosdep update --rosdistro "${ROS_DISTRO}"
+          rosdep install --from-paths src --ignore-src --rosdistro "${ROS_DISTRO}" -y
+
+      - name: Build and test
+        env:
+          LANDFALL_WS: ${{ github.workspace }}
+          LANDFALL_CMAKE_ARGS: ${{ matrix.cmake_args }}
+        run: src/landfall/scripts/ci_build_test.sh
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.distro }}-${{ matrix.arch }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }}
+          path: |
+            log/
+            build/*/test_results/
+          if-no-files-found: ignore

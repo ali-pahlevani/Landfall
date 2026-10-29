@@ -66,3 +66,20 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# colcon / ROS 2 workspace output
+install/
+log/
+# per-distro Docker CI workspaces (scripts/docker_ci.sh)
+.docker_ws/
+
+# Python (landfall_tools, launch tests)
+__pycache__/
+*.pyc
+.venv/
+
+# Downloaded or exported models and generated databases (never committed)
+models/
+*.onnx
+*.landfall.db
+*.landfall.db-*

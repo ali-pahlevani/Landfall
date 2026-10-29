@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>landfall_core</name>
+  <version>0.0.0</version>
+  <description>
+    Landfall core library without ROS dependencies: features, retrieval, geometry, verification,
+    decision policy and the SQLite map database for monocular visual relocalization.
+  </description>
+  <maintainer email="a.pahlevani1998@gmail.com">Ali Pahlevani</maintainer>
+  <license>Apache-2.0</license>
+  <url type="repository">https://github.com/ali-pahlevani/Landfall</url>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <!-- Provides ament_ros_defaults (C++20) on Lyrical and later. -->
+  <buildtool_depend condition="$ROS_DISTRO != humble and $ROS_DISTRO != jazzy">ament_cmake_ros_core</buildtool_depend>
+
+  <depend>libceres-dev</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

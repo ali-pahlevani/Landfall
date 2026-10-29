@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>landfall_ros</name>
+  <version>0.0.0</version>
+  <description>
+    ROS 2 nodes of Landfall: keyframe recorder, relocalizer lifecycle node and the database
+    builder CLI, plus the distro compatibility layer they share.
+  </description>
+  <maintainer email="a.pahlevani1998@gmail.com">Ali Pahlevani</maintainer>
+  <license>Apache-2.0</license>
+  <url type="repository">https://github.com/ali-pahlevani/Landfall</url>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>landfall_core</depend>
+  <depend>cv_bridge</depend>
+  <depend>rosbag2_storage</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>bondcpp</test_depend>
+  <test_depend>diagnostic_updater</test_depend>
+  <test_depend>lifecycle_msgs</test_depend>
+  <test_depend>libopencv-dev</test_depend>
+  <test_depend>rclcpp</test_depend>
+  <test_depend>rclcpp_lifecycle</test_depend>
+  <test_depend>rosbag2_cpp</test_depend>
+  <test_depend>rosbag2_storage_default_plugins</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+  <test_depend>std_msgs</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

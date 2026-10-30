@@ -3,6 +3,7 @@
 #
 #   scripts/docker_ci.sh <humble|jazzy|lyrical>
 #   LANDFALL_VARIANT=cxx20 LANDFALL_CMAKE_ARGS="-DCMAKE_CXX_STANDARD=20" scripts/docker_ci.sh jazzy
+#   LANDFALL_VARIANT=asan LANDFALL_SANITIZE=1 LANDFALL_PACKAGES=landfall_core scripts/docker_ci.sh jazzy
 #   LANDFALL_REBUILD_IMAGE=1 scripts/docker_ci.sh jazzy   # refresh the dependency image
 #
 # The landfall-deps:<distro> image is built once and reused; dependencies added to a package.xml
@@ -35,6 +36,8 @@ docker run --rm \
   -e HOST_GID="$(id -g)" \
   -e CCACHE_DIR=/ws/.ccache \
   -e LANDFALL_CMAKE_ARGS="${LANDFALL_CMAKE_ARGS:-}" \
+  -e LANDFALL_SANITIZE="${LANDFALL_SANITIZE:-0}" \
+  -e LANDFALL_PACKAGES="${LANDFALL_PACKAGES:-}" \
   -v "${repo_root}:/ws/src/landfall:ro" \
   -v "${ws}/build:/ws/build" \
   -v "${ws}/install:/ws/install" \

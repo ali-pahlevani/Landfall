@@ -1,6 +1,6 @@
 # Landfall — v1.0 Implementation Plan
 
-Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3)
+Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13)
 
 **Review decisions folded into this revision (2026-10-29):**
 
@@ -19,6 +19,24 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | D11 | GPU: CPU-only release gate. The GPU path ships labeled **experimental** (not covered by 1.0 validation) unless cuDNN is installed for testing. |
 | D12 | Fusion recommendation: **robot_localization `ekf_node`** (EKF; ROS 1's `ekf_localization_node`), over its UKF and over `fuse`. It's Nav2's documented odometry-smoothing setup, available on all three distros, and light enough for a CPU-only PC. UKF adds compute for no gain on planar wheel + IMU. `fuse` isn't released for Humble. Gravity (roll/pitch) comes separately from the IMU's orientation, because the EKF in `two_d_mode` discards roll/pitch: the driver's own AHRS output if present, else `imu_complementary_filter` (BSD-3). |
 | D13 | Field target: **your forklift, industrial mini PC, no GPU** (assumed x86_64). It gets the `classical` and `learned_cpu` presets, and real-robot timings and validation come from it (M8). |
+
+**Revisions after approval** (rev 4, 2026-10-30; found while implementing M0 and M1, sections below updated):
+
+| # | Change | Why |
+|---|---|---|
+| V1 | BT.CPP v3/v4 is chosen from the Nav2 version (< 1.2.0: v3), not from which BT.CPP package is found (§9) | Humble machines can have both BT.CPP packages installed |
+| V2 | `bond::Bond` is always owned by a `shared_ptr` (§9) | bondcpp 4.4 (Lyrical) calls `shared_from_this()` in `start()` |
+| V3 | Lyrical-only `nav2_common` build dependency in `landfall_nav2` (T-004) | Nav2 1.5.2 exports it from `nav2_behavior_tree` without declaring it |
+| V4 | clang-format/clang-tidy 18 come from Jazzy's apt packages in the lint image, not a pip wheel (§8, §12) | same binary locally and in CI |
+| V5 | Header guards use single underscores (`LANDFALL_X_HPP_`) | clang-tidy flags double underscores as reserved identifiers |
+| V6 | Docker scripts reuse the dependency images and install newly added rosdep keys in the throwaway container (`scripts/in_container.sh`) | a rebuilt dependency layer costs ~1.7 GB per distro |
+| V7 | ament's cppcheck skips itself on every distro (2.7, 2.13, 2.19); clang-tidy 18 is the static analyzer | ament_cmake_cppcheck behaviour |
+| V8 | DB schema v1: poses stored as the 3×4 matrix (12×f64), `maps.grid` holds the occupancy grid as PNG, no WAL (§6) | bit-exact round trips; tolerant map comparison at runtime; WAL files break read-only opening |
+| V9 | Map loader reproduces both nav2_map_server pixel rules: Humble (channel average, strict thresholds) and Jazzy/Lyrical (grayscale, inclusive thresholds, transparency = unknown) (§6) | the two releases produce different grids for color/transparent images |
+| V10 | PoseLib is compiled by our own CMake target from the pinned tarball (hidden symbols, not installed); `LANDFALL_USE_SYSTEM_POSELIB` and `FETCHCONTENT_SOURCE_DIR_LANDFALL_POSELIB` for offline builds | PoseLib's own CMake installs/exports itself and forces a build type |
+| V11 | PnP strategies are an enum (`pnp.solver`), not an `IPoseSolver` interface; `IPoseSource` (M2), `IHypothesisVerifier` (M4) and the backend registry (M2) arrive with their first users; `util/thread_pool` with the builder (M2) | no interface without a consumer |
+| V12 | FAISS dropped from v1.0 (§8) | exact search over 10⁴ keyframes takes ~1 ms; not in Ubuntu 24.04 |
+| V13 | Lyrical promoted to required in CI at the end of M1 (D4) | green on every run since M0 |
 
 ---
 
@@ -429,13 +447,13 @@ flowchart TB
 ## 6. Database schema (SQLite, file `*.landfall.db`)
 
 `PRAGMA application_id = 0x4C444641` ('LDFA'), `PRAGMA user_version = <schema>` (starts at **1**),
-`foreign_keys = ON`. The builder uses WAL. The relocalizer opens with `SQLITE_OPEN_READONLY`.
+`foreign_keys = ON`. Rollback journal (no WAL, so read-only opening never needs `-wal`/`-shm` files); bulk writes go through transactions. The relocalizer opens with `SQLITE_OPEN_READONLY`. Poses are stored as row-major 3×4 `[R | t]` (12×f64) so they round-trip bit-exactly.
 
 | Table | Columns (key ones) | Notes |
 |---|---|---|
 | `meta` | `key TEXT PK, value TEXT` | schema_version, landfall_version, created_utc, git_sha, builder_config (YAML), build_report (JSON), content_sha256, frames |
-| `maps` | `id, yaml_sha256, image_sha256, grid_sha256, resolution, origin_x, origin_y, origin_yaw, width, height, yaml_text` | grid hash covers data + size; resolution/origin compared numerically (1e-6) |
-| `cameras` | `id, frame_id, model, width, height, intrinsics BLOB(f64), distortion BLOB(f64), T_base_cam BLOB(7×f64: t, q xyzw)` | |
+| `maps` | `id, yaml_sha256, image_sha256, grid_sha256, resolution, origin_x, origin_y, origin_yaw, width, height, yaml_text, grid BLOB (PNG, value + 1)` | grid hash covers data + size; resolution/origin compared numerically (1e-6); the stored grid allows a tolerant cell-by-cell comparison with `/map` (map_server versions differ, see V9) |
+| `cameras` | `id, frame_id, model, width, height, intrinsics BLOB(f64), distortion BLOB(f64), T_base_cam BLOB(12×f64)` | |
 | `sessions` | `id, name, source (bag/staging path), pose_source, started_ns, notes` | multi-day / multi-lighting |
 | `keyframes` | `id, session_id FK, camera_id FK, stamp_ns, x, y, yaw (prior), cov BLOB(3×3 f64), rx, ry, ryaw (refined), T_map_cam BLOB, flags, quality TEXT(JSON), thumbnail BLOB (JPEG ≤160 px)` | index `(session_id)` |
 | `backends` | `id, role CHECK(global/local/matcher/vocabulary), name, version, model_sha256, config TEXT, config_sha256` | relocalizer refuses mismatches |
@@ -634,7 +652,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 | yaml-cpp | map YAML, builder config, staging metadata | MIT | 0.7.0 | 0.8.0 | 0.8.0 | apt / rosdep `yaml-cpp` |
 | PoseLib | up2p / P3P, LO-RANSAC, refinement | BSD-3 | 2.0.5 | 2.0.5 | 2.0.5 (apt `libposelib` also exists) | **FetchContent** (pinned URL + SHA256, static PIC, private); `LANDFALL_USE_SYSTEM_POSELIB` option |
 | ONNX Runtime | learned backends (optional) | MIT | vendor 1.24.3 CPU | vendor 1.24.3 CPU | apt 1.23.2 / vendor 1.24.3 | `FindONNXRuntime.cmake`: `ONNXRUNTIME_ROOT` (custom/GPU builds) → `onnxruntime_vendor` (rosdep, CPU, x64 and aarch64) → system. `install_onnxruntime.sh` (SHA-256 verified; x64 CPU, x64 CUDA 12, aarch64) |
-| FAISS | optional retrieval index (OFF) | MIT | 1.7.2 | **not in noble** (source build) | 1.13.2 | apt where available |
+| ~~FAISS~~ | dropped from v1.0 (V12) | MIT | 1.7.2 | not in noble | 1.13.2 | — |
 | NVIDIA CUDA / cuDNN / TensorRT | optional GPU execution providers | **closed-source, free of charge** (NVIDIA license) | user-installed | user-installed | user-installed | never required; the default build and CPU path don't use them; unavoidable on Jetson |
 | robot_localization (`ekf_node`) / imu_complementary_filter | **recommended, not dependencies**: odometry fusion (EKF), IMU orientation (only if the IMU driver has none) | Apache-2.0 / BSD-3 (avoid `imu_filter_madgwick`: GPL-3.0) | 3.5.4 / imu_tools 2.1.6 | 3.8.3 / 2.1.6 | 3.10.0 / 2.2.2 | apt; set up per `docs/sensors.md` |
 | GoogleTest | unit tests | BSD-3 | 1.11.0 | 1.14.0 | 1.17.0 | ament_cmake_gtest |
@@ -654,7 +672,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 | nav2_minimal_tb4_sim / turtlebot4_simulator | sim robot | Apache-2.0 | tb4_simulator 1.0.3 (Fortress) | minimal_tb4_sim 1.0.1 | minimal_tb4_sim 1.3.0 | apt (sim image only) |
 | Fuel assets | sim worlds | Depot **CC-BY-4.0**; warehouse shelves **CC-BY-NC-4.0 / CC-BY-NC-ND-4.0**; barrier and person CC0 | | | | runtime download; NC renders **never committed** |
 | Python tools: torch, torchvision, onnx, onnxruntime, numpy, matplotlib, pandas | export and plots only | BSD / Apache / MIT / PSF-style | | | | `landfall_tools/requirements.txt` (pinned) |
-| clang-format / clang-tidy 18 | lint (dev only) | Apache-2.0 with LLVM exception | | | | pip wheel `clang-format==18.1.x`; jazzy apt clang-tidy-18 |
+| clang-format / clang-tidy 18 | lint (dev only) | Apache-2.0 with LLVM exception | | | | Jazzy apt `clang-format`/`clang-tidy` 18.1.3 in the lint image (V4) |
 
 **License hygiene rules.** Only permissive, linked runtime dependencies. GPL/LGPL components appear only as
 separate processes (AMCL, slam_toolbox, any user-chosen IMU filter) or as transitive system libraries of the **offline builder**
@@ -669,7 +687,7 @@ module list (no videoio/highgui, which pull ffmpeg/GTK). The only closed-source 
 |---|---|---|---|---|
 | Ubuntu / GCC / CMake | 22.04 / 11.4 / 3.22 | 24.04 / 13.2 / 3.28 | 26.04 / 15.2 / **4.2** | `cmake_minimum_required(VERSION 3.22)` (CMake 4 dropped < 3.5 compat; PoseLib needs 3.10, OK). Strict warnings; GCC 15 catches missing includes |
 | C++ standard | 17 | 17 | **20** (`ament_ros_defaults`) | `landfall_set_cxx_standard()`: link `ament_cmake_ros_core::ament_ros_defaults` if present, else `cxx_std_17`. Extra CI job builds Jazzy with `CMAKE_CXX_STANDARD=20` |
-| BT.CPP | v3 3.8.7 | v4 4.10.0 | v4 4.10.0 | CMake picks `behaviortree_cpp` else `_v3` and sets `LANDFALL_BTCPP_V4`. `compat/bt.hpp` switches headers. The plugin subclasses `nav2_behavior_tree::BtServiceNode<Relocalize>`, whose subclass API (ctor, `on_tick`, `on_completion(response)`, `providedBasicPorts` with `service_name`/`server_timeout`) is **identical on all three (verified)**. Registration via `BT_REGISTER_NODES` |
+| BT.CPP | v3 3.8.7 | v4 4.10.0 | v4 4.10.0 | CMake picks the BT.CPP package from the Nav2 version (< 1.2.0: `behaviortree_cpp_v3`) and sets `LANDFALL_BTCPP_V4` (V1). `compat/bt.hpp` switches headers. The plugin subclasses `nav2_behavior_tree::BtServiceNode<Relocalize>`, whose subclass API (ctor, `on_tick`, `on_completion(response)`, `providedBasicPorts` with `service_name`/`server_timeout`) is **identical on all three (verified)**. Registration via `BT_REGISTER_NODES` |
 | Nav2 BT internals | `rclcpp::Node` on blackboard | `rclcpp::Node` | **`nav2::LifecycleNode`**, `nav2::ServiceClient` | Hidden by BtServiceNode. `IsLocalized` uses `compat/bt.hpp::getBtNode()` (CMake detects `nav2_ros_common`) and rclcpp free-function `create_subscription(node_topics_interface…)` |
 | BT XML | `<root main_tree_to_execute>` | `BTCPP_format="4"` | `BTCPP_format="4"` | `*.xml.in` templates → `configure_file` for the detected format, one installed name per tree. A gtest loads every XML with Nav2 plugins on each distro |
 | bt_navigator `plugin_lib_names` | must list **all** plugins | built-ins auto-loaded; list only ours | same as Jazzy | per-distro param overlays `params/nav2_{humble,jazzy,lyrical}.yaml`, chosen by `$ROS_DISTRO` |
@@ -680,7 +698,7 @@ module list (no videoio/highgui, which pull ffmpeg/GTK). The only closed-source 
 | image_transport | 3.1.13: `rclcpp::Node*` + `rmw_qos_profile_t` | 5.1.8: same | 6.4.10: `RequiredInterfaces` + `rclcpp::QoS` | Lifecycle nodes can't use it on Humble/Jazzy, so `ImageInput` subscribes raw `Image` or `CompressedImage` directly (decoded by `cv::imdecode`, compressed_image_transport-compatible). Other transports via `image_transport republish`. Lyrical-native path → TODO |
 | rosbag2 | `time_stamp`; default sqlite3 | `recv_timestamp`/`send_timestamp`; default mcap | same as Jazzy | `compat/rosbag2.hpp` detection-idiom accessor. exec_depend on sqlite3 + mcap storage plugins. Header stamps used for timing |
 | tf2_ros headers | `.hpp` and `.h` | both | both | use `.hpp` everywhere (no shim) |
-| bondcpp | ctor(LifecycleNode::SharedPtr) | same (4.2.0) | same (4.4.0) | direct use; verified per tag |
+| bondcpp | ctor(LifecycleNode::SharedPtr) | same (4.2.0) | same (4.4.0), but `start()` needs the Bond in a `shared_ptr` | always `std::make_shared<bond::Bond>` (V2); probed on every distro |
 | diagnostic_updater | `template<NodeT>` ctor (verified) | expected same | expected same | direct use; compile-probed on every distro in M0 |
 | AMCL | `initialpose` topic (SystemDefaults) + `set_initial_pose` srv | same | topic (nav2 QoS) + srv | publisher reliable/volatile/depth 1, compatible with all |
 | Gazebo + TB sims | Fortress (TB4 sim 1.0.3), Classic (TB3) | Harmonic: nav2_minimal_tb4_sim (depot, warehouse) | Jetty: nav2_minimal_tb4_sim 1.3.0 | reference = Jazzy. Lyrical uses the same launch. Humble demo via turtlebot4_ignition_bringup (best effort, not CI). Run-tested only in M6 (availability verified now) |
@@ -775,7 +793,7 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
   - Build + test amd64: humble ✔ required, jazzy ✔ required, lyrical `continue-on-error` until promoted (D4).
   - arm64 (`ubuntu-22.04-arm` / `ubuntu-24.04-arm`): humble + jazzy build + core tests (classical path).
   - Variants on jazzy: ORT ON (onnxruntime_vendor) + ORT OFF; forced C++20; ASan + UBSan (core tests).
-  - Lint: clang-format 18 (pinned wheel), clang-tidy 18 (compile_commands), ament_lint_auto minus uncrustify/cpplint (via `AMENT_LINT_AUTO_EXCLUDE`, verified on Humble), flake8 for tools, `check_todos.sh`, `ament_target_dependencies` gate, `parameters.md` freshness.
+  - Lint: clang-format 18 (Jazzy apt, V4), clang-tidy 18 (compile_commands), ament_lint_auto minus uncrustify/cpplint (via `AMENT_LINT_AUTO_EXCLUDE`, verified on Humble), flake8 for tools, `check_todos.sh`, `ament_target_dependencies` gate, `parameters.md` freshness.
   - Docker: build images per distro on main/tags (CI runs on your pushes; publishing images to GHCR is your choice).
   - Nightly (allowed failure): Jazzy headless sim smoke test.
   - ccache via actions/cache; models cached by SHA-256 for the ORT job.

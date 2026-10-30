@@ -15,7 +15,8 @@ jobs:
     name: ${{ matrix.distro }} ${{ matrix.arch }}${{ matrix.variant && format(' ({0})', matrix.variant) || '' }}
     runs-on: ${{ matrix.runner }}
     container: ros:${{ matrix.distro }}-ros-base
-    # Lyrical is Tier 2 until its build is green; then it becomes required (docs/PLAN.md D4).
+    # A Tier-2 distro may fail without failing the run until it is green (docs/PLAN.md D4).
+    # Lyrical was promoted to required in M1.
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -23,7 +24,7 @@ jobs:
         include:
           - {distro: humble, arch: amd64, runner: ubuntu-latest, experimental: false}
           - {distro: jazzy, arch: amd64, runner: ubuntu-latest, experimental: false}
-          - {distro: lyrical, arch: amd64, runner: ubuntu-latest, experimental: true}
+          - {distro: lyrical, arch: amd64, runner: ubuntu-latest, experimental: false}
           - {distro: humble, arch: arm64, runner: ubuntu-22.04-arm, experimental: false}
           - {distro: jazzy, arch: arm64, runner: ubuntu-24.04-arm, experimental: false}
           - distro: jazzy
@@ -32,6 +33,13 @@ jobs:
             experimental: false
             variant: C++20
             cmake_args: -DCMAKE_CXX_STANDARD=20
+          - distro: jazzy
+            arch: amd64
+            runner: ubuntu-latest
+            experimental: false
+            variant: ASan+UBSan
+            sanitize: 1
+            packages: landfall_core
     defaults:
       run:
         shell: bash
@@ -51,6 +59,8 @@ jobs:
         env:
           LANDFALL_WS: ${{ github.workspace }}
           LANDFALL_CMAKE_ARGS: ${{ matrix.cmake_args }}
+          LANDFALL_SANITIZE: ${{ matrix.sanitize }}
+          LANDFALL_PACKAGES: ${{ matrix.packages }}
         run: src/landfall/scripts/ci_build_test.sh
 
       - name: Upload test logs

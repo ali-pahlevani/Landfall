@@ -16,6 +16,17 @@ All notable changes to this project are documented here. The format follows
   rosbag2 receive timestamps, bond and diagnostics on plain lifecycle nodes, Nav2 `BtServiceNode`
   with BehaviorTree.CPP v3/v4, and CMake helpers for packages without exported targets.
 - Docker image for Humble, Jazzy and Lyrical; GitHub Actions for build/test and lint.
+- `landfall_core` library (M1): camera models (plumb_bob, rational_polynomial, equidistant),
+  SHA-256, SQLite map database schema v1 with migrations, map_server-compatible map loader (Humble
+  and Jazzy pixel rules), likelihood-field LiDAR scan verifier, ORB/SIFT with grid bucketing,
+  ratio and mutual-nearest matchers, vocabulary tree with TF-IDF bag of words and inverted index,
+  dense retrieval index, upright 2-point / P3P / OpenCV PnP (PoseLib LO-RANSAC), gravity from IMU
+  or flat floor, sanity checks, pose clustering and ambiguity, multi-frame odometry consistency,
+  decision policy, extrinsics health estimator.
+- `landfall_core_build` library: known-pose triangulation (pair RANSAC, multi-view DLT, Ceres
+  refinement, filters).
+- AddressSanitizer + UndefinedBehaviorSanitizer CI job for `landfall_core`.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
+- Lyrical is a required CI distro (was allowed to fail).

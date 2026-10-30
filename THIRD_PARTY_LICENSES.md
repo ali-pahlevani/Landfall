@@ -13,9 +13,12 @@ path.
 
 | Component | Used by | License | Notes |
 |---|---|---|---|
-| Ceres Solver | `landfall_core` (Ceres compatibility layer; offline builder from M1) | BSD-3-Clause | Ubuntu's `libceres` links SuiteSparse, parts of which are LGPL/GPL; it is used only by the offline builder, never by the online relocalizer |
-| Eigen | via Ceres (directly from M1) | MPL-2.0 | headers used unmodified |
-| OpenCV | `landfall_ros` tests (all of Landfall from M1) | Apache-2.0 | linked by explicit module list (no videoio/highgui) |
+| Ceres Solver | `landfall_core_build` (offline map builder) | BSD-3-Clause | Ubuntu's `libceres` links SuiteSparse, parts of which are LGPL/GPL; only `landfall_core_build` links it, never the runtime `landfall_core` used by the relocalizer |
+| Eigen | `landfall_core` | MPL-2.0 | headers used unmodified |
+| OpenCV | `landfall_core` and tests | Apache-2.0 | linked by explicit module list: core, imgproc, imgcodecs, features2d, calib3d (no videoio/highgui). SIFT's patent expired in 2020 |
+| PoseLib 2.0.5 | `landfall_core` (compiled in, static, symbols hidden) | BSD-3-Clause | downloaded at build time from the GitHub release tarball, SHA-256 pinned in `landfall_core/cmake/PoseLib.cmake` |
+| SQLite | `landfall_core` (map database) | public domain | system `libsqlite3` |
+| yaml-cpp | `landfall_core` (map YAML) | MIT | system `libyaml-cpp` |
 | GoogleTest | unit tests | BSD-3-Clause | via `ament_cmake_gtest` |
 | rclcpp, rclcpp_lifecycle, rosbag2 | `landfall_ros` | Apache-2.0 | |
 | cv_bridge | `landfall_ros` | Apache-2.0 / BSD | |

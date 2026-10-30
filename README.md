@@ -16,8 +16,11 @@ check passes. A wrong pose is worse than no pose, so Landfall prefers a miss to 
 
 ## Status
 
-Under development toward **v1.0.0**. The current milestone is M0 (repository skeleton, Docker, CI).
-Nothing is usable yet. The full plan, including interfaces, algorithms and milestones, is in
+Under development toward **v1.0.0**. Done: M0 (skeleton, Docker, CI) and M1 (core library: features,
+retrieval, pose solvers, triangulation, map database, LiDAR verification, decision logic). Next: M2
+(recorder and map builder).
+
+Nothing is usable on a robot yet. The full plan, including interfaces, algorithms and milestones, is in
 [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Building

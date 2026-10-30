@@ -15,7 +15,11 @@
   <!-- Provides ament_ros_defaults (C++20) on Lyrical and later. -->
   <buildtool_depend condition="$ROS_DISTRO != humble and $ROS_DISTRO != jazzy">ament_cmake_ros_core</buildtool_depend>
 
+  <depend>eigen</depend>
   <depend>libceres-dev</depend>
+  <depend>libopencv-dev</depend>
+  <depend>libsqlite3-dev</depend>
+  <depend>yaml-cpp</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>

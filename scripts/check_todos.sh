@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Enforce the "no silent stubs" rule: every TODO/FIXME in the repository must be written as
-# TODO(T-NNN) and T-NNN must have an entry in docs/TODO.md.
+# TODO(T-NNN) and T-NNN must have an entry in docs/TODO.md. Files are taken from git's view
+# (tracked plus untracked-but-not-ignored), so build outputs are skipped wherever they are.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -22,9 +23,8 @@ while IFS= read -r line; do
       status=1
     fi
   done < <(grep -o -E 'T-[0-9]{3}' <<< "${line}")
-done < <(grep -r -n -I -E '\b(TODO|FIXME)\b' \
-  --exclude-dir=.git --exclude-dir=.docker_ws --exclude-dir=build --exclude-dir=install \
-  --exclude-dir=log --exclude-dir=docs --exclude='check_todos.sh' . || true)
+done < <(git grep --untracked -n -I -E '\b(TODO|FIXME)\b' \
+  -- . ':!docs' ':!scripts/check_todos.sh' || true)
 
 if [[ "${status}" -eq 0 ]]; then
   echo "TODO check passed"

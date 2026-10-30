@@ -38,10 +38,11 @@
 *.out
 *.app
 
-# Build directories
-build/
-Build/
-build-*/
+# Build directories. Workspace outputs are anchored to the repository root (leading "/"), so
+# source folders with the same name (e.g. landfall_core/src/build/) are never ignored.
+/build/
+/Build/
+/build-*/
 
 # CMake generated files
 CMakeFiles/
@@ -68,8 +69,8 @@ Testing/
 .cache/
 
 # colcon / ROS 2 workspace output
-install/
-log/
+/install/
+/log/
 # per-distro Docker CI workspaces (scripts/docker_ci.sh)
 .docker_ws/
 
@@ -79,7 +80,7 @@ __pycache__/
 .venv/
 
 # Downloaded or exported models and generated databases (never committed)
-models/
+/models/
 *.onnx
 *.landfall.db
 *.landfall.db-*

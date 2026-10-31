@@ -1,0 +1,26 @@
+# Simulation image: Gazebo Harmonic, Nav2 and the TurtleBot 4 simulation on top of the
+# dependency image of docker/Dockerfile (same ROS distro), for recording fixtures and, later, the
+# kidnap benchmark. Built and run by scripts/sim.sh; not used by CI.
+#
+#   docker build -f docker/Dockerfile.sim --build-arg BASE=landfall-deps:jazzy -t landfall-sim:jazzy .
+ARG BASE=landfall-deps:jazzy
+FROM ${BASE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# ROS_DISTRO comes from the ros base image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      "ros-${ROS_DISTRO}-image-transport-plugins" \
+      "ros-${ROS_DISTRO}-nav2-bringup" \
+      "ros-${ROS_DISTRO}-nav2-minimal-tb4-sim" \
+      "ros-${ROS_DISTRO}-navigation2" \
+      "ros-${ROS_DISTRO}-ros-gz-bridge" \
+      "ros-${ROS_DISTRO}-ros-gz-image" \
+      "ros-${ROS_DISTRO}-ros-gz-sim" \
+      "ros-${ROS_DISTRO}-xacro" \
+ && rm -rf /var/lib/apt/lists/*
+
+# Gazebo downloads Fuel models (the depot) into this cache; scripts/sim.sh mounts it.
+ENV GZ_FUEL_CACHE_PATH=/fuel

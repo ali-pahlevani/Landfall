@@ -1,0 +1,4 @@
+# Test fixtures and images are binary: no line-ending or diff handling.
+*.db3 binary
+*.png binary
+*.pgm binary

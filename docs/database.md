@@ -1,7 +1,7 @@
 # Map database
 
 A Landfall map is one SQLite file, by convention `<name>.landfall.db`. It is written by the offline
-builder (`landfall build`, M2) and opened read-only by the relocalizer.
+builder (`landfall build`, see `docs/recording.md`) and opened read-only by the relocalizer.
 
 ## Identity and versioning
 
@@ -20,7 +20,8 @@ builder (`landfall build`, M2) and opened read-only by the relocalizer.
   on a big-endian host).
 - Poses are row-major 3×4 matrices `[R | t]` (12 × f64), so they round-trip bit-exactly.
 - Keypoints are 5 × f32 each: x, y, size, angle, score (pixels of the distorted image).
-- Descriptor blobs carry their element type: 0 = u8, 1 = f32, 2 = f16.
+- Descriptor blobs carry their element type: 0 = u8, 1 = f32, 2 = f16, 3 = sparse (u32 index,
+  f32 value) pairs in ascending index order, for bag-of-words vectors (`dim` = number of pairs).
 - `maps.grid` is a lossless 8-bit PNG of the occupancy values plus one (unknown −1 → 0), top row
   first.
 
@@ -41,6 +42,25 @@ builder (`landfall build`, M2) and opened read-only by the relocalizer.
 | `covisibility` | `(kf_a, kf_b)`, `kf_a < kf_b` | number of shared landmarks |
 | `vocabulary` | `backend_id` | serialized vocabulary tree (classical backend) |
 | `pca` | `backend_id` | optional projection for learned global descriptors |
+
+## What the builder writes
+
+- `meta`: `landfall_version`, `created_utc`, `builder_config` (every effective setting as YAML),
+  `build_report` (the build statistics as JSON, also in `report.json`) and `content_sha256`.
+- One `maps` row (the map the build was given), one `cameras` row (v1.0 builds use one camera;
+  `T_base_cam` is the first keyframe's), one `sessions` row per staging folder or bag.
+- `keyframes`: the recorded pose and covariance (NaN when the pose source has none), the pose after
+  the bundle adjustment, `T_map_cam` from the refined pose, the quality metrics as JSON and a
+  JPEG thumbnail (at most 160 px). Flag bit 0: BA moved the keyframe to its shift bound.
+- `backends`: rows for the local features (`local`, e.g. `orb`), the global descriptor (`global`,
+  `bow`, whose config holds the vocabulary's SHA-256), the matcher (`matcher`) and the vocabulary
+  (`vocabulary`, `vocab_tree`, whose blob is in `vocabulary`). A backend's `config` is its canonical
+  configuration; the relocalizer re-creates the backend from it.
+- `local_features`: only the keypoints that observe a landmark (`db.prune_unobserved_features`),
+  so `observations.keypoint_idx` indexes this reduced list.
+- `landmarks`: position, track length, mean reprojection error, largest ray angle, and the medoid
+  of the track's descriptors.
+- `covisibility`: keyframe pairs sharing at least `db.covisibility_min_shared` (5) landmarks.
 
 ## Content hash
 

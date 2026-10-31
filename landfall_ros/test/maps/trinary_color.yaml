@@ -1,0 +1,9 @@
+# Parity test map (test_map_server_parity.py): a color image in trinary mode, with grays exactly on
+# the thresholds and colors whose channel average and luminance land on different sides of them.
+image: color.png
+mode: trinary
+resolution: 0.1
+origin: [-1.0, 2.5, 0.0]
+negate: 0
+occupied_thresh: 0.6
+free_thresh: 0.2

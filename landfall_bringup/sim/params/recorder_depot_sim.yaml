@@ -1,0 +1,21 @@
+# Recorder parameters of the depot simulation recording (sim/scripts/record_depot.sh).
+#
+# Gates differing from the defaults, from the M2 recording measured against Gazebo's ground truth
+# (docs/recording.md):
+#   - AMCL reports a std of 5.3 cm / 1.9 deg (median; up to 7.7 cm / 2.6 deg) while its actual
+#     error is 1.1 cm / 0.13 deg (median; at most 3.2 cm / 1.2 deg), so the default 0.05 m / 2 deg
+#     gates took 134 keyframes on the 9-minute drive where these take 411;
+#   - keyframes taken while turning at 0.45-0.5 rad/s were up to 1.7 deg off (AMCL corrects the
+#     odometry's heading only between its updates), so turns are limited to 0.25 rad/s.
+landfall_recorder:
+  ros__parameters:
+    use_sim_time: true
+    bond.enabled: false
+    image.topic: /rgbd_camera/image
+    camera_info.topic: /rgbd_camera/camera_info
+    imu.topic: /imu
+    # Gazebo stamps the IMU with its scoped sensor name, which is not a TF frame.
+    imu.frame: imu_link
+    gating.max_std_xy: 0.08
+    gating.max_std_yaw_deg: 3.0
+    gating.max_angular_speed: 0.25

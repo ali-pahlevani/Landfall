@@ -12,16 +12,17 @@ check passes. A wrong pose is worse than no pose, so Landfall prefers a miss to 
 - Any single camera; CPU-only path works end to end (GPU optional).
 - Drop-in on existing maps (slam_toolbox, Cartographer, any `.yaml`/`.pgm`), no re-mapping.
 - Open source (Apache-2.0) with permissively licensed dependencies only.
-- ROS 2 Humble and Jazzy (Lyrical in progress).
+- ROS 2 Humble, Jazzy and Lyrical.
 
 ## Status
 
-Under development toward **v1.0.0**. Done: M0 (skeleton, Docker, CI) and M1 (core library: features,
-retrieval, pose solvers, triangulation, map database, LiDAR verification, decision logic). Next: M2
-(recorder and map builder).
+Under development toward **v1.0.0**. Done: M0 (skeleton, Docker, CI), M1 (core library: features,
+retrieval, pose solvers, triangulation, map database, LiDAR verification, decision logic) and M2
+(keyframe recorder and map builder, see [`docs/recording.md`](docs/recording.md)). Next: M3 (the
+relocalizer node).
 
-Nothing is usable on a robot yet. The full plan, including interfaces, algorithms and milestones, is in
-[`docs/PLAN.md`](docs/PLAN.md).
+Maps can be recorded and built, but nothing relocalizes a robot yet. The full plan, including
+interfaces, algorithms and milestones, is in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Building
 

@@ -1,0 +1,8 @@
+# Parity test map: a grayscale image in raw mode with negate set.
+image: gray.pgm
+mode: raw
+resolution: 0.05
+origin: [3.0, -4.0, 0.0]
+negate: 1
+occupied_thresh: 0.65
+free_thresh: 0.25

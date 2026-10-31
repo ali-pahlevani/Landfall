@@ -1,6 +1,6 @@
 # Landfall — v1.0 Implementation Plan
 
-Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13)
+Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22)
 
 **Review decisions folded into this revision (2026-10-29):**
 
@@ -37,6 +37,20 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | V11 | PnP strategies are an enum (`pnp.solver`), not an `IPoseSolver` interface; `IPoseSource` (M2), `IHypothesisVerifier` (M4) and the backend registry (M2) arrive with their first users; `util/thread_pool` with the builder (M2) | no interface without a consumer |
 | V12 | FAISS dropped from v1.0 (§8) | exact search over 10⁴ keyframes takes ~1 ms; not in Ubuntu 24.04 |
 | V13 | Lyrical promoted to required in CI at the end of M1 (D4) | green on every run since M0 |
+
+**Revisions in M2** (rev 5, 2026-10-30; sections below updated):
+
+| # | Change | Why |
+|---|---|---|
+| V14 | The map loader reproduces GraphicsMagick's grayscale exactly (16-bit quanta, rounded Rec. 601 luma, truncated to 8 bit) and Humble's quantum-truncated channel average (§6) | M2's map_server parity test found V9's approximation (OpenCV's BGR2GRAY) 6-251 cells off on color/RGBA maps; the new rule matches GraphicsMagick 1.3.42 for all 2^24 colors |
+| V15 | Two-view verification uses PoseLib's 5-point LO-RANSAC (Sampson error, 4 px) and, below 5 cm of prior baseline, a rotation-only 2-point LO-RANSAC (§7.4) | PoseLib is already linked and seeded deterministically; the builder only needs inliers and the rotation for the 5° prior check |
+| V16 | `ba.prior_std_xy` / `ba.prior_std_yaw_deg` (0 = recorded covariance + floors, the default) (§4.5, §7.6) | AMCL reported ~5× its actual error in simulation; whitening priors with it let BA move keyframes up to 5 cm away from the truth |
+| V17 | Recorder parameters are read-only (set at startup); new ones: `camera_info.topic`, `imu.frame`, `gating.speed_window`, `tf_timeout`, `bond.enabled`, `autostart` (§4.5) | simulated IMUs (and some drivers) use frame ids that aren't TF frames; standalone use needs autostart |
+| V18 | Simulation assets live in `landfall_bringup/sim/` (TurtleBot 4 description with a 640 × 480 camera and Gazebo ground truth, recording scripts, routes, parameters) and run in `docker/Dockerfile.sim`; the simulator packages are not declared dependencies | nav2_bringup's TB4 launch starts Gazebo without `--headless-rendering`; recording runs only in the simulation image |
+| V19 | The fixture bag is cut by `landfall_tools/fixtures/depot_fixture.py` in two steps: export on Jazzy, write with Humble's rosbag2 (§12) | Humble's rosbag2 cannot read Jazzy's metadata (version 9); every newer reader reads Humble's |
+| V20 | Ground-truth evaluation (`landfall/eval/trajectory.hpp`, in landfall_core) and `evaluate_poses` (landfall_benchmark) arrive in M2 instead of M7 | M2's acceptance compares recorded poses with Gazebo's ground truth |
+| V21 | BoW global descriptors are stored as blob type 3 (sparse u32/f32 pairs); the schema (v1) is unchanged | the vocabulary has up to 10^5 words, a vector holds ~10^3 |
+| V22 | Deferred: generated `docs/parameters.md` (T-005, with the relocalizer in M3) and the optional BA extrinsics refinement (T-006) | the recorder's parameters are documented in `docs/recording.md`; nothing needs extrinsics refinement yet |
 
 ---
 
@@ -341,24 +355,30 @@ by a small dump tool, and CI fails if it is stale.
 | Name | Type | Default | Range / values |
 |---|---|---|---|
 | `output_dir` / `session_name` | string | `~/.local/share/landfall/sessions` / "" (timestamp) | — |
-| `frames.*`, `image.topic`, `image.transport`, `image.time_offset` | as relocalizer | | |
+| `frames.*`, `image.topic`, `image.transport`, `image.time_offset`, `tf_timeout` | as relocalizer | | |
+| `camera_info.topic` | string | camera_info | — |
 | `image.format` / `image.jpeg_quality` | string / int | png / 95 | png, jpg / [50, 100] |
 | `pose_source.type` | string | tf_with_covariance | tf_with_covariance, tf_only (e.g. Cartographer) |
 | `pose_source.covariance_topic` / `pose_source.max_covariance_age` | string / double | amcl_pose / 5.0 s | — / [0, 60] |
 | `gating.max_std_xy` / `gating.max_std_yaw_deg` | double | **0.05 m / 2.0°** | [0.001, 1] / [0.1, 45] |
 | `gating.min_translation` / `gating.min_rotation_deg` | double | **0.5 m / 15°** | [0, 10] / [0, 180] |
 | `gating.max_linear_speed` / `gating.max_angular_speed` | double | 0.6 m/s / 0.5 rad/s | [0, 5] (computed from the `odom→base` TF) |
+| `gating.speed_window` | double | 0.2 s | [0.05, 2] (odometry window of the speed gate) |
 | `gravity.source`, `imu.topic`, `imu.max_age` | as relocalizer | | |
+| `imu.frame` | string | "" | "" = the messages' `frame_id` |
 | `gating.max_tilt_deg` | double | 1.5 | [0.5, 15] (IMU only; skips keyframes on ramps) |
 | `quality.min_sharpness` | double | 60 | [0, 1e5] (Laplacian variance at 640-px width) |
 | `quality.min_mean_intensity` / `quality.max_mean_intensity` / `quality.max_saturated_fraction` | int / int / double | 30 / 225 / 0.20 | [0, 255] / [0, 255] / [0, 1] |
 | `max_keyframes` | int | 0 (unlimited) | [0, 1e7] |
+| `bond.enabled` / `autostart` | bool | true / false | autostart: the `recorder_node` executable configures and activates itself |
+
+All recorder parameters are read-only: set at startup (V17).
 
 **Builder** (YAML config for `landfall build`; same `KeyframeSelector` gating keys when reading a bag)
 
 | Key | Default | Key | Default |
 |---|---|---|---|
-| `backend.local` | orb (orb, sift, xfeat, aliked) | `triangulation.max_reproj_error_px` | 0 = auto (0.6 % width) |
+| `backend.local` | orb (orb, sift, xfeat, aliked) | `triangulation.max_reprojection_px` | 0 = auto (0.6 % width) |
 | `backend.global` | bow (bow, megaloc, eigenplaces, boq) | `triangulation.min_angle_deg` | 2.0 |
 | `backend.matcher` | auto (ratio/MNN; lighterglue, lightglue) | `triangulation.min_track_length` | 3 |
 | `features.max_keypoints` | 2000 (ORB) / 2048 (XFeat) | `triangulation.depth_range` | [0.2, 30] m |
@@ -368,7 +388,11 @@ by a small dump tool, and CI fails if it is stale.
 | `pairs.retrieval_k` / `pairs.max_per_keyframe` | 10 / 25 | `ba.loss` / `ba.loss_scale_px` | cauchy / 2.0 |
 | `pairs.min_inliers` | 20 | `ba.prior_floor_xy` / `ba.prior_floor_yaw_deg` | 0.02 m / 0.5° |
 | `pairs.max_rotation_deviation_deg` | 5.0 (vs prior) | `db.prune_unobserved_features` | true |
-| `retrieval.index` / `retrieval.pca_dim` | brute_force / 0 | `db.global_dtype` | f16 |
+| `pairs.max_epipolar_error_px` | 4.0 | `db.global_dtype` | f16 |
+| `pairs.min_baseline` | 0.05 m (below: rotation-only model) | `db.covisibility_min_shared` | 5 |
+| `ba.prior_std_xy` / `ba.prior_std_yaw_deg` | 0 / 0 (0 = recorded covariance + floors) | `ba.max_iterations` | 50 |
+| `ba.max_reprojection_px` | 0 = 0.75 × triangulation threshold (post-BA re-filter) | `threads` / `seed` | 0 (all cores) / 42 |
+| `bag.*` | topics, frames, pose source, IMU, time offset of `--bag` inputs (`docs/recording.md`) | `retrieval.pca_dim` | (M5, learned globals) |
 
 ### 4.6 TF frames
 
@@ -521,7 +545,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 **7.4 Pair selection and matching (build).**
 - Candidate pairs: camera centers ≤ 6 m apart with optical axes ≤ 60° apart, plus retrieval top-10 (catches cross-session revisits). Capped at 25 per keyframe.
 - Matching: Lowe ratio 0.8 + mutual check (binary), or MNN with cosine ≥ 0.82 (XFeat reference default). Optional LightGlue/LighterGlue.
-- Geometric verification: essential-matrix MAGSAC (homography/rotation model when the prior baseline is < 5 cm). Require ≥ 20 inliers.
+- Geometric verification: PoseLib 5-point LO-RANSAC on Sampson error ≤ 4 px, refined on the inliers (a rotation-only 2-point LO-RANSAC when the prior baseline is < 5 cm) (V15). Require ≥ 20 inliers.
 - Pairs whose estimated relative rotation deviates > 5° from the prior are rejected. Such deviation flags a wrong match set or a bad prior.
 
 **7.5 Tracks and triangulation (poses fixed).**
@@ -535,11 +559,11 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 
 **7.6 Pose-prior BA (optional, default on).**
 - Parameters: per-keyframe **SE(2)** base pose (x, y, θ), with extrinsics fixed (ground-robot model: 3 DoF, no manifold needed) and free landmarks.
-- Residuals: reprojection (Cauchy, 2 px) plus whitened prior residuals (recorded covariance, floors 2 cm / 0.5°).
+- Residuals: reprojection (Cauchy, 2 px) plus whitened prior residuals (recorded covariance, floors 2 cm / 0.5°; or `ba.prior_std_*` when the localization misreports its covariance, V16).
 - Ceres `SetParameterLower/UpperBound` hard bounds (available in 2.0 and 2.2) enforce |Δx|, |Δy| ≤ 0.10 m and |Δθ| ≤ 2°: "never move poses far from their priors" holds by construction.
 - Keyframes that hit a bound are flagged (`keyframes.flags`) and reported. Landmarks are re-filtered at a tighter threshold.
 - A mean shift > 2 cm triggers a warning (the gauge is anchored by priors, so the frame is preserved).
-- Optional extrinsics refinement (off): SO(3) via quaternion **manifold** → exercises the Ceres compat layer.
+- Optional extrinsics refinement (off): SO(3) via quaternion **manifold** → exercises the Ceres compat layer. Deferred (T-006, V22).
 
 **7.7 Query retrieval and matching.**
 - Top-K = 10 by cosine (Eigen brute force; f16 storage, f32 compute) or BoW score.
@@ -788,7 +812,7 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
   - Auto-trigger.
   - Extrinsics monitor with an injected camera offset (TF tampered in the test).
   - IMU gravity path, using the TB4 sim's IMU if it is bridged (checked in M2), else synthetic `Imu` messages.
-- **Fixture:** `landfall_ros/test/fixtures/depot_small/` (≤ 5 MB rosbag2 **sqlite3**, readable by Humble's rosbag2, plus nav2_bringup's depot map, Apache-2.0, attributed). Depot assets are CC-BY-4.0, attributed in THIRD_PARTY_LICENSES.
+- **Fixture:** `landfall_ros/test/fixtures/depot_small/` (≤ 5 MB rosbag2 **sqlite3**, written by Humble's rosbag2 so every distro reads it (V19), plus nav2_bringup's depot map, Apache-2.0, attributed). Depot assets are CC-BY-4.0, attributed in THIRD_PARTY_LICENSES.
 - **CI (GitHub Actions, container jobs on `ros:<distro>-ros-base`; one script shared with local `docker_ci.sh`):**
   - Build + test amd64: humble ✔ required, jazzy ✔ required, lyrical `continue-on-error` until promoted (D4).
   - arm64 (`ubuntu-22.04-arm` / `ubuntu-24.04-arm`): humble + jazzy build + core tests (classical path).

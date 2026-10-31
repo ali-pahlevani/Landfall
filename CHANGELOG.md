@@ -26,7 +26,24 @@ All notable changes to this project are documented here. The format follows
 - `landfall_core_build` library: known-pose triangulation (pair RANSAC, multi-view DLT, Ceres
   refinement, filters).
 - AddressSanitizer + UndefinedBehaviorSanitizer CI job for `landfall_core`.
+- Keyframe recording (M2): `landfall_recorder` lifecycle node and component (keyframe gates on
+  localization covariance, motion, speed, IMU tilt, sharpness and exposure; crash-safe staging
+  folders; status, markers, pause service, diagnostics, bond), and the same gates on recorded bags.
+- Map building (M2): `landfall build`, `inspect`, `report`, `verify` and `migrate`. The builder
+  extracts features, trains the vocabulary, selects and verifies image pairs, builds tracks,
+  triangulates with the poses fixed, runs the bounded pose-prior bundle adjustment, and writes a
+  deterministic database with a report (`report.md`, `report.json`, `coverage.png`).
+- Backend registry, thread pool, two-view geometry (5-point and rotation-only LO-RANSAC), database
+  codecs for features and global descriptors.
+- Depot simulation (Gazebo Harmonic, Nav2, TurtleBot 4 with a 640 x 480 camera and ground truth)
+  for recording and evaluation: `docker/Dockerfile.sim`, `scripts/sim.sh`, `landfall_bringup/sim/`;
+  `evaluate_poses` compares recorded and built poses with the ground truth.
+- Test fixture `depot_small` (4.9 MB bag readable on every distro) and CI tests that build it and
+  compare the map loader with `nav2_map_server`.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
 - Lyrical is a required CI distro (was allowed to fail).
+- The map loader reproduces nav2_map_server's GraphicsMagick conversion exactly (color and
+  transparent maps were off by one gray level on Jazzy and later).
+- PoseLib is compiled without debug information (build trees shrink by about 2 GB).

@@ -8,6 +8,7 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs features2d calib3
 find_package(SQLite3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(Ceres REQUIRED)
+find_package(Threads REQUIRED)
 include(cmake/PoseLib.cmake)
 
 # yaml-cpp 0.7 (Humble) exports `yaml-cpp`, 0.8 exports `yaml-cpp::yaml-cpp`.
@@ -30,14 +31,17 @@ configure_file(include/landfall/version.hpp.in
 # Runtime library: everything the online relocalizer needs. Doesn't link Ceres.
 add_library(landfall_core SHARED
   src/camera_model.cpp
+  src/db/codec.cpp
   src/db/database.cpp
   src/db/migrations.cpp
+  src/eval/trajectory.cpp
   src/features/matchers.cpp
   src/features/opencv_features.cpp
   src/features/retrieval.cpp
   src/features/vocab_tree.cpp
   src/geometry/gravity.cpp
   src/geometry/pnp.cpp
+  src/geometry/two_view.cpp
   src/query/clustering.cpp
   src/query/decision.cpp
   src/query/extrinsics_monitor.cpp
@@ -46,8 +50,14 @@ add_library(landfall_core SHARED
   src/grid/map_loader.cpp
   src/grid/occupancy_grid.cpp
   src/grid/scan_verifier.cpp
+  src/record/image_quality.cpp
+  src/record/keyframe_selector.cpp
+  src/record/staging.cpp
+  src/registry.cpp
   src/types.cpp
+  src/util/json.cpp
   src/util/sha256.cpp
+  src/util/thread_pool.cpp
   src/version.cpp
 )
 target_include_directories(landfall_core PUBLIC
@@ -66,18 +76,28 @@ target_link_libraries(landfall_core
   PRIVATE
     opencv_imgcodecs
     SQLite::SQLite3
+    Threads::Threads
     ${_landfall_yaml_cpp}
     landfall_poselib
 )
 landfall_set_cxx_standard(landfall_core)
 landfall_set_warnings(landfall_core)
 
-# Offline map-building library: triangulation and bundle adjustment. Only it links Ceres (and,
-# through Ubuntu's Ceres, SuiteSparse), so the online relocalizer stays free of both.
+# Offline map-building library: pair selection, tracks, triangulation, bundle adjustment, the
+# builder and its report. Only it links Ceres (and, through Ubuntu's Ceres, SuiteSparse), so the
+# online relocalizer stays free of both.
 add_library(landfall_core_build SHARED
+  src/build/builder_config.cpp
+  src/build/map_builder.cpp
+  src/build/pair_selection.cpp
+  src/build/pose_prior_ba.cpp
+  src/build/report.cpp
+  src/build/tracks.cpp
   src/build/triangulation.cpp
 )
-target_link_libraries(landfall_core_build PUBLIC landfall_core PRIVATE Ceres::ceres)
+target_link_libraries(landfall_core_build
+  PUBLIC landfall_core
+  PRIVATE Ceres::ceres opencv_imgcodecs ${_landfall_yaml_cpp})
 landfall_set_cxx_standard(landfall_core_build)
 landfall_set_warnings(landfall_core_build)
 
@@ -123,6 +143,16 @@ if(BUILD_TESTING)
   landfall_core_test(test_pnp TIMEOUT 600)
   landfall_core_test(test_triangulation TIMEOUT 300 LIBRARIES landfall_core_build)
   landfall_core_test(test_query)
+  landfall_core_test(test_thread_pool)
+  landfall_core_test(test_record LIBRARIES opencv_imgcodecs)
+  landfall_core_test(test_registry)
+  landfall_core_test(test_two_view TIMEOUT 120)
+  landfall_core_test(test_codec)
+  landfall_core_test(test_tracks LIBRARIES landfall_core_build)
+  landfall_core_test(test_pose_prior_ba TIMEOUT 120 LIBRARIES landfall_core_build)
+  landfall_core_test(test_builder_config LIBRARIES landfall_core_build)
+  landfall_core_test(test_map_builder TIMEOUT 600 LIBRARIES landfall_core_build)
+  landfall_core_test(test_trajectory)
 endif()
 
 ament_export_targets(export_landfall_core HAS_LIBRARY_TARGET)

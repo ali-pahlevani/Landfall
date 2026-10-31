@@ -61,6 +61,7 @@ enum class BlobType : uint8_t {
   kU8 = 0,
   kF32 = 1,
   kF16 = 2,
+  kSparseF32 = 3,  ///< (u32 index, f32 value) pairs, ascending index: bag-of-words vectors
 };
 
 struct MapRecord

@@ -1,0 +1,4 @@
+# Tests guard optionals with gtest's ASSERT_TRUE(x.has_value()), which the check can't see
+# through (the macro returns from the test body).
+InheritParentConfig: true
+Checks: '-bugprone-unchecked-optional-access'

@@ -134,6 +134,31 @@ TEST(MapLoader, ColorAndAlphaFollowEachMapServerVersion)
     landfall::loadMap(dir.file("map.yaml"), MapServerSemantics::kJazzy).grid.data, jazzy.data);
 }
 
+TEST(MapLoader, JazzyGrayIsGraphicsMagicksExactly)
+{
+  // Raw mode shows the gray value itself. These colors are where GraphicsMagick's grayscale (what
+  // nav2_map_server >= 1.3 uses: 16-bit quanta, rounded luma, truncated to 8 bit) and OpenCV's
+  // BGR2GRAY differ by one; the expected values come from GraphicsMagick 1.3.42 (Q16).
+  landfall::MapMetadata metadata;
+  metadata.resolution = 0.05;
+  metadata.mode = landfall::MapMode::kRaw;
+  cv::Mat colors(1, 4, CV_8UC3);
+  colors.at<cv::Vec3b>(0, 0) = cv::Vec3b(110, 85, 24);  // BGR
+  colors.at<cv::Vec3b>(0, 1) = cv::Vec3b(115, 29, 8);
+  colors.at<cv::Vec3b>(0, 2) = cv::Vec3b(120, 62, 149);
+  colors.at<cv::Vec3b>(0, 3) = cv::Vec3b(180, 65, 7);
+  EXPECT_EQ(
+    landfall::convertMapImage(colors, metadata, MapServerSemantics::kJazzy).data,
+    (std::vector<int8_t>{69, 32, 94, 60}));
+  // 16-bit input is converted from its full value, not from an 8-bit copy.
+  cv::Mat gray16(1, 2, CV_16UC1);
+  gray16.at<uint16_t>(0, 0) = 257 * 40 + 256;  // just below 41 * 257
+  gray16.at<uint16_t>(0, 1) = 257 * 41;
+  EXPECT_EQ(
+    landfall::convertMapImage(gray16, metadata, MapServerSemantics::kJazzy).data,
+    (std::vector<int8_t>{40, 41}));
+}
+
 TEST(MapLoader, ReportsHashesAndResolvesPaths)
 {
   const landfall::test::TempDir dir;

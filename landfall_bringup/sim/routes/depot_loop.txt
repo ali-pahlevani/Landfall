@@ -1,0 +1,31 @@
+# Route of the M2 recording drive in nav2_bringup's depot map (x y in metres, map frame; the map
+# frame is Gazebo's world shifted by (+8, 0), so the robot spawns at the map origin). It loops
+# through the depot's open area and the lanes beside the pallet rows and posts.
+#
+# The loop is split into legs ("---"), each sent as one NavigateThroughPoses goal: a single goal
+# whose path ends where the robot stands confuses the controller, which follows the path from the
+# point nearest the robot. Each leg lists its start (where the previous leg ended) first. The
+# recording drives the legs in order and then backwards, so every lane is seen in both directions.
+0.0 0.0
+4.0 -0.75
+12.0 -0.75
+20.5 -0.75
+21.6 -3.5
+21.6 -6.4
+14.0 -6.4
+6.0 -6.4
+3.0 -5.5
+---
+3.0 -5.5
+-5.0 -5.5
+-5.2 0.5
+-5.2 6.3
+5.0 6.3
+12.0 6.3
+19.5 6.3
+---
+19.5 6.3
+19.5 1.4
+11.0 1.4
+2.0 1.4
+0.0 0.0

@@ -1,7 +1,9 @@
 # landfall_benchmark
 
-C++ kidnap-benchmark runner, scenario definitions and metrics (success, time to localize,
-false-positive and miss rates) for Landfall.
+Evaluation of Landfall against a simulator's ground truth, and (from M7) the kidnap benchmark.
 
-Status: package skeleton only. Content arrives in milestone M7 (see `docs/PLAN.md` §11 and
-`docs/TODO.md` T-002).
+- `evaluate_poses` (since M2): position and yaw errors of staging keyframes, database keyframes
+  (recorded and after BA) and AMCL estimates against a ground-truth pose topic in a bag, with the
+  nominal and the best-fitting world-to-map transform. See `docs/recording.md`.
+
+The kidnap benchmark runner, scenarios and metrics arrive in M7 (`docs/TODO.md` T-002).

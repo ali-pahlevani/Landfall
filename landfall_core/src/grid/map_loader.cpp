@@ -46,19 +46,23 @@ std::string expandHome(const std::string & path)
   return path;
 }
 
+// nav2_map_server reads images with GraphicsMagick, which Ubuntu builds with 16-bit quanta: every
+// channel below is such a quantum (8-bit values times 257).
+constexpr double kMaxQuantum = 65535.0;
+
+// Nav2 1.1 (Humble): average of the color channels (plus alpha in trinary mode). The average goes
+// through ColorGray::scaleQuantumToDouble(Quantum), so it is truncated to a quantum first.
 int8_t humbleCell(
-  const double * channels, int count, double alpha, bool has_alpha, const MapMetadata & m)
+  uint16_t r, uint16_t g, uint16_t b, uint16_t a, bool has_alpha, const MapMetadata & m)
 {
-  double sum = 0.0;
-  for (int i = 0; i < count; ++i) {
-    sum += channels[i];
-  }
-  int n = count;
+  double sum = static_cast<double>(r) + g + b;
+  int n = 3;
   if (m.mode == MapMode::kTrinary && has_alpha) {
-    sum += alpha;
+    sum += a;
     ++n;
   }
-  const double shade = sum / n;
+  const auto average = static_cast<uint16_t>(sum / n);
+  const double shade = average / kMaxQuantum;
   const double occ = m.negate ? shade : 1.0 - shade;
   switch (m.mode) {
     case MapMode::kTrinary:
@@ -67,7 +71,7 @@ int8_t humbleCell(
       }
       return occ < m.free_thresh ? kCellFree : kCellUnknown;
     case MapMode::kScale:
-      if (alpha < 1.0) {
+      if (has_alpha && a != 65535) {
         return kCellUnknown;
       }
       if (m.occupied_thresh < occ) {
@@ -85,6 +89,17 @@ int8_t humbleCell(
     }
   }
   return kCellUnknown;
+}
+
+// GraphicsMagick's GrayscaleType conversion as nav2_map_server >= 1.3 uses it: Rec. 601 luma of
+// the quanta, rounded to a quantum, then written as an 8-bit "I" pixel (quantum / 257, truncated).
+// Matches GraphicsMagick 1.3 (Q16) exactly for all 2^24 8-bit colors and all 16-bit grays.
+uint8_t graphicsMagickGray(uint16_t r, uint16_t g, uint16_t b)
+{
+  const auto luma = static_cast<int64_t>(std::floor(
+    0.299 * static_cast<double>(r) + 0.587 * static_cast<double>(g) +
+    0.114 * static_cast<double>(b) + 0.5));
+  return static_cast<uint8_t>(luma / 257);
 }
 
 // Mirrors the Eigen code of Nav2 >= 1.3: float arithmetic with the thresholds cast to float.
@@ -183,9 +198,6 @@ OccupancyGrid convertMapImage(
     throw std::runtime_error("map image must have 1, 3 or 4 channels");
   }
   const bool has_alpha = channels == 4;
-  const double max_value = image.depth() == CV_16U ? 65535.0 : 255.0;
-
-  cv::Mat normalized;  // CV_64FC4, BGRA in [0, 1]
   cv::Mat bgra;
   if (channels == 1) {
     cv::cvtColor(image, bgra, cv::COLOR_GRAY2BGRA);
@@ -194,22 +206,8 @@ OccupancyGrid convertMapImage(
   } else {
     bgra = image;
   }
-  bgra.convertTo(normalized, CV_64F, 1.0 / max_value);
-
-  cv::Mat gray8;  // what GraphicsMagick's grayscale conversion yields, 8 bit
-  if (semantics == MapServerSemantics::kJazzy) {
-    cv::Mat image8;
-    if (image.depth() == CV_16U) {
-      image.convertTo(image8, CV_8U, 1.0 / 257.0);
-    } else {
-      image8 = image;
-    }
-    if (channels == 1) {
-      gray8 = image8;
-    } else {
-      cv::cvtColor(image8, gray8, channels == 3 ? cv::COLOR_BGR2GRAY : cv::COLOR_BGRA2GRAY);
-    }
-  }
+  cv::Mat quanta;  // CV_16UC4, BGRA
+  bgra.convertTo(quanta, CV_16U, image.depth() == CV_8U ? 257.0 : 1.0);
 
   OccupancyGrid grid;
   grid.width = image.cols;
@@ -218,15 +216,15 @@ OccupancyGrid convertMapImage(
   grid.origin = m.origin;
   grid.data.resize(static_cast<std::size_t>(grid.width) * grid.height);
   for (int y = 0; y < image.rows; ++y) {
-    const auto * pixels = normalized.ptr<cv::Vec4d>(y);
+    const auto * pixels = quanta.ptr<cv::Vec<uint16_t, 4>>(y);
     for (int x = 0; x < image.cols; ++x) {
-      int8_t cell = kCellUnknown;
-      if (semantics == MapServerSemantics::kHumble) {
-        const double rgb[3] = {pixels[x][2], pixels[x][1], pixels[x][0]};
-        cell = humbleCell(rgb, 3, pixels[x][3], has_alpha, m);
-      } else {
-        cell = jazzyCell(gray8.at<uint8_t>(y, x), has_alpha && pixels[x][3] < 1.0, m);
-      }
+      const uint16_t b = pixels[x][0];
+      const uint16_t g = pixels[x][1];
+      const uint16_t r = pixels[x][2];
+      const uint16_t a = pixels[x][3];
+      const int8_t cell = semantics == MapServerSemantics::kHumble
+                            ? humbleCell(r, g, b, a, has_alpha, m)
+                            : jazzyCell(graphicsMagickGray(r, g, b), has_alpha && a < 65535, m);
       grid.data[static_cast<std::size_t>(grid.height - 1 - y) * grid.width + x] = cell;
     }
   }

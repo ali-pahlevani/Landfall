@@ -65,5 +65,7 @@ set_target_properties(landfall_poselib PROPERTIES
   VISIBILITY_INLINES_HIDDEN ON
 )
 # Third-party code: upstream builds it with -Werror on its own CI; keep our logs free of its notes.
-target_compile_options(landfall_poselib PRIVATE -w)
+# No debug info: its generated minimal solvers turn -g into ~0.8 GB of objects per build tree, and
+# nobody steps through them.
+target_compile_options(landfall_poselib PRIVATE -w -g0)
 message(STATUS "landfall_core: building PoseLib ${LANDFALL_POSELIB_VERSION} from ${LANDFALL_POSELIB_URL}")

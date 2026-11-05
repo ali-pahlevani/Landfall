@@ -16,13 +16,20 @@ check passes. A wrong pose is worse than no pose, so Landfall prefers a miss to 
 
 ## Status
 
-Under development toward **v1.0.0**. Done: M0 (skeleton, Docker, CI), M1 (core library: features,
-retrieval, pose solvers, triangulation, map database, LiDAR verification, decision logic) and M2
-(keyframe recorder and map builder, see [`docs/recording.md`](docs/recording.md)). Next: M3 (the
-relocalizer node).
+Under development toward **v1.0.0**. Done:
+- M0: skeleton, Docker, CI.
+- M1: core library (features, retrieval, pose solvers, triangulation, map database, LiDAR
+  verification, decision logic).
+- M2: keyframe recorder and map builder, see [`docs/recording.md`](docs/recording.md).
+- M3: the relocalizer node, see [`docs/relocalization.md`](docs/relocalization.md).
 
-Maps can be recorded and built, but nothing relocalizes a robot yet. The full plan, including
-interfaces, algorithms and milestones, is in [`docs/PLAN.md`](docs/PLAN.md).
+Next: M4 (the safety layer: LiDAR verification in the node, the auto trigger, the extrinsics
+monitor).
+
+The relocalizer works, but it checks poses with vision and odometry only until M4. In places that
+look alike, it can publish a wrong pose, so use `dry_run` for now. The full plan, including
+interfaces, algorithms and milestones, is in [`docs/PLAN.md`](docs/PLAN.md). Parameters are listed
+in [`docs/parameters.md`](docs/parameters.md).
 
 ## Building
 

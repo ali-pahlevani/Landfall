@@ -40,6 +40,25 @@ All notable changes to this project are documented here. The format follows
   `evaluate_poses` compares recorded and built poses with the ground truth.
 - Test fixture `depot_small` (4.9 MB bag readable on every distro) and CI tests that build it and
   compare the map loader with `nav2_map_server`.
+- Relocalization (M3): `landfall_relocalizer` lifecycle node and component. It answers
+  `~/relocalize` on a worker thread (deferred response), checks readiness first (database, map
+  match, camera, AMCL active, a subscriber, TF), and collects frames until enough agree with
+  odometry. Each frame goes through retrieval, places, 2D-3D matching, the upright or P3P pose and
+  the sanity checks, and frames that look like two places are ambiguous. The pose is
+  motion-compensated before it goes to `/initialpose` or AMCL's `set_initial_pose`. The node also
+  has a startup trigger, `~/status`, markers, a debug image, `debug.dump_dir`, diagnostics, a bond,
+  the startup extrinsics check and IMU gravity. Thresholds can change at runtime.
+- `landfall_core`: `LocalizationMap` (read-only database with lazily loaded, cached keyframe
+  features) and the single-frame `Localizer`.
+- `landfall query`: relocalizes a bag offline, emulating node requests, and writes one CSV row per
+  request. `evaluate_poses --queries` scores the rows against ground truth.
+- `docs/parameters.md`, generated from the nodes' declarations (`scripts/update_parameters_doc.sh`).
+  A test fails when it is stale.
+- `docs/relocalization.md`, and the M3 simulation results: 86 % success and no wrong pose with
+  3-frame requests across sessions, in a depot whose two halves look alike.
+- Tests: the relocalizer in-process (readiness, BUSY, publishing, dry runs, startup, lifecycle,
+  parameters), as components, on the fixture against ground truth, and in a launch test where AMCL
+  under `nav2_lifecycle_manager` converges after the relocalizer's pose.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
@@ -47,3 +66,6 @@ All notable changes to this project are documented here. The format follows
 - The map loader reproduces nav2_map_server's GraphicsMagick conversion exactly (color and
   transparent maps were off by one gray level on Jazzy and later).
 - PoseLib is compiled without debug information (build trees shrink by about 2 GB).
+- Test timeouts triple in sanitizer builds (`test_map_builder` exceeded 600 s under ASan in CI).
+- The recorder's parameter descriptions stand on their own (they appear sorted in the generated
+  reference).

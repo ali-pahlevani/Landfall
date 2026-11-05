@@ -45,6 +45,8 @@ add_library(landfall_core SHARED
   src/query/clustering.cpp
   src/query/decision.cpp
   src/query/extrinsics_monitor.cpp
+  src/query/localization_map.cpp
+  src/query/localizer.cpp
   src/query/sanity.cpp
   src/grid/likelihood_field.cpp
   src/grid/map_loader.cpp
@@ -125,6 +127,10 @@ if(BUILD_TESTING)
     if(NOT ARG_TIMEOUT)
       set(ARG_TIMEOUT 60)
     endif()
+    # Sanitizer builds run our code several times slower (test_map_builder: ~14x under ASan).
+    if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+      math(EXPR ARG_TIMEOUT "${ARG_TIMEOUT} * 3")
+    endif()
     ament_add_gtest(${name} test/${name}.cpp TIMEOUT ${ARG_TIMEOUT})
     target_link_libraries(${name} landfall_core ${ARG_LIBRARIES})
     landfall_set_warnings(${name})
@@ -153,6 +159,7 @@ if(BUILD_TESTING)
   landfall_core_test(test_builder_config LIBRARIES landfall_core_build)
   landfall_core_test(test_map_builder TIMEOUT 600 LIBRARIES landfall_core_build)
   landfall_core_test(test_trajectory)
+  landfall_core_test(test_localizer TIMEOUT 300 LIBRARIES landfall_core_build)
 endif()
 
 ament_export_targets(export_landfall_core HAS_LIBRARY_TARGET)

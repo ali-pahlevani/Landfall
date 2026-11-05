@@ -1,6 +1,6 @@
 # Landfall — v1.0 Implementation Plan
 
-Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22)
+Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22; rev 6: V23–V28)
 
 **Review decisions folded into this revision (2026-10-29):**
 
@@ -52,6 +52,17 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | V21 | BoW global descriptors are stored as blob type 3 (sparse u32/f32 pairs); the schema (v1) is unchanged | the vocabulary has up to 10^5 words, a vector holds ~10^3 |
 | V22 | Deferred: generated `docs/parameters.md` (T-005, with the relocalizer in M3) and the optional BA extrinsics refinement (T-006) | the recorder's parameters are documented in `docs/recording.md`; nothing needs extrinsics refinement yet |
 
+**Revisions in M3** (rev 6, 2026-10-31; sections below updated):
+
+| # | Change | Why |
+|---|---|---|
+| V23 | The relocalizer's *configure* succeeds without a usable database or map; every request then answers NOT_READY with the reason, and `/diagnostics` reports an error (§4.2) | a broken Landfall database must not stop AMCL's lifecycle manager (one localization bringup) |
+| V24 | Relocalizer topics: `camera_info.topic` parameter (as the recorder, V17), `map` set by remapping; `autostart` for the executable; `query.max_keypoints` dropped, queries use the database's own feature settings (§4.5) | the backend check refuses any other feature configuration |
+| V25 | `docs/parameters.md` is printed by `test_parameters_doc --print` (`scripts/update_parameters_doc.sh`); the same test is the CI freshness check (§4.5, §12; T-005 done) | the nodes' own declarations are the source, no separate dump tool |
+| V26 | The startup extrinsics check treats `base → camera` as static when `/tf_static` alone connects the two frames, and skips otherwise (§7.19) | tf2 doesn't expose whether a transform is static; the forklift's camera rides the fork carriage (§14) |
+| V27 | `landfall query` emulates node requests on a bag (`--frames N`) and writes one CSV row per request; `evaluate_poses --queries` scores them against ground truth (§4.2) | one code path (`queryBagImages`) for the CLI and the tests |
+| V28 | M3's query set: the fixture's images that are not database keyframes (it has no separate query segment), plus cross-session queries between the two full depot drives (run 1 ↔ run 2) | the fixture's two windows drive the same stretch in opposite directions; both feed the build |
+
 ---
 
 ## 1. Executive summary and explicit assumptions
@@ -87,7 +98,7 @@ odometry**, and publishes `/initialpose` only when every check passes. Misses ar
 | A11 | Odometry comes only from the `odom→base` TF. Recommended: robot_localization `ekf_node` fusing wheel (or steer + drive encoders on a forklift) + IMU yaw rate. Wheel-only is supported. IMU-only is not: it can't provide translation, and Nav2/AMCL need odometry anyway. |
 | A12 | The IMU is optional: `sensor_msgs/Imu` with a valid orientation (roll/pitch) from the driver's own filter or the BSD-3 `imu_complementary_filter`, plus a static base→IMU transform. |
 | A13 | The first release is **v1.0.0**, preceded by v1.0.0-rc.1 (§11.1). |
-| A14 | The forklift publishes a `LaserScan` usable for verification (one topic, e.g. the one AMCL uses, possibly merged from several scanners), `CameraInfo`-calibrated images, and the TF chain above. Details to confirm by M8 (§14). |
+| A14 | The forklift publishes a `LaserScan` usable for verification (one topic, e.g. the one AMCL uses, possibly merged from several scanners), `CameraInfo`-calibrated images, and the TF chain above. Confirmed from its workspace in M3, with three caveats (R25–R27); what is still unknown is listed in §14, to confirm by M8. |
 
 ---
 
@@ -267,7 +278,7 @@ landfall_msgs/Hypothesis[] hypotheses            # diagnostics, best first: pose
 | both | `/diagnostics` | diagnostic_msgs/DiagnosticArray | pub | diagnostic_updater |
 | both | `/bond` | bond/Status | pub/sub | bondcpp (for nav2_lifecycle_manager) |
 | relocalizer | `~/relocalize` | landfall_msgs/srv/Relocalize | srv | — |
-| relocalizer | `/set_initial_pose` (`output.service`, service mode) | nav2_msgs/srv/SetInitialPose | client | AMCL serves it on all 3 distros (verified); exact resolved name to verify in M3 |
+| relocalizer | `/set_initial_pose` (`output.service`, service mode) | nav2_msgs/srv/SetInitialPose | client | AMCL serves the relative name `set_initial_pose` on all 3 distros (verified in M3), i.e. `/set_initial_pose` for an AMCL in the root namespace |
 | relocalizer | `/<amcl_node>/get_state` | lifecycle_msgs/srv/GetState | client | refuse (NOT_READY) if AMCL isn't `active` |
 | recorder | `~/set_paused` | std_srvs/SetBool | srv | pause while driving through unwanted areas |
 
@@ -850,6 +861,9 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
 | R22 | Forklift: camera on the mast/carriage, or loads on the forks blocking camera or LiDAR | recommend a chassis / overhead-guard mount; per-stamp base→camera TF handles modeled moving mounts; blocked views give misses (safe); field-checked in M8 |
 | R23 | Forklift odometry: steered-wheel slip on dusty floors, tight turns | EKF with IMU yaw rate (D12); consistency thresholds tunable; logged in shadow mode |
 | R24 | 1.0 promise vs limited field data (one robot, one site) | rc.1 before 1.0.0; shadow-mode volume (thousands of queries) plus active trials; GPU and arm64 labeled experimental; frozen surface listed explicitly |
+| R25 | Forklift: TF places the camera from the *raw, relative* fork encoder (`forks_joint`); the calibrated height (`bias − forks_joint`) exists only on `/forks_bias`, so the camera's TF height is off by an offset that changes with every power-up and e-stop | wrong camera heights corrupt recorded landmarks and fail the height check; fix on the forklift side (publish the calibrated joint position to TF) before recording; until then record and query with the forks at a fixed, verified height |
+| R26 | Forklift: the camera driver stamps images with `now()` when publishing, not at exposure | measure the latency and set `image.time_offset` for recorder and relocalizer; the speed gate bounds the remaining error |
+| R27 | Forklift: its `localization_monitor` also seeds AMCL (saved pose, scan-matching relocalization) | two writers of `/initialpose` must not race; integration decided before M8 (proposal: the monitor calls Landfall with `dry_run` and stays the only writer) |
 | R19 | IMU orientation quality or mounting misalignment (false tilt rejections) | gravity used only while nearly still; 3° tolerance vs ~0.5–1° typical AHRS error; IMU-vs-vision tilt logged; `auto` falls back to flat floor when the IMU is stale |
 | R20 | Ramps: relocalization on a ramp relies on landmarks mapped from nearby flat areas; ramps themselves are unmapped | documented; long ramps produce misses, not wrong poses; proper 3D mapping is Stage 4 |
 | R21 | Extrinsics monitor false warnings from AMCL's own error | confidence gate (σ ≤ 5 cm), median over ≥ 10 samples, WARN-only; thresholds validated in M4 |
@@ -879,10 +893,17 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
 - Version: **v1.0.0**, with rc.1 at M7 (D7, §11.1).
 - Fusion: robot_localization `ekf_node`, and IMU orientation from the driver or `imu_complementary_filter` (D12).
 
-**Information I'll need about the forklift** (not blocking now; ideally before M2 so a real bag can be used alongside the sim fixture, at the latest by M8):
-1. Camera model, resolution, mount location (chassis / overhead guard / mast), and whether it's calibrated.
-2. LiDAR(s): model, mount height, and which `LaserScan` topic AMCL uses (merged or single).
-3. IMU: present? Does its driver publish orientation?
-4. Odometry: drive/steer encoders and what currently publishes `odom→base`.
-5. Mini PC: CPU model, RAM, OS, ROS distro (and whether it's x86_64).
-6. Site: ramps or dock levelers (and their rise), lighting changes, repetitive aisles.
+**The forklift** (read on 2026-10-31 from its workspace, `autofork_ws` branch `deploy`; re-check before M8):
+
+| Item | What the stack has | Consequence for Landfall |
+|---|---|---|
+| Computer, distro | one mini PC (x86_64, Intel USB host), ROS 2 Humble, Fast DDS | Humble build; CPU model and RAM still unknown |
+| Base frame | `chassis_link` is the root; no `base_footprint`. From the wheel geometry the floor is ~4 cm below it | `frames.base: chassis_link`; the height check and `triangulation.min_height` use that plane as z = 0 |
+| Localization | Nav2 AMCL (likelihood_field_prob) on `scan/navigation`, plus the stack's own `localization_monitor`: restores the last pose per map, scores AMCL against the scan, and does scan-matching global relocalization (`/localization/relocalize`), seeding AMCL itself | Landfall must not race it for `/initialpose`: see R27 and the M8 proposal in the M3 report |
+| LiDAR | Pepperl+Fuchs R2000 at 1.83 m on the mast, `scan/navigation` (frame `lidar_nav_link`, best effort); 3 SICK safety scanners merged separately | the scan check (M4) uses `scan/navigation`. Maps are 0.1 m per cell, so `scan_check.hit_tolerance` must be at least one cell |
+| Maps | trinary PGMs at 0.1 m: factory 90 × 49 m, sensata 112 × 22 m, workshop 20 × 14 m | databases of several thousand keyframes; lazy feature loading (R13) matters |
+| Camera | Vzense/Scepter RGB-D, color 640 × 480 at 15 fps: `/camera/image_raw` (bgr8, reliable), `/camera/image_raw/compressed` (JPEG q70, 5 Hz), `/camera/camera_info` (factory plumb_bob), frame `RGBD_camera_optical_link` | raw transport for queries; stamps need `image.time_offset` (R26) |
+| Camera mount | on `forks_link`, the carriage of the prismatic `forks_joint`, looking along the forks; a pallet on the forks hides it | per-stamp TF (A1) handles the motion, but see R25; relocalization only unloaded |
+| Odometry | tricycle_controller + robot_localization `ekf_node` (two_d_mode; wheel vx and yaw rate, gated IMU yaw rate) → `/odom/fused`, TF `odom → chassis_link` | exactly D12 |
+| IMU | WitMotion, published without orientation (`raw_include_orientation: false`) | `gravity.source: auto` falls back to the flat floor; enable orientation if ramps matter |
+| Still unknown | CPU model and RAM; ramps or dock levelers (rise); lighting changes; which aisles repeat | ask before M8 |

@@ -17,14 +17,13 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <ctime>
 #include <filesystem>
-#include <initializer_list>
 #include <stdexcept>
 #include <utility>
 
 #include "landfall/ros/conversions.hpp"
+#include "landfall/ros/parameters.hpp"
 #include "landfall/version.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
@@ -36,46 +35,6 @@ namespace landfall::ros
 namespace
 {
 
-using rcl_interfaces::msg::ParameterDescriptor;
-
-ParameterDescriptor describe(const std::string & description)
-{
-  ParameterDescriptor d;
-  d.description = description;
-  d.read_only = true;  // fixed for the node's lifetime: set them at startup
-  return d;
-}
-
-ParameterDescriptor describe(const std::string & description, double from, double to)
-{
-  ParameterDescriptor d = describe(description);
-  rcl_interfaces::msg::FloatingPointRange range;
-  range.from_value = from;
-  range.to_value = to;
-  d.floating_point_range.push_back(range);
-  return d;
-}
-
-ParameterDescriptor describeInt(const std::string & description, int64_t from, int64_t to)
-{
-  ParameterDescriptor d = describe(description);
-  rcl_interfaces::msg::IntegerRange range;
-  range.from_value = from;
-  range.to_value = to;
-  range.step = 1;
-  d.integer_range.push_back(range);
-  return d;
-}
-
-std::string expandHome(const std::string & path)
-{
-  if (path.rfind('~', 0) == 0) {
-    const char * home = std::getenv("HOME");
-    return std::string(home != nullptr ? home : "") + path.substr(1);
-  }
-  return path;
-}
-
 std::string utcStamp(const char * format)
 {
   const std::time_t now = std::time(nullptr);
@@ -84,21 +43,6 @@ std::string utcStamp(const char * format)
   char buffer[40];
   std::strftime(buffer, sizeof(buffer), format, &tm);
   return buffer;
-}
-
-void requireOneOf(
-  const std::string & name, const std::string & value, std::initializer_list<const char *> allowed)
-{
-  for (const char * option : allowed) {
-    if (value == option) {
-      return;
-    }
-  }
-  std::string list;
-  for (const char * option : allowed) {
-    list += list.empty() ? option : std::string(", ") + option;
-  }
-  throw std::invalid_argument("parameter " + name + " must be one of: " + list);
 }
 
 }  // namespace
@@ -160,9 +104,15 @@ void RecorderNode::declareParameters()
   declare_parameter(
     "gating.max_std_yaw_deg", 2.0, describe("Largest localization std in yaw, degrees", 0.1, 45.0));
   declare_parameter(
-    "gating.min_translation", 0.5, describe("Metres since the last keyframe ...", 0.0, 10.0));
+    "gating.min_translation", 0.5,
+    describe(
+      "A keyframe needs this many metres since the last one, or gating.min_rotation_deg", 0.0,
+      10.0));
   declare_parameter(
-    "gating.min_rotation_deg", 15.0, describe("... or degrees of rotation", 0.0, 180.0));
+    "gating.min_rotation_deg", 15.0,
+    describe(
+      "A keyframe needs this many degrees since the last one, or gating.min_translation", 0.0,
+      180.0));
   declare_parameter(
     "gating.max_linear_speed", 0.6, describe("Fastest speed for a keyframe, m/s", 0.0, 5.0));
   declare_parameter(

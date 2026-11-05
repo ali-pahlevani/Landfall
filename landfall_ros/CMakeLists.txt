@@ -12,6 +12,8 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(diagnostic_updater REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
+find_package(nav2_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
@@ -40,9 +42,10 @@ target_include_directories(landfall_ros_compat INTERFACE
 landfall_set_cxx_standard(landfall_ros_compat)
 landfall_link_package(landfall_ros_compat INTERFACE cv_bridge rosbag2_storage)
 
-# ROS <-> core glue shared by the recorder and the CLI: conversions, TF pose source, IMU gravity,
-# the keyframe gate and the bag reader.
+# ROS <-> core glue shared by the nodes and the CLI: conversions, TF pose source, IMU gravity,
+# the keyframe gate, the bag reader and offline queries of a bag.
 add_library(landfall_ros_common SHARED
+  src/bag_query.cpp
   src/bag_reader.cpp
   src/conversions.cpp
   src/frame_gate.cpp
@@ -73,6 +76,21 @@ target_link_libraries(recorder_node landfall_recorder)
 landfall_set_cxx_standard(recorder_node)
 landfall_set_warnings(recorder_node)
 
+# Relocalizer: lifecycle node, also a component.
+add_library(landfall_relocalizer SHARED src/relocalizer_node.cpp)
+target_link_libraries(landfall_relocalizer PUBLIC landfall_ros_common PRIVATE opencv_imgcodecs)
+landfall_link_package(landfall_relocalizer PUBLIC
+  bondcpp diagnostic_msgs diagnostic_updater landfall_msgs lifecycle_msgs nav2_msgs nav_msgs
+  rclcpp_components rclcpp_lifecycle tf2_ros visualization_msgs)
+landfall_set_cxx_standard(landfall_relocalizer)
+landfall_set_warnings(landfall_relocalizer)
+rclcpp_components_register_nodes(landfall_relocalizer "landfall::ros::RelocalizerNode")
+
+add_executable(relocalizer_node src/relocalizer_main.cpp)
+target_link_libraries(relocalizer_node landfall_relocalizer)
+landfall_set_cxx_standard(relocalizer_node)
+landfall_set_warnings(relocalizer_node)
+
 # `landfall` CLI: build, inspect, report, verify, migrate.
 add_executable(landfall src/cli/landfall_cli.cpp)
 target_link_libraries(landfall landfall_ros_common opencv_imgcodecs)
@@ -82,13 +100,13 @@ landfall_set_cxx_standard(landfall)
 landfall_set_warnings(landfall)
 
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
-install(TARGETS landfall_ros_compat landfall_ros_common landfall_recorder
+install(TARGETS landfall_ros_compat landfall_ros_common landfall_recorder landfall_relocalizer
   EXPORT export_landfall_ros
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(TARGETS recorder_node landfall DESTINATION lib/${PROJECT_NAME})
+install(TARGETS recorder_node relocalizer_node landfall DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -136,9 +154,42 @@ if(BUILD_TESTING)
   target_link_libraries(test_recorder_node landfall_recorder)
   landfall_set_warnings(test_recorder_node)
 
+  # The relocalizer fed with the depot fixture (readiness, BUSY, publishing, startup, lifecycle).
+  ament_add_gtest(test_relocalizer_node test/test_relocalizer_node.cpp TIMEOUT 400)
+  target_link_libraries(test_relocalizer_node landfall_relocalizer)
+  target_compile_definitions(test_relocalizer_node PRIVATE
+    LANDFALL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/depot_small"
+    LANDFALL_ROS_DISTRO="$ENV{ROS_DISTRO}")
+  landfall_set_warnings(test_relocalizer_node)
+
+  # Offline relocalization of the fixture's non-keyframe images, scored against ground truth.
+  ament_add_gtest(test_fixture_query test/test_fixture_query.cpp TIMEOUT 300)
+  target_link_libraries(test_fixture_query landfall_ros_common)
+  landfall_link_package(test_fixture_query PLAIN nav_msgs)
+  target_compile_definitions(test_fixture_query PRIVATE
+    LANDFALL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/depot_small"
+    LANDFALL_ROS_DISTRO="$ENV{ROS_DISTRO}")
+  landfall_set_warnings(test_fixture_query)
+
+  # docs/parameters.md is generated from the declarations (scripts/update_parameters_doc.sh).
+  ament_add_gtest(test_parameters_doc test/test_parameters_doc.cpp SKIP_LINKING_MAIN_LIBRARIES)
+  target_link_libraries(test_parameters_doc landfall_relocalizer landfall_recorder)
+  target_compile_definitions(test_parameters_doc PRIVATE
+    LANDFALL_REPO_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+  landfall_set_warnings(test_parameters_doc)
+
+  find_package(class_loader REQUIRED)
+  ament_add_gtest(test_relocalizer_component test/test_relocalizer_component.cpp TIMEOUT 60)
+  target_compile_definitions(test_relocalizer_component PRIVATE
+    LANDFALL_RELOCALIZER_LIBRARY="$<TARGET_FILE:landfall_relocalizer>"
+    LANDFALL_RECORDER_LIBRARY="$<TARGET_FILE:landfall_recorder>")
+  add_dependencies(test_relocalizer_component landfall_relocalizer landfall_recorder)
+  landfall_link_package(test_relocalizer_component PLAIN class_loader rclcpp rclcpp_components)
+  landfall_set_cxx_standard(test_relocalizer_component)
+  landfall_set_warnings(test_relocalizer_component)
+
   # The map loader against the real nav2_map_server of this distro (launch test).
   find_package(launch_testing_ament_cmake REQUIRED)
-  find_package(nav_msgs REQUIRED)
   add_executable(map_parity_check test/map_parity_check.cpp)
   target_link_libraries(map_parity_check PRIVATE landfall_core::landfall_core)
   landfall_link_package(map_parity_check PRIVATE nav_msgs rclcpp)
@@ -148,11 +199,29 @@ if(BUILD_TESTING)
   add_launch_test(test/test_map_server_parity.py
     TIMEOUT 180
     ENV LANDFALL_MAP_PARITY_CHECK=$<TARGET_FILE:map_parity_check>)
+
+  # AMCL converges after the relocalizer's /initialpose (launch test, nav2_lifecycle_manager).
+  find_package(rosgraph_msgs REQUIRED)
+  add_executable(relocalization_check test/relocalization_check.cpp)
+  target_link_libraries(relocalization_check PRIVATE landfall_ros_common)
+  landfall_link_package(relocalization_check PRIVATE
+    landfall_msgs lifecycle_msgs rosgraph_msgs sensor_msgs tf2_msgs)
+  landfall_set_cxx_standard(relocalization_check)
+  landfall_set_warnings(relocalization_check)
+  add_launch_test(test/test_relocalizer_amcl.py
+    TIMEOUT 300
+    ENV
+      LANDFALL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/depot_small
+      LANDFALL_AMCL_PARAMS=${CMAKE_CURRENT_SOURCE_DIR}/test/amcl_fixture.yaml
+      LANDFALL_CLI=$<TARGET_FILE:landfall>
+      LANDFALL_RELOCALIZER=$<TARGET_FILE:relocalizer_node>
+      LANDFALL_RELOCALIZATION_CHECK=$<TARGET_FILE:relocalization_check>)
 endif()
 
 ament_export_targets(export_landfall_ros HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   landfall_core landfall_msgs OpenCV bondcpp builtin_interfaces cv_bridge diagnostic_msgs
-  diagnostic_updater geometry_msgs lifecycle_msgs rclcpp rclcpp_components rclcpp_lifecycle
-  rosbag2_cpp rosbag2_storage sensor_msgs std_srvs tf2 tf2_msgs tf2_ros visualization_msgs)
+  diagnostic_updater geometry_msgs lifecycle_msgs nav2_msgs nav_msgs rclcpp rclcpp_components
+  rclcpp_lifecycle rosbag2_cpp rosbag2_storage sensor_msgs std_srvs tf2 tf2_msgs tf2_ros
+  visualization_msgs)
 ament_package()

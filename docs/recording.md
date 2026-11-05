@@ -70,8 +70,8 @@ Without `autostart`, drive it with `ros2 lifecycle set /landfall_recorder config
 | `~/set_paused` | `std_srvs/SetBool` | pause while driving through areas that shouldn't be mapped |
 | `/diagnostics` | | warns when no images arrive or most frames have no pose |
 
-The parameters are read once, at startup (`read_only`); `ros2 param describe` lists them with their
-ranges. Besides the gates above:
+The parameters are read once, at startup (`read_only`); [parameters.md](parameters.md) lists all of
+them with their ranges. Besides the gates above:
 
 | Parameter | Default | |
 |---|---|---|

@@ -20,12 +20,13 @@ path.
 | SQLite | `landfall_core` (map database) | public domain | system `libsqlite3` |
 | yaml-cpp | `landfall_core` (map YAML) | MIT | system `libyaml-cpp` |
 | GoogleTest | unit tests | BSD-3-Clause | via `ament_cmake_gtest` |
+| class_loader, rosgraph_msgs | tests (component loading, simulated clock) | BSD-3-Clause / Apache-2.0 | |
 | rclcpp, rclcpp_lifecycle, rclcpp_components, rosbag2, tf2, tf2_ros | `landfall_ros`, `landfall_benchmark` | Apache-2.0 / BSD-3-Clause (tf2) | |
 | cv_bridge | `landfall_ros` | Apache-2.0 / BSD | |
 | bondcpp, diagnostic_updater | `landfall_ros` | BSD-3-Clause | |
 | nav2_behavior_tree | `landfall_nav2` | Apache-2.0 | |
 | BehaviorTree.CPP | `landfall_nav2` | MIT | v3 on Humble, v4 on Jazzy and later |
-| ROS 2 message packages | `landfall_msgs` and nodes | Apache-2.0 | `builtin_interfaces`, `geometry_msgs`, `sensor_msgs`, `std_msgs`, `std_srvs`, `lifecycle_msgs`, `nav_msgs`, `tf2_msgs`, `visualization_msgs`, `diagnostic_msgs` |
+| ROS 2 message packages | `landfall_msgs` and nodes | Apache-2.0 | `builtin_interfaces`, `geometry_msgs`, `sensor_msgs`, `std_msgs`, `std_srvs`, `lifecycle_msgs`, `nav_msgs`, `nav2_msgs` (relocalizer: AMCL's `SetInitialPose`), `tf2_msgs`, `visualization_msgs`, `diagnostic_msgs` |
 
 ## Data and assets in the repository
 
@@ -39,7 +40,8 @@ path.
 
 | Component | License | Notes |
 |---|---|---|
-| nav2_map_server, nav2_lifecycle_manager | Apache-2.0 | map parity integration test (`nav2_map_server` reads images with GraphicsMagick, MIT-style license) |
+| nav2_map_server, nav2_lifecycle_manager | Apache-2.0 | map parity and relocalization integration tests (`nav2_map_server` reads images with GraphicsMagick, MIT-style license) |
+| nav2_amcl | LGPL-2.1+ | relocalization integration test: AMCL converges after the relocalizer's pose (a separate process, never linked) |
 | Gazebo Harmonic, ros_gz, Nav2 (incl. AMCL, LGPL-2.1+), nav2_minimal_tb4_sim | Apache-2.0 (AMCL: LGPL-2.1+) | simulation image only (`docker/Dockerfile.sim`) |
 | Python: rosbag2_py, OpenCV, NumPy | Apache-2.0, BSD-3-Clause | `landfall_tools/fixtures/depot_fixture.py` |
 

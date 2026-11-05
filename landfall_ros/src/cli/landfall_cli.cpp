@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// `landfall`: offline tools for map databases (build, inspect, report, verify, migrate).
+// `landfall`: offline tools for map databases (build, inspect, report, verify, migrate, query).
 
 #include <algorithm>
 #include <chrono>
@@ -36,7 +36,9 @@
 #include "landfall/db/migrations.hpp"
 #include "landfall/grid/map_loader.hpp"
 #include "landfall/grid/occupancy_grid.hpp"
+#include "landfall/query/localizer.hpp"
 #include "landfall/record/staging.hpp"
+#include "landfall/ros/bag_query.hpp"
 #include "landfall/ros/bag_reader.hpp"
 #include "landfall/version.hpp"
 #include "opencv2/imgcodecs.hpp"
@@ -63,6 +65,7 @@ commands:
   report   Write report.md, report.json and coverage.png for a database
   verify   Check a database's integrity, content hash and (optionally) its occupancy map
   migrate  Upgrade a database to this version's schema (keeps a backup)
+  query    Relocalize a bag's images against a database, offline, as the relocalizer node would
 
 landfall build --map MAP.yaml --output OUT.landfall.db (--staging DIR | --bag BAG)...
                [--config BUILD.yaml] [--report-dir DIR] [--threads N]
@@ -71,6 +74,8 @@ landfall inspect DB
 landfall report DB [--output DIR]
 landfall verify DB [--map MAP.yaml] [--map-semantics humble|jazzy]
 landfall migrate DB [--no-backup]
+landfall query DB --bag BAG [--config BUILD.yaml] [--output RESULTS.csv] [--frames N]
+               [--every N] [--skip-keyframes] [--set PARAMETER=VALUE]... [--threads N]
 landfall --version
 )";
 
@@ -466,6 +471,279 @@ int migrate(const std::vector<std::string> & argv)
   return 0;
 }
 
+// --set NAME=VALUE: the relocalizer's threshold parameters, under the node's names.
+struct QuerySettings
+{
+  landfall::LocalizerParams localizer;
+  landfall::ConsistencyParams consistency;
+  landfall::GravityParams gravity;
+  double min_frame_interval = 0.3;
+  double timeout = 10.0;
+};
+
+void setQueryParameter(QuerySettings & q, const std::string & assignment)
+{
+  const auto eq = assignment.find('=');
+  if (eq == std::string::npos) {
+    throw UsageError("--set expects PARAMETER=VALUE, got '" + assignment + "'");
+  }
+  const std::string name = assignment.substr(0, eq);
+  const std::string value = assignment.substr(eq + 1);
+  const auto number = [&] {
+    std::size_t used = 0;
+    double v = 0.0;
+    try {
+      v = std::stod(value, &used);
+    } catch (const std::exception &) {
+      used = 0;
+    }
+    if (used == 0 || used != value.size()) {
+      throw UsageError("--set " + name + ": '" + value + "' is not a number");
+    }
+    return v;
+  };
+  auto & l = q.localizer;
+  if (name == "query.top_k") {
+    l.top_k = static_cast<int>(number());
+  } else if (name == "query.timeout") {
+    q.timeout = number();
+  } else if (name == "matching.ratio") {
+    l.ratio.ratio = number();
+  } else if (name == "matching.min_cosine") {
+    l.mnn.min_cosine = number();
+  } else if (name == "pnp.solver") {
+    const auto strategy = landfall::parsePnpStrategy(value);
+    if (!strategy) {
+      throw UsageError("--set pnp.solver: upright, p3p, upright_then_p3p or opencv");
+    }
+    l.pnp = *strategy;
+  } else if (name == "pnp.max_reproj_error_px") {
+    l.pnp_threshold_px = number();
+  } else if (name == "pnp.max_iterations") {
+    l.pnp_max_iterations = static_cast<int>(number());
+  } else if (name == "pnp.success_prob") {
+    l.pnp_success_prob = number();
+  } else if (name == "sanity.min_inliers") {
+    l.sanity.min_inliers = static_cast<int>(number());
+  } else if (name == "sanity.min_inlier_ratio") {
+    l.sanity.min_inlier_ratio = number();
+  } else if (name == "sanity.max_mean_reproj_error_px") {
+    l.sanity.max_mean_reprojection_px = number();
+  } else if (name == "sanity.max_height_error") {
+    l.sanity.max_height_error = number();
+  } else if (name == "sanity.max_floor_elevation") {
+    l.sanity.max_floor_elevation = number();
+  } else if (name == "sanity.max_tilt_error_deg") {
+    l.sanity.max_tilt_error_deg = number();
+  } else if (name == "sanity.min_inlier_coverage") {
+    l.sanity.min_inlier_coverage = number();
+  } else if (name == "sanity.require_free_space") {
+    if (value != "true" && value != "false") {
+      throw UsageError("--set sanity.require_free_space: true or false");
+    }
+    l.sanity.require_free_space = value == "true";
+  } else if (name == "ambiguity.cluster_radius") {
+    l.clustering.radius = number();
+  } else if (name == "ambiguity.cluster_angle_deg") {
+    l.clustering.angle_deg = number();
+  } else if (name == "ambiguity.max_score_ratio") {
+    l.max_score_ratio = number();
+  } else if (name == "consistency.min_frame_interval") {
+    q.min_frame_interval = number();
+  } else if (name == "consistency.max_translation_error") {
+    q.consistency.max_translation_error = number();
+  } else if (name == "consistency.max_rotation_error_deg") {
+    q.consistency.max_rotation_error_deg = number();
+  } else if (name == "imu.max_age") {
+    q.gravity.max_age = number();
+  } else if (name == "imu.max_angular_rate") {
+    q.gravity.max_angular_rate = number();
+  } else if (name == "gravity.ramp_tilt_deg") {
+    q.gravity.ramp_tilt_deg = number();
+  } else {
+    throw UsageError("--set: unknown or structural parameter '" + name + "'");
+  }
+}
+
+double percentile(std::vector<double> values, double p)
+{
+  if (values.empty()) {
+    return 0.0;
+  }
+  std::sort(values.begin(), values.end());
+  const auto i = static_cast<std::size_t>(std::ceil(p * static_cast<double>(values.size())) - 1);
+  return values[std::min(i, values.size() - 1)];
+}
+
+// One relocalization request replayed from the bag: frames until `frames` produced a pose, one
+// was ambiguous, or `timeout` seconds of recording passed (as the node does with live images).
+struct ReplayedRequest
+{
+  int64_t first_stamp = 0;
+  int64_t last_stamp = 0;
+  std::vector<landfall::FrameOutcome> outcomes;
+  std::vector<int64_t> valid_stamps;
+  std::vector<landfall::FrameResult> valid_frames;
+  landfall::FrameResult last_frame;
+};
+
+int query(const std::vector<std::string> & argv)
+{
+  const Args args(
+    argv, {"--bag", "--config", "--output", "--frames", "--every", "--set", "--threads"},
+    {"--skip-keyframes"});
+  const std::string db_path = onePositional(args, "database");
+  const std::string bag_uri = args.required("--bag");
+  const auto config_path = args.one("--config");
+  const landfall::BuildConfigFile config =
+    landfall::parseBuildConfig(config_path ? readFile(*config_path) : "");
+  const landfall::BagConfig & bag = config.bag;
+  const int frames = std::stoi(args.one("--frames").value_or("1"));
+  const int every = std::stoi(args.one("--every").value_or("1"));
+  if (frames < 1 || frames > 10 || every < 1) {
+    throw UsageError("--frames must be in 1..10 and --every at least 1");
+  }
+  QuerySettings settings;
+  settings.localizer.threads = std::stoi(args.one("--threads").value_or("0"));
+  for (const auto & assignment : args.all("--set")) {
+    setQueryParameter(settings, assignment);
+  }
+
+  const auto map = landfall::LocalizationMap::load(db_path);
+  landfall::Localizer localizer(map, settings.localizer);
+  std::set<int64_t> keyframe_stamps;
+  if (args.flag("--skip-keyframes")) {
+    for (const auto & k : Database::open(db_path, Database::Access::kReadOnly).keyframes()) {
+      keyframe_stamps.insert(k.stamp_ns);
+    }
+  }
+
+  landfall::ros::BagQueryOptions options;
+  options.bag = bag;
+  options.gravity = settings.gravity;
+  options.every = static_cast<std::size_t>(every);
+  options.min_frame_interval = settings.min_frame_interval;
+  options.skip_stamps = keyframe_stamps;
+
+  std::ofstream csv_file;
+  const auto output = args.one("--output");
+  if (output) {
+    csv_file.open(*output);
+    if (!csv_file) {
+      throw std::runtime_error("cannot write " + *output);
+    }
+  }
+  std::ostream & csv = output ? static_cast<std::ostream &>(csv_file) : std::cout;
+  csv << "request,first_stamp_ns,last_stamp_ns,status,frames,frames_used,pose_stamp_ns,x,y,yaw,"
+         "inliers,inlier_ratio,coverage,height_error_m,tilt_error_deg,ambiguity_ratio,"
+         "consistency_m,consistency_deg,features,places,best_x,best_y,best_yaw,best_score,"
+         "runner_up_x,runner_up_y,runner_up_yaw,runner_up_score,message,rejection\n";
+
+  std::map<std::string, int> statuses;
+  std::vector<double> frame_seconds;
+  int requests = 0;
+  std::optional<ReplayedRequest> current;
+  const auto timeout_ns = static_cast<int64_t>(settings.timeout * 1e9);
+
+  const auto finish = [&](const ReplayedRequest & r) {
+    landfall::DecisionInput input;
+    input.frames = r.outcomes;
+    input.required_frames = frames;
+    const auto decision = landfall::decide(input, settings.consistency);
+    ++statuses[landfall::toString(decision.status)];
+    const landfall::ScoreSummary scores = landfall::summarizeScores(
+      r.valid_frames.empty() ? std::vector<landfall::FrameResult>{r.last_frame} : r.valid_frames);
+    std::string message = decision.message;
+    std::string rejection =
+      r.last_frame.hypotheses.empty() ? "" : r.last_frame.hypotheses.front().rejection;
+    std::replace(message.begin(), message.end(), ',', ';');
+    std::replace(rejection.begin(), rejection.end(), ',', ';');
+    csv << requests++ << "," << r.first_stamp << "," << r.last_stamp << ","
+        << landfall::toString(decision.status) << "," << r.outcomes.size() << ","
+        << decision.frames_used << ",";
+    if (decision.pose) {
+      csv << r.valid_stamps.back() << "," << fixed(decision.pose->x, 4) << ","
+          << fixed(decision.pose->y, 4) << "," << fixed(decision.pose->yaw, 5) << ",";
+    } else {
+      csv << ",,,,";
+    }
+    if (scores.any) {
+      csv << scores.num_inliers << "," << fixed(scores.inlier_ratio, 3) << ","
+          << fixed(scores.inlier_coverage, 3) << "," << fixed(scores.height_error_m, 3) << ","
+          << fixed(scores.tilt_error_deg, 2) << ",";
+    } else {
+      csv << ",,,,,";
+    }
+    csv << fixed(scores.ambiguity_ratio, 3) << ","
+        << fixed(decision.consistency.max_translation_error, 3) << ","
+        << fixed(decision.consistency.max_rotation_error_deg, 2) << "," << r.last_frame.num_features
+        << "," << r.last_frame.hypotheses.size() << ",";
+    const auto & clusters = r.last_frame.clusters;
+    if (clusters.empty()) {
+      csv << ",,,,";
+    } else {
+      csv << fixed(clusters[0].pose.x, 3) << "," << fixed(clusters[0].pose.y, 3) << ","
+          << fixed(clusters[0].pose.yaw, 4) << "," << fixed(clusters[0].score, 0) << ",";
+    }
+    if (clusters.size() > 1) {
+      csv << fixed(clusters[1].pose.x, 3) << "," << fixed(clusters[1].pose.y, 3) << ","
+          << fixed(clusters[1].pose.yaw, 4) << "," << fixed(clusters[1].score, 0) << ",";
+    } else {
+      csv << ",,,,";
+    }
+    csv << message << "," << rejection << "\n";
+  };
+
+  const auto counts = landfall::ros::queryBagImages(
+    bag_uri, localizer, options,
+    [&](int64_t stamp, const landfall::Pose2 & odom_T_base, landfall::FrameResult && result) {
+      frame_seconds.push_back(result.timings.total_s);
+      if (current && stamp - current->first_stamp > timeout_ns) {
+        finish(*current);
+        current.reset();
+      }
+      if (!current) {
+        current = ReplayedRequest();
+        current->first_stamp = stamp;
+      }
+      landfall::FrameOutcome outcome;
+      outcome.deepest_stage = result.deepest_stage;
+      outcome.ambiguous = result.ambiguity.ambiguous;
+      if (result.pose && !outcome.ambiguous) {
+        outcome.estimate = landfall::FrameEstimate{*result.pose, odom_T_base};
+        current->valid_stamps.push_back(stamp);
+        current->valid_frames.push_back(result);
+      }
+      current->outcomes.push_back(outcome);
+      current->last_stamp = stamp;
+      current->last_frame = std::move(result);
+      if (outcome.ambiguous || static_cast<int>(current->valid_frames.size()) >= frames) {
+        finish(*current);
+        current.reset();
+      }
+    });
+  if (current) {
+    finish(*current);
+  }
+
+  std::cerr << "query: " << counts.images << " images in the bag, " << frame_seconds.size()
+            << " localized frames in " << requests << " requests of " << frames << " frame"
+            << (frames > 1 ? "s" : "") << "\n";
+  if (counts.skipped_stamps + counts.skipped_tf + counts.skipped_gravity > 0) {
+    std::cerr << "  skipped: " << counts.skipped_stamps << " database keyframes, "
+              << counts.skipped_tf << " without TF, " << counts.skipped_gravity
+              << " without usable IMU gravity\n";
+  }
+  std::cerr << "  results:";
+  for (const auto & [status, count] : statuses) {
+    std::cerr << " " << status << " " << count;
+  }
+  std::cerr << "\n  seconds per frame: median " << fixed(percentile(frame_seconds, 0.5), 3)
+            << ", p95 " << fixed(percentile(frame_seconds, 0.95), 3) << ", max "
+            << fixed(percentile(frame_seconds, 1.0), 3) << "\n";
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -500,6 +778,9 @@ int main(int argc, char ** argv)
     }
     if (command == "migrate") {
       return migrate(args);
+    }
+    if (command == "query") {
+      return query(args);
     }
     throw UsageError("unknown command '" + command + "'");
   } catch (const UsageError & e) {

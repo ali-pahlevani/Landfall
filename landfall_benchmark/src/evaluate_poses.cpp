@@ -16,15 +16,23 @@
 //
 //   evaluate_poses --bag BAG [--gt-topic /ground_truth/pose] [--world-to-map X Y YAW_DEG]
 //                  [--max-gap SECONDS] [--staging DIR]... [--db DB]... [--amcl-topic /amcl_pose]
+//                  [--queries RESULTS.csv]...
 //
 // For each source (staging keyframes, database keyframes before and after BA, AMCL estimates) it
 // prints position and yaw errors against the ground truth mapped into the map frame, once with the
 // nominal world->map transform and once with the best-fitting one (the map's alignment to the
 // simulator world is only known up to a few centimetres).
+//
+// For `landfall query` results it scores every request with the --world-to-map transform alone (a
+// fit would absorb the errors being measured): success within 0.25 m / 5 deg, wrong pose beyond
+// 0.5 m or 10 deg (plan §11, M3 and M7).
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <map>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -126,6 +134,97 @@ void evaluate(
   }
 }
 
+std::vector<std::string> splitCsv(const std::string & line)
+{
+  std::vector<std::string> fields;
+  std::stringstream stream(line);
+  std::string field;
+  while (std::getline(stream, field, ',')) {
+    fields.push_back(field);
+  }
+  if (!line.empty() && line.back() == ',') {
+    fields.emplace_back();
+  }
+  return fields;
+}
+
+void evaluateQueries(
+  const std::string & path, const landfall::eval::Trajectory & truth, int64_t max_gap_ns,
+  const Pose2 & world_to_map)
+{
+  std::ifstream file(path);
+  if (!file) {
+    throw std::runtime_error("cannot read " + path);
+  }
+  std::string line;
+  std::getline(file, line);
+  const auto header = splitCsv(line);
+  const auto column = [&header](const std::string & name) {
+    for (std::size_t i = 0; i < header.size(); ++i) {
+      if (header[i] == name) {
+        return i;
+      }
+    }
+    throw std::runtime_error("query results lack column " + name);
+  };
+  const std::size_t c_status = column("status");
+  const std::size_t c_stamp = column("pose_stamp_ns");
+  const std::size_t c_x = column("x");
+  const std::size_t c_y = column("y");
+  const std::size_t c_yaw = column("yaw");
+  std::size_t requests = 0;
+  std::size_t published = 0;
+  std::size_t accurate = 0;
+  std::size_t wrong = 0;
+  std::size_t no_truth = 0;
+  std::map<std::string, std::size_t> statuses;
+  std::vector<double> position;
+  std::vector<double> yaw;
+  while (std::getline(file, line)) {
+    const auto f = splitCsv(line);
+    if (f.size() < header.size() - 1) {
+      continue;
+    }
+    ++requests;
+    ++statuses[f[c_status]];
+    if (f[c_status] != "SUCCESS") {
+      continue;
+    }
+    ++published;
+    const int64_t stamp = std::stoll(f[c_stamp]);
+    const auto t = truth.at(stamp, max_gap_ns);
+    if (!t) {
+      ++no_truth;
+      continue;
+    }
+    const Pose2 expected = landfall::compose(world_to_map, *t);
+    const Pose2 got{std::stod(f[c_x]), std::stod(f[c_y]), std::stod(f[c_yaw])};
+    const double e_position = landfall::translationDistance(got, expected);
+    const double e_yaw = landfall::rotationDistance(got, expected);
+    position.push_back(e_position);
+    yaw.push_back(e_yaw);
+    accurate += e_position <= 0.25 && deg(e_yaw) <= 5.0 ? 1 : 0;
+    wrong += e_position > 0.5 || deg(e_yaw) > 10.0 ? 1 : 0;
+  }
+  std::printf("queries %s: %zu requests;", path.c_str(), requests);
+  for (const auto & [status, count] : statuses) {
+    std::printf(" %s %zu", status.c_str(), count);
+  }
+  std::printf(
+    "\n  world->map (%.3f, %.3f, %.3f deg)\n", world_to_map.x, world_to_map.y,
+    deg(world_to_map.yaw));
+  const double rate =
+    requests > 0 ? 100.0 * static_cast<double>(accurate) / static_cast<double>(requests) : 0.0;
+  std::printf(
+    "  success (<= 0.25 m and 5 deg) %zu of %zu requests (%.1f %%); wrong (> 0.5 m or 10 deg) "
+    "%zu of %zu poses; %zu without ground truth\n",
+    accurate, requests, rate, wrong, published, no_truth);
+  if (!position.empty()) {
+    printStats("position", landfall::eval::errorStats(position), 100.0, "cm");
+    printStats("yaw", landfall::eval::errorStats(yaw), 180.0 / M_PI, "deg");
+  }
+}
+
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -135,6 +234,7 @@ int main(int argc, char ** argv)
   std::string amcl_topic;
   std::vector<std::string> staging;
   std::vector<std::string> databases;
+  std::vector<std::string> queries;
   Pose2 nominal{8.0, 0.0, 0.0};
   // Longest ground-truth gap to interpolate across (fixtures thin it out to 10 Hz).
   int64_t max_gap_ns = 250'000'000;
@@ -157,6 +257,8 @@ int main(int argc, char ** argv)
         staging.push_back(next());
       } else if (a == "--db") {
         databases.push_back(next());
+      } else if (a == "--queries") {
+        queries.push_back(next());
       } else if (a == "--max-gap") {
         max_gap_ns = static_cast<int64_t>(std::stod(next()) * 1e9);
       } else if (a == "--world-to-map") {
@@ -171,9 +273,10 @@ int main(int argc, char ** argv)
       throw std::invalid_argument("--bag is required");
     }
   } catch (const std::exception & e) {
-    std::cerr << "evaluate_poses: " << e.what()
-              << "\nusage: evaluate_poses --bag BAG [--gt-topic T] [--world-to-map X Y YAW_DEG] "
-                 "[--max-gap S] [--staging DIR]... [--db DB]... [--amcl-topic T]\n";
+    std::cerr
+      << "evaluate_poses: " << e.what()
+      << "\nusage: evaluate_poses --bag BAG [--gt-topic T] [--world-to-map X Y YAW_DEG] "
+         "[--max-gap S] [--staging DIR]... [--db DB]... [--amcl-topic T] [--queries CSV]...\n";
     return 2;
   }
 
@@ -227,6 +330,9 @@ int main(int argc, char ** argv)
     }
     if (!amcl_topic.empty()) {
       evaluate("AMCL " + amcl_topic, amcl, truth, max_gap_ns, nominal, true);
+    }
+    for (const auto & path : queries) {
+      evaluateQueries(path, truth, max_gap_ns, nominal);
     }
   } catch (const std::exception & e) {
     std::cerr << "evaluate_poses: error: " << e.what() << "\n";

@@ -68,7 +68,7 @@ BackendId RatioMatcher::id() const
 {
   detail::ConfigText config;
   config.add("ratio", params_.ratio).add("mutual", params_.mutual);
-  return {"ratio", "1", config.str()};
+  return {"ratio", "1", config.str(), ""};
 }
 
 MutualNearestMatcher::MutualNearestMatcher(const MutualNearestParams & params) : params_(params) {}
@@ -118,7 +118,7 @@ BackendId MutualNearestMatcher::id() const
 {
   detail::ConfigText config;
   config.add("min_cosine", params_.min_cosine);
-  return {"mnn", "1", config.str()};
+  return {"mnn", "1", config.str(), ""};
 }
 
 }  // namespace landfall

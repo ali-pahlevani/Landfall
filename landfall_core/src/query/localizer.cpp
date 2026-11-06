@@ -301,7 +301,9 @@ FrameResult Localizer::localize(const QueryFrame & frame)
   result.num_features = static_cast<int>(features.keypoints.size());
   result.timings.features_s = watch.lap();
 
-  const GlobalDescriptor global = map_->globalDescriptor().compute(gray, &features);
+  // Learned global descriptors take the image in color; the bag of words only the features.
+  const GlobalDescriptor global =
+    map_->globalDescriptor().compute(frame.image.empty() ? gray : frame.image, &features);
   result.retrieved = map_->retrievalIndex().search(global, params_.top_k);
   const std::vector<Place> places = groupPlaces(result.retrieved);
   result.timings.retrieval_s = watch.lap();

@@ -18,10 +18,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -90,11 +90,14 @@ protected:
     return o;
   }
 
-  // The extrinsics monitor samples once a second while the localization is confident. The fixture
-  // robot drives at about 0.5 m/s, so the speed gate is opened for the tests.
+  // The extrinsics monitor samples once a second while the localization is confident, here with
+  // requests of one frame for more samples. The fixture robot drives at about 0.5 m/s, so the speed
+  // gate is opened. The localization is the recording's own AMCL: the database was built from its
+  // poses, so its map frame is the one vision localizes in.
   static rclcpp::NodeOptions monitorOptions()
   {
     rclcpp::NodeOptions o = options(*db_path_);
+    o.append_parameter_override("consistency.num_frames", 1);
     o.append_parameter_override("extrinsics_monitor.enabled", true);
     o.append_parameter_override("extrinsics_monitor.period", 1.0);
     o.append_parameter_override("extrinsics_monitor.min_samples", 5);
@@ -202,11 +205,13 @@ protected:
             break;
           }
           for (auto & t : message.transforms) {
-            // Injected odometry error: from odom_jump_after on, the robot seems further ahead.
-            if (
-              t.header.frame_id == "odom" &&
-              landfall::ros::toNanoseconds(t.header.stamp) > odom_jump_after) {
-              t.transform.translation.x += odom_jump;
+            // Injected odometry error: past each step, the robot seems odom_step further ahead.
+            if (t.header.frame_id == "odom") {
+              const int64_t at = landfall::ros::toNanoseconds(t.header.stamp);
+              t.transform.translation.x +=
+                odom_step *
+                static_cast<double>(std::count_if(
+                  odom_steps.begin(), odom_steps.end(), [at](int64_t step) { return step <= at; }));
             }
           }
           tf_pub->publish(message);
@@ -329,8 +334,8 @@ protected:
     std::size_t next_scan = 0;
     bool send_scans = true;
     double scan_rotation = 0.0;  ///< rad added to every scan's angles (a scan that doesn't fit)
-    int64_t odom_jump_after = std::numeric_limits<int64_t>::max();
-    double odom_jump = 0.0;  ///< m added to the odometry after odom_jump_after
+    std::vector<int64_t> odom_steps;  ///< stamps where the odometry jumps ahead by odom_step
+    double odom_step = 0.0;           ///< m
   };
 
   // Error of a published map pose against the ground truth at its stamp.
@@ -606,12 +611,16 @@ TEST_F(RelocalizerNodeTest, OdometryThatDisagreesIsRejected)
   Harness h(options(*db_path_));
   h.subscribeInitialPose();
   h.up();
-  // Images 11 and 12 (0.8 s apart) are the first ones that localize; between them odometry
-  // jumps 0.5 m ahead.
-  h.odom_jump_after = (landfall::ros::toNanoseconds(data_->images[11].header.stamp) +
-                       landfall::ros::toNanoseconds(data_->images[12].header.stamp)) /
-                      2;
-  h.odom_jump = 0.5;
+  // From image 11 on (the first that localizes), odometry jumps 0.5 m ahead halfway between every
+  // two images: whichever two frames the request takes, they disagree. Each image's scan and
+  // odometry samples (within 0.2 s; the images are 0.8 s apart) stay on the image's step.
+  for (std::size_t k = 11; k < 40; ++k) {
+    h.odom_steps.push_back(
+      (landfall::ros::toNanoseconds(data_->images[k].header.stamp) +
+       landfall::ros::toNanoseconds(data_->images[k + 1].header.stamp)) /
+      2);
+  }
+  h.odom_step = 0.5;
   const Result r = h.call(2, false, 11);
   EXPECT_EQ(r.status, Result::REJECTED_CONSISTENCY) << r.message;
   EXPECT_FALSE(r.published);
@@ -637,13 +646,14 @@ TEST_F(RelocalizerNodeTest, AutoTriggerFiresOnceAndHonorsTheCooldown)
   ASSERT_EQ(h.countTrigger("auto"), 1U);
   EXPECT_EQ(h.statuses.back().status, Result::SUCCESS) << h.statuses.back().message;
   EXPECT_EQ(h.poses.size(), 1U);
-  // A shorter cooldown applies at once: it fires again.
+  // A shorter cooldown applies at once: it fires again. The localization stays uncertain, so it
+  // keeps firing once a second; a slow machine can see more than one request before it looks.
   ASSERT_TRUE(h.node->set_parameter(rclcpp::Parameter("auto_trigger.cooldown", 1.0)).successful);
   const auto deadline = Clock::now() + std::chrono::seconds(20);
   while (h.countTrigger("auto") < 2 && Clock::now() < deadline) {
     i = h.playFor(i, std::chrono::milliseconds(150), 1.0);
   }
-  EXPECT_EQ(h.countTrigger("auto"), 2U);
+  EXPECT_GE(h.countTrigger("auto"), 2U);
 }
 
 TEST_F(RelocalizerNodeTest, ExtrinsicsMonitorIsSilentOnTheRecording)
@@ -697,9 +707,11 @@ TEST_F(RelocalizerNodeTest, ServiceRequestsPreemptTheMonitor)
   Harness h(monitorOptions());
   h.subscribeInitialPose();
   h.up();
-  // After a second of confident localization a monitor sample starts; without images it waits.
-  const auto end = Clock::now() + std::chrono::milliseconds(2500);
-  while (Clock::now() < end) {
+  // After a second of confident localization a monitor sample starts; without images it waits
+  // (up to 5 s). /diagnostics shows it once a second.
+  const auto end = Clock::now() + std::chrono::seconds(5);
+  while (Clock::now() < end &&
+         (h.diagnostics.empty() || h.diagnostics.back().message != "relocalizing")) {
     h.publishLocalization(0.02);
     h.refreshScan();
     h.spinFor(std::chrono::milliseconds(200));

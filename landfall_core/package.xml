@@ -19,6 +19,8 @@
   <depend>libceres-dev</depend>
   <depend>libopencv-dev</depend>
   <depend>libsqlite3-dev</depend>
+  <!-- ONNX Runtime (CPU) for the learned backends; LANDFALL_WITH_ONNXRUNTIME=OFF builds without. -->
+  <depend>onnxruntime_vendor</depend>
   <depend>yaml-cpp</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>

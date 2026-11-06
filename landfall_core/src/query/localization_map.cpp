@@ -62,6 +62,22 @@ void requireSameBackend(const db::BackendRecord & stored, const BackendId & ours
       " in the database has a configuration this build reproduces differently: rebuild the "
       "database with `landfall build`");
   }
+  if (stored.model_sha256 != ours.model_sha256) {
+    throw std::runtime_error(
+      "the " + stored.role + " backend " + stored.name + " was built with model sha256 " +
+      stored.model_sha256 + ", the models directory has " + ours.model_sha256 +
+      ": use the model the database was built with (landfall_tools/models.yaml)");
+  }
+}
+
+// The stored configuration plus how this process runs the backend.
+BackendOptions withRuntime(const std::string & config, const LocalizationMap::Options & options)
+{
+  BackendOptions o = parseBackendConfig(config);
+  o[kModelsDirOption] = options.models_dir;
+  o[kProviderOption] = options.execution_provider;
+  o[kThreadsOption] = std::to_string(options.threads);
+  return o;
 }
 
 }  // namespace
@@ -74,6 +90,15 @@ LocalizationMap::LocalizationMap(db::Database database, std::size_t feature_cach
 std::shared_ptr<LocalizationMap> LocalizationMap::load(
   const std::string & path, std::size_t feature_cache_size)
 {
+  Options options;
+  options.feature_cache_size = feature_cache_size;
+  return load(path, options);
+}
+
+std::shared_ptr<LocalizationMap> LocalizationMap::load(
+  const std::string & path, const Options & options)
+{
+  const std::size_t feature_cache_size = options.feature_cache_size;
   db::Database database = [&path] {
     try {
       return db::Database::open(path, db::Database::Access::kReadOnly);
@@ -113,15 +138,16 @@ std::shared_ptr<LocalizationMap> LocalizationMap::load(
     c.width, c.height, c.intrinsics[0], c.intrinsics[1], c.intrinsics[2], c.intrinsics[3], *model,
     c.distortion);
 
-  // Backends: local features re-created from the stored configuration, bag of words from the
-  // stored vocabulary.
+  // Backends: local features and learned global descriptors re-created from the stored
+  // configuration, bag of words from the stored vocabulary.
   const auto backends = db.backends();
   const db::BackendRecord local = backendWithRole(backends, "local");
-  BackendRegistry registry;
-  registerBuiltinBackends(registry);
+  BackendRegistry builtin;
+  registerBuiltinBackends(builtin);
+  const BackendRegistry & registry = options.registry != nullptr ? *options.registry : builtin;
   try {
     map->local_features_ =
-      registry.createLocalFeatures(local.name, parseBackendConfig(local.config));
+      registry.createLocalFeatures(local.name, withRuntime(local.config, options));
   } catch (const std::invalid_argument & e) {
     throw std::runtime_error(
       std::string("the database's local feature backend is not available: ") + e.what());
@@ -130,22 +156,42 @@ std::shared_ptr<LocalizationMap> LocalizationMap::load(
   map->local_backend_id_ = local.id;
 
   const db::BackendRecord global = backendWithRole(backends, "global");
-  if (global.name != "bow") {
-    throw std::runtime_error(
-      "the database uses global backend " + global.name + ", which this build doesn't provide");
+  std::unique_ptr<IRetrievalIndex> index;
+  if (global.name == "bow") {
+    const db::BackendRecord vocabulary_backend = backendWithRole(backends, "vocabulary");
+    const auto vocabulary_record = db.vocabulary(vocabulary_backend.id);
+    if (!vocabulary_record) {
+      throw std::runtime_error("the database has no vocabulary");
+    }
+    auto vocabulary =
+      std::make_shared<const VocabularyTree>(VocabularyTree::deserialize(vocabulary_record->data));
+    map->descriptor_type_ = vocabulary->type();
+    map->global_descriptor_ = std::make_unique<BowGlobalDescriptor>(vocabulary);
+    index = std::make_unique<BowIndex>();
+  } else {
+    if (!registry.hasGlobalDescriptor(global.name)) {
+      throw std::runtime_error(
+        "the database uses global backend " + global.name +
+        ", which this build doesn't provide (learned backends need ONNX Runtime)");
+    }
+    try {
+      map->global_descriptor_ =
+        registry.createGlobalDescriptor(global.name, withRuntime(global.config, options));
+    } catch (const std::invalid_argument & e) {
+      throw std::runtime_error(
+        std::string("the database's global backend is not available: ") + e.what());
+    }
+    // Without a vocabulary, the descriptor type comes from the stored features.
+    const auto keyframes = db.keyframes();
+    if (!keyframes.empty()) {
+      if (const auto record = db.localFeatures(keyframes.front().id, local.id)) {
+        map->descriptor_type_ = db::decodeLocalFeatures(*record).type;
+      }
+    }
+    index = std::make_unique<DenseIndex>();
   }
-  const db::BackendRecord vocabulary_backend = backendWithRole(backends, "vocabulary");
-  const auto vocabulary_record = db.vocabulary(vocabulary_backend.id);
-  if (!vocabulary_record) {
-    throw std::runtime_error("the database has no vocabulary");
-  }
-  auto vocabulary =
-    std::make_shared<const VocabularyTree>(VocabularyTree::deserialize(vocabulary_record->data));
-  map->descriptor_type_ = vocabulary->type();
-  map->global_descriptor_ = std::make_unique<BowGlobalDescriptor>(vocabulary);
   requireSameBackend(global, map->global_descriptor_->id());
 
-  auto index = std::make_unique<BowIndex>();
   std::size_t descriptors = 0;
   for (const auto & record : db.globalDescriptors(global.id)) {
     index->add(record.keyframe_id, db::decodeGlobalDescriptor(record));

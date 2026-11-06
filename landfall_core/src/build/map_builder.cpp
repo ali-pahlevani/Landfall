@@ -189,7 +189,7 @@ const char * toString(BuildStage stage)
 
 BuildStats buildMap(
   const BuildInput & input, const BuildConfigFile & file, const std::string & db_path,
-  const BuildProgress & progress)
+  const BuildProgress & progress, const BackendRegistry * registry)
 {
   validate(input);
   if (std::filesystem::exists(db_path)) {
@@ -211,22 +211,44 @@ BuildStats buildMap(
   stats.keyframes = static_cast<int>(n);
   stats.sessions = static_cast<int>(input.sessions.size());
 
-  // --- Features and thumbnails -----------------------------------------------------------------
-  BackendRegistry registry;
-  registerBuiltinBackends(registry);
-  const auto extractor = registry.createLocalFeatures(config.local_backend, config.local_options);
+  // --- Features, learned global descriptors and thumbnails -------------------------------------
+  BackendRegistry builtin;
+  registerBuiltinBackends(builtin);
+  const BackendRegistry & backends = registry != nullptr ? *registry : builtin;
+  // How learned backends run: one ONNX Runtime thread per image, the pool runs images in parallel.
+  const auto withRuntime = [&config](BackendOptions options) {
+    options[kModelsDirOption] = config.models_dir;
+    options[kProviderOption] = config.execution_provider;
+    options[kThreadsOption] = "1";
+    return options;
+  };
+  const auto extractor =
+    backends.createLocalFeatures(config.local_backend, withRuntime(config.local_options));
+  const bool use_bow = config.global_backend == "bow";
+  std::unique_ptr<IGlobalDescriptor> learned_global;
+  if (!use_bow) {
+    if (!backends.hasGlobalDescriptor(config.global_backend)) {
+      throw std::runtime_error(
+        "global backend '" + config.global_backend +
+        "' is not available (learned backends need a build with ONNX Runtime)");
+    }
+    learned_global =
+      backends.createGlobalDescriptor(config.global_backend, withRuntime(config.global_options));
+  }
   std::vector<Features> features(n);
+  std::vector<std::vector<float>> dense(n);
   std::vector<std::vector<uint8_t>> thumbnails(n);
   report(BuildStage::kFeatures, 0, n);
   chunked(
     pool, n,
     [&](std::size_t i) {
       const BuildKeyframe & k = input.keyframes[i];
-      if (k.features) {
+      if (k.features && !learned_global) {
         features[i] = *k.features;
         return;
       }
-      const cv::Mat image = k.load_image();
+      // An image: for the features, or (precomputed features) for a learned global descriptor.
+      const cv::Mat image = k.load_image ? k.load_image() : cv::Mat();
       if (image.empty()) {
         throw std::runtime_error("keyframe " + std::to_string(i) + ": image could not be loaded");
       }
@@ -236,8 +258,15 @@ BuildStats buildMap(
           std::to_string(image.rows) + " differs from the camera's " +
           std::to_string(camera.model.width()) + "x" + std::to_string(camera.model.height()));
       }
-      features[i] = extractor->extract(toGray(image));
-      thumbnails[i] = thumbnail(image);
+      if (k.features) {
+        features[i] = *k.features;
+      } else {
+        features[i] = extractor->extract(toGray(image));
+        thumbnails[i] = thumbnail(image);
+      }
+      if (learned_global) {
+        dense[i] = learned_global->compute(image, &features[i]).dense;
+      }
     },
     [&](std::size_t done) { report(BuildStage::kFeatures, done, n); });
   const DescriptorType descriptor_type = features.front().type;
@@ -260,42 +289,59 @@ BuildStats buildMap(
   });
   stats.stage_seconds[static_cast<int>(BuildStage::kFeatures)] = watch.lap();
 
-  // --- Vocabulary and bag-of-words -------------------------------------------------------------
+  // --- Vocabulary and bag-of-words (bow only) --------------------------------------------------
   report(BuildStage::kVocabulary, 0, 1);
-  cv::Mat all_descriptors;
+  bool any_features = false;
   for (const auto & f : features) {
-    if (!f.descriptors.empty()) {
-      all_descriptors.push_back(f.descriptors);
-    }
+    any_features = any_features || !f.descriptors.empty();
   }
-  if (all_descriptors.empty()) {
+  if (!any_features) {
     throw std::runtime_error("no features were found in any keyframe");
   }
   VocabularyParams vocabulary_params = config.vocabulary;
   vocabulary_params.seed = config.seed;
-  auto vocabulary =
-    std::make_shared<VocabularyTree>(VocabularyTree::train(all_descriptors, vocabulary_params));
-  all_descriptors.release();
-  std::vector<std::vector<uint32_t>> words(n);
-  pool.parallelFor(
-    n, [&](std::size_t i) { words[i] = vocabulary->words(features[i].descriptors); });
-  vocabulary->computeIdf(words);
+  std::shared_ptr<VocabularyTree> vocabulary;
+  std::unique_ptr<BowGlobalDescriptor> bow_backend;
   std::vector<BowVector> bow(n);
-  pool.parallelFor(n, [&](std::size_t i) { bow[i] = vocabulary->bow(features[i].descriptors); });
-  const BowGlobalDescriptor bow_backend(vocabulary);
+  if (use_bow) {
+    cv::Mat all_descriptors;
+    for (const auto & f : features) {
+      if (!f.descriptors.empty()) {
+        all_descriptors.push_back(f.descriptors);
+      }
+    }
+    vocabulary =
+      std::make_shared<VocabularyTree>(VocabularyTree::train(all_descriptors, vocabulary_params));
+    all_descriptors.release();
+    std::vector<std::vector<uint32_t>> words(n);
+    pool.parallelFor(
+      n, [&](std::size_t i) { words[i] = vocabulary->words(features[i].descriptors); });
+    vocabulary->computeIdf(words);
+    pool.parallelFor(n, [&](std::size_t i) { bow[i] = vocabulary->bow(features[i].descriptors); });
+    bow_backend = std::make_unique<BowGlobalDescriptor>(vocabulary);
+  }
+  // The keyframes' global descriptors, in either representation.
+  const auto globalDescriptor = [&](std::size_t i) {
+    return use_bow ? GlobalDescriptor{{}, bow[i]} : GlobalDescriptor{dense[i], {}};
+  };
   report(BuildStage::kVocabulary, 1, 1);
   stats.stage_seconds[static_cast<int>(BuildStage::kVocabulary)] = watch.lap();
 
   // --- Pair selection --------------------------------------------------------------------------
   report(BuildStage::kPairs, 0, 1);
-  BowIndex index;
+  std::unique_ptr<IRetrievalIndex> index;
+  if (use_bow) {
+    index = std::make_unique<BowIndex>();
+  } else {
+    index = std::make_unique<DenseIndex>();
+  }
   for (std::size_t i = 0; i < n; ++i) {
-    index.add(static_cast<int64_t>(i), GlobalDescriptor{{}, bow[i]});
+    index->add(static_cast<int64_t>(i), globalDescriptor(i));
   }
   std::vector<std::vector<int>> retrieved(n);
   pool.parallelFor(n, [&](std::size_t i) {
     for (const auto & candidate :
-         index.search(GlobalDescriptor{{}, bow[i]}, config.pairs.retrieval_k + 1)) {
+         index->search(globalDescriptor(i), config.pairs.retrieval_k + 1)) {
       if (candidate.id != static_cast<int64_t>(i)) {
         retrieved[i].push_back(static_cast<int>(candidate.id));
       }
@@ -315,7 +361,7 @@ BuildStats buildMap(
   // --- Matching and two-view verification ------------------------------------------------------
   const std::string matcher_name =
     config.matcher == "auto" ? defaultMatcherFor(descriptor_type) : config.matcher;
-  const auto matcher = registry.createMatcher(matcher_name, config.matcher_options);
+  const auto matcher = backends.createMatcher(matcher_name, withRuntime(config.matcher_options));
   std::vector<PairMatches> verified(pairs.size());
   report(BuildStage::kMatching, 0, pairs.size());
   chunked(
@@ -634,22 +680,26 @@ BuildStats buildMap(
 
     const auto addBackend = [&](const std::string & role, const BackendId & id) {
       return database.insertBackend(
-        {0, role, id.name, id.version, "", id.config, configSha256(id)});
+        {0, role, id.name, id.version, id.model_sha256, id.config, configSha256(id)});
     };
     const int64_t local_id = addBackend("local", extractor->id());
-    const int64_t global_id = addBackend("global", bow_backend.id());
+    const int64_t global_id =
+      addBackend("global", use_bow ? bow_backend->id() : learned_global->id());
     addBackend("matcher", matcher->id());
-    const auto vocabulary_data = vocabulary->serialize();
-    BackendId vocabulary_backend{
-      "vocab_tree", "1",
-      "branching: " + std::to_string(vocabulary_params.branching) +
-        "\ndepth: " + std::to_string(vocabulary_params.depth) + "\niterations: " +
-        std::to_string(vocabulary_params.iterations) + "\nmax_training_descriptors: " +
-        std::to_string(vocabulary_params.max_training_descriptors) +
-        "\nseed: " + std::to_string(vocabulary_params.seed) + "\n"};
-    const int64_t vocabulary_id = addBackend("vocabulary", vocabulary_backend);
-    database.insertVocabulary(
-      {vocabulary_id, vocabulary_params.branching, vocabulary_params.depth, vocabulary_data});
+    if (use_bow) {
+      const auto vocabulary_data = vocabulary->serialize();
+      BackendId vocabulary_backend{
+        "vocab_tree", "1",
+        "branching: " + std::to_string(vocabulary_params.branching) +
+          "\ndepth: " + std::to_string(vocabulary_params.depth) + "\niterations: " +
+          std::to_string(vocabulary_params.iterations) + "\nmax_training_descriptors: " +
+          std::to_string(vocabulary_params.max_training_descriptors) +
+          "\nseed: " + std::to_string(vocabulary_params.seed) + "\n",
+        ""};
+      const int64_t vocabulary_id = addBackend("vocabulary", vocabulary_backend);
+      database.insertVocabulary(
+        {vocabulary_id, vocabulary_params.branching, vocabulary_params.depth, vocabulary_data});
+    }
 
     std::vector<int64_t> keyframe_ids(n);
     Mat3 unknown_covariance;
@@ -691,7 +741,7 @@ BuildStats buildMap(
       }
       database.insertLocalFeatures(db::encodeLocalFeatures(keyframe_ids[i], local_id, stored));
       database.insertGlobalDescriptor(db::encodeGlobalDescriptor(
-        keyframe_ids[i], global_id, GlobalDescriptor{{}, bow[i]}, config.global_dtype));
+        keyframe_ids[i], global_id, globalDescriptor(i), config.global_dtype));
     }
     for (const Landmark & landmark : landmarks) {
       // Representative descriptor: the medoid of the track's descriptors.

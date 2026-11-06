@@ -135,7 +135,7 @@ BackendId BowGlobalDescriptor::id() const
   config.add("branching", params.branching)
     .add("depth", params.depth)
     .add("vocabulary_sha256", sha256Hex(data.data(), data.size()));
-  return {"bow", "1", config.str()};
+  return {"bow", "1", config.str(), ""};
 }
 
 }  // namespace landfall

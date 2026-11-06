@@ -45,6 +45,7 @@ landfall_link_package(landfall_ros_compat INTERFACE cv_bridge rosbag2_storage)
 # ROS <-> core glue shared by the nodes and the CLI: conversions, TF pose source, IMU gravity,
 # the keyframe gate, the bag reader and offline queries of a bag.
 add_library(landfall_ros_common SHARED
+  src/backends.cpp
   src/bag_query.cpp
   src/bag_reader.cpp
   src/conversions.cpp
@@ -58,6 +59,11 @@ target_link_libraries(landfall_ros_common
   PUBLIC landfall_ros_compat landfall_core::landfall_core landfall_core::landfall_core_build
   PRIVATE opencv_imgcodecs
 )
+# The learned backends, when landfall_core was built with ONNX Runtime (docs/models.md).
+if(TARGET landfall_core::landfall_core_onnx)
+  target_link_libraries(landfall_ros_common PRIVATE landfall_core::landfall_core_onnx)
+  target_compile_definitions(landfall_ros_common PRIVATE LANDFALL_WITH_ONNX)
+endif()
 landfall_link_package(landfall_ros_common PUBLIC
   builtin_interfaces geometry_msgs rclcpp rosbag2_cpp rosbag2_storage sensor_msgs tf2 tf2_msgs)
 landfall_set_cxx_standard(landfall_ros_common)

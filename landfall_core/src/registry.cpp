@@ -14,7 +14,6 @@
 
 #include "landfall/registry.hpp"
 
-#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -28,104 +27,6 @@ namespace landfall
 
 namespace
 {
-
-// Reads typed values out of BackendOptions and rejects keys nobody asked for.
-class OptionReader
-{
-public:
-  OptionReader(std::string backend, const BackendOptions & options)
-  : backend_(std::move(backend)), options_(options)
-  {
-  }
-
-  void read(const std::string & key, int * value)
-  {
-    if (const std::string * text = find(key)) {
-      std::size_t used = 0;
-      try {
-        *value = std::stoi(*text, &used);
-      } catch (const std::exception &) {
-        used = 0;
-      }
-      check(used != 0 && used == text->size(), key, *text);
-    }
-  }
-
-  void read(const std::string & key, double * value)
-  {
-    if (const std::string * text = find(key)) {
-      std::size_t used = 0;
-      try {
-        *value = std::stod(*text, &used);
-      } catch (const std::exception &) {
-        used = 0;
-      }
-      check(used != 0 && used == text->size(), key, *text);
-    }
-  }
-
-  void read(const std::string & key, bool * value)
-  {
-    if (const std::string * text = find(key)) {
-      check(*text == "true" || *text == "false", key, *text);
-      *value = *text == "true";
-    }
-  }
-
-  void readGrid(const std::string & key, GridSize * grid)
-  {
-    if (const std::string * text = find(key)) {
-      const auto x = text->find('x');
-      bool ok = x != std::string::npos;
-      if (ok) {
-        try {
-          grid->cols = std::stoi(text->substr(0, x));
-          grid->rows = std::stoi(text->substr(x + 1));
-        } catch (const std::exception &) {
-          ok = false;
-        }
-      }
-      check(ok && grid->cols > 0 && grid->rows > 0, key, *text);
-    }
-  }
-
-  /// Accepts a key whose value must equal `expected` (fixed properties such as a normalization).
-  void expect(const std::string & key, const std::string & expected)
-  {
-    if (const std::string * text = find(key)) {
-      check(*text == expected, key, *text);
-    }
-  }
-
-  void finish() const
-  {
-    for (const auto & [key, value] : options_) {
-      if (used_.count(key) == 0) {
-        throw std::invalid_argument("backend '" + backend_ + "' has no option '" + key + "'");
-      }
-    }
-  }
-
-private:
-  const std::string * find(const std::string & key)
-  {
-    used_.insert(key);
-    const auto it = options_.find(key);
-    return it == options_.end() ? nullptr : &it->second;
-  }
-
-  void check(bool ok, const std::string & key, const std::string & text) const
-  {
-    if (!ok) {
-      throw std::invalid_argument(
-        "backend '" + backend_ + "': invalid value '" + text + "' for option '" + key + "'");
-    }
-  }
-
-  std::string backend_;
-  const BackendOptions & options_;
-  std::set<std::string> used_;
-};
 
 template <typename Factory>
 std::vector<std::string> keys(const std::map<std::string, Factory> & factories)
@@ -188,6 +89,31 @@ std::unique_ptr<IMatcher> BackendRegistry::createMatcher(
   return it->second(options);
 }
 
+void BackendRegistry::addGlobalDescriptor(const std::string & name, GlobalDescriptorFactory factory)
+{
+  global_descriptors_[name] = std::move(factory);
+}
+
+std::unique_ptr<IGlobalDescriptor> BackendRegistry::createGlobalDescriptor(
+  const std::string & name, const BackendOptions & options) const
+{
+  const auto it = global_descriptors_.find(name);
+  if (it == global_descriptors_.end()) {
+    throw std::invalid_argument("unknown global descriptor backend '" + name + "'");
+  }
+  return it->second(options);
+}
+
+std::vector<std::string> BackendRegistry::globalDescriptorNames() const
+{
+  return keys(global_descriptors_);
+}
+
+bool BackendRegistry::hasGlobalDescriptor(const std::string & name) const
+{
+  return global_descriptors_.count(name) > 0;
+}
+
 std::vector<std::string> BackendRegistry::localFeatureNames() const
 {
   return keys(local_features_);
@@ -199,7 +125,7 @@ void registerBuiltinBackends(BackendRegistry & registry)
 {
   registry.addLocalFeatures("orb", [](const BackendOptions & options) {
     OrbParams p;
-    OptionReader reader("orb", options);
+    BackendOptionReader reader("orb", options);
     reader.read("max_keypoints", &p.max_keypoints);
     reader.read("oversample", &p.oversample);
     reader.read("scale_factor", &p.scale_factor);
@@ -207,12 +133,13 @@ void registerBuiltinBackends(BackendRegistry & registry)
     reader.read("fast_threshold", &p.fast_threshold);
     reader.read("min_fast_threshold", &p.min_fast_threshold);
     reader.readGrid("grid", &p.grid);
+    reader.ignoreRuntimeOptions();
     reader.finish();
     return std::make_unique<OrbFeatures>(p);
   });
   registry.addLocalFeatures("sift", [](const BackendOptions & options) {
     SiftParams p;
-    OptionReader reader("sift", options);
+    BackendOptionReader reader("sift", options);
     reader.read("max_keypoints", &p.max_keypoints);
     reader.read("contrast_threshold", &p.contrast_threshold);
     reader.read("edge_threshold", &p.edge_threshold);
@@ -220,21 +147,24 @@ void registerBuiltinBackends(BackendRegistry & registry)
     reader.read("octave_layers", &p.octave_layers);
     reader.readGrid("grid", &p.grid);
     reader.expect("normalization", "rootsift");
+    reader.ignoreRuntimeOptions();
     reader.finish();
     return std::make_unique<SiftFeatures>(p);
   });
   registry.addMatcher("ratio", [](const BackendOptions & options) {
     RatioMatcherParams p;
-    OptionReader reader("ratio", options);
+    BackendOptionReader reader("ratio", options);
     reader.read("ratio", &p.ratio);
     reader.read("mutual", &p.mutual);
+    reader.ignoreRuntimeOptions();
     reader.finish();
     return std::make_unique<RatioMatcher>(p);
   });
   registry.addMatcher("mnn", [](const BackendOptions & options) {
     MutualNearestParams p;
-    OptionReader reader("mnn", options);
+    BackendOptionReader reader("mnn", options);
     reader.read("min_cosine", &p.min_cosine);
+    reader.ignoreRuntimeOptions();
     reader.finish();
     return std::make_unique<MutualNearestMatcher>(p);
   });

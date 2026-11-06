@@ -82,5 +82,7 @@ __pycache__/
 # Downloaded or exported models and generated databases (never committed)
 /models/
 *.onnx
+# ... except the synthetic test models: tiny graphs without trained weights (landfall_tools/export/synthetic.py)
+!/landfall_core/test/data/synthetic_*.onnx
 *.landfall.db
 *.landfall.db-*

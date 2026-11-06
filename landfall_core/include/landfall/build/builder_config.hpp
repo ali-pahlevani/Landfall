@@ -48,8 +48,13 @@ struct BuilderConfig
   BackendOptions local_options;        ///< (features.*) options of the local backend
   std::string matcher = "auto";        ///< (backend.matcher) auto = ratio or mnn by descriptor type
   BackendOptions matcher_options;      ///< (matching.*)
-  std::string global_backend = "bow";  ///< (backend.global)
-  VocabularyParams vocabulary;         ///< (vocab.*)
+  std::string global_backend = "bow";  ///< (backend.global) bow, or a learned backend
+  BackendOptions global_options;       ///< (global.*) options of a learned global backend
+  VocabularyParams vocabulary;         ///< (vocab.*) bow only
+  /// (backend.models_dir) where learned backends' models are; "": see modelsDir(). How the build
+  /// runs, not what it computes: neither this nor execution_provider is stored in the database.
+  std::string models_dir;
+  std::string execution_provider = "cpu";  ///< (backend.execution_provider) cpu, cuda, tensorrt
 
   PairSelectionParams pairs;                     ///< (pairs.*)
   int pair_min_inliers = 20;                     ///< (pairs.min_inliers)

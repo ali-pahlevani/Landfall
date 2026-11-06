@@ -15,11 +15,17 @@ jobs:
     name: Repository policies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: TODOs are registered in docs/TODO.md
         run: scripts/check_todos.sh
       - name: No ament_target_dependencies, Python only where allowed
         run: scripts/check_policies.sh
+      - name: Python tools (flake8)
+        # Findings as check annotations, readable without a GitHub login.
+        run: >-
+          pipx run flake8==7.1.1 --max-line-length 99
+          --format '::error file=%(path)s,line=%(row)d,col=%(col)d::%(code)s %(text)s'
+          landfall_tools
 
   format:
     name: clang-format 18
@@ -27,7 +33,7 @@ jobs:
     # Jazzy's Ubuntu 24.04 ships clang-format 18, the pinned version.
     container: ros:jazzy-ros-base
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install clang-format
         run: apt-get update && apt-get install -y --no-install-recommends clang-format
       - name: Check formatting
@@ -41,7 +47,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: src/landfall
       - name: Install dependencies and clang-tidy

@@ -80,6 +80,22 @@ All notable changes to this project are documented here. The format follows
 - Tests: scan check modes, inconsistent odometry, the auto trigger (in-process, and in a launch test
   where it relocalizes a scattered AMCL once), the extrinsics monitor (silent on the recording,
   warns about a camera moved by 3 cm and 2°), preemption, and the scan check on the fixture.
+- Learned backends on ONNX Runtime (M5, optional library `landfall_core_onnx`): XFeat local
+  features, with the post-processing in C++ following XFeat's `detectAndCompute` and PyTorch's
+  `grid_sample` arithmetic, and a generic ONNX global descriptor with EigenPlaces and MegaLoc
+  presets. CPU by default; CUDA and TensorRT providers when ONNX Runtime has them (unverified).
+- Model management: `landfall_tools/models.yaml` (pinned upstream files, licenses, checksums),
+  `scripts/fetch_models.sh`, export scripts for XFeat and EigenPlaces, and MegaLoc's own ONNX file.
+  A database records the SHA-256 of its models and refuses a missing or different one.
+- `landfall build` and `landfall query` take `--models-dir` and `--execution-provider`; the
+  relocalizer takes `backend.models_dir` and `backend.execution_provider`.
+- `docs/models.md`: presets, usage, the ONNX contracts, parity, and the license and provenance
+  audit of the models.
+- Tests of the learned path without downloads: synthetic ONNX models and parity files
+  (`landfall_core/test/data`), the C++ post-processing against torch's own `grid_sample` (exact),
+  and a learned global descriptor end to end through the builder, the database and the localizer.
+  A CI job builds without ONNX Runtime; the build also compiles against Ubuntu 26.04's ONNX
+  Runtime 1.23.2.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
@@ -95,3 +111,14 @@ All notable changes to this project are documented here. The format follows
 - Defaults: `ambiguity.max_score_ratio` 0 (any second place that passes every check makes a frame
   AMBIGUOUS), `scan_check.min_hit_ratio` 0.85, `scan_check.refine_pose` false.
 - CI reports build errors and failing tests as check annotations, readable without a GitHub login.
+- `onnxruntime_vendor` is a dependency of `landfall_core`: the learned backends are built by
+  default (`-DLANDFALL_WITH_ONNXRUNTIME=OFF` leaves them out).
+- The localizer gives global descriptors the color image (bag of words ignores it).
+- CI: `actions/checkout` and `actions/upload-artifact` v7 (Node 24); flake8 checks
+  `landfall_tools`.
+
+### Fixed
+- The auto-trigger node test expected no third automatic request after shortening the cooldown,
+  but with the localization still uncertain the trigger rightly keeps firing; it failed on GitHub's
+  arm64 runner. The odometry-consistency and preemption tests no longer depend on timing, and the
+  extrinsics monitor tests take one-frame samples.

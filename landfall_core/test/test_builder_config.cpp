@@ -130,7 +130,11 @@ TEST(BuilderConfig, RejectsTyposAndInvalidValues)
   EXPECT_NE(errorOf("ba: {max_shift_xy: far}").find("'ba.max_shift_xy'"), std::string::npos);
   EXPECT_NE(errorOf("ba: {loss: huber}").find("cauchy"), std::string::npos);
   EXPECT_NE(errorOf("ba: {prior_std_xy: 0.02}").find("together"), std::string::npos);
-  EXPECT_NE(errorOf("backend: {global: megaloc}").find("bow"), std::string::npos);
+  // Learned backends are checked when the build creates them; their options stay out of bow's.
+  EXPECT_EQ(errorOf("backend: {global: megaloc}\nglobal: {width: 322}"), "");
+  EXPECT_NE(errorOf("global: {width: 322}").find("learned"), std::string::npos);
+  EXPECT_NE(
+    errorOf("backend: {execution_provider: gpu}").find("execution_provider"), std::string::npos);
   EXPECT_NE(errorOf("bag: {pose_source: vio}").find("pose_source"), std::string::npos);
   EXPECT_NE(errorOf("triangulation: {depth_range: [1]}").find("depth_range"), std::string::npos);
   EXPECT_NE(errorOf("pairs: 3").find("mapping"), std::string::npos);

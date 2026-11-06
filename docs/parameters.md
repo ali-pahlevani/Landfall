@@ -20,7 +20,9 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `auto_trigger.max_std_yaw_deg` | double | `15` | [1, 180] | at runtime | The localization is uncertain above this std in yaw, degrees |
 | `auto_trigger.pose_topic` | string | `"amcl_pose"` |  | at startup | PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor) |
 | `autostart` | bool | `false` |  | at startup | relocalizer_node executable: configure and activate on start |
-| `backend.num_threads` | integer | `0` | [0, 64] | at startup | Threads solving places in parallel; 0: hardware concurrency |
+| `backend.execution_provider` | string | `"cpu"` |  | at startup | Where learned backends run: cpu, cuda or tensorrt (the last two need an ONNX Runtime built with them) |
+| `backend.models_dir` | string | `""` |  | at startup | Models of learned backends (docs/models.md); empty: $LANDFALL_MODELS_DIR, else ~/.local/share/landfall/models |
+| `backend.num_threads` | integer | `0` | [0, 64] | at startup | Threads solving places in parallel, and ONNX Runtime's for learned backends; 0: hardware concurrency |
 | `bond.enabled` | bool | `true` |  | at startup | Heartbeat bond with nav2_lifecycle_manager |
 | `camera_info.topic` | string | `"camera_info"` |  | at startup | sensor_msgs/CameraInfo topic |
 | `consistency.max_rotation_error_deg` | double | `5` | [0.5, 45] | at runtime | Largest disagreement with odometry between frames, degrees |

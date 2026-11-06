@@ -25,7 +25,9 @@ Under development toward **v1.0.0**. Done:
 - M4: the safety layer: LiDAR verification of every pose, the automatic trigger, the extrinsics
   monitor and the shadow log.
 
-Next: M5 (learned features and global descriptors on ONNX Runtime, optional).
+In progress: M5, learned features and global descriptors on ONNX Runtime (optional). The
+backends and their tests are in place; the trained models are not published yet, see
+[`docs/models.md`](docs/models.md).
 
 The relocalizer has been tested in simulation only; field validation on a real robot comes last
 (M8). The full plan, including interfaces, algorithms and milestones, is in

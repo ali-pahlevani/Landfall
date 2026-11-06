@@ -167,9 +167,12 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   backend.read("local", &b.local_backend);
   backend.read("global", &b.global_backend);
   backend.read("matcher", &b.matcher);
+  backend.read("models_dir", &b.models_dir);
+  backend.read("execution_provider", &b.execution_provider);
   backend.finish();
   b.local_options = top.options("features");
   b.matcher_options = top.options("matching");
+  b.global_options = top.options("global");
 
   Section vocab = top.child("vocab");
   vocab.read("branching", &b.vocabulary.branching);
@@ -276,7 +279,14 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
     "'bag.gravity_source' must be auto, imu or flat_floor");
   require(bag.imu_max_age > 0.0, "'bag.imu_max_age' must be positive");
   g.require_covariance = bag.pose_source == "tf_with_covariance";
-  require(b.global_backend == "bow", "'backend.global': only bow is available in this build");
+  require(!b.global_backend.empty(), "'backend.global' must name a backend");
+  require(
+    b.global_backend != "bow" || b.global_options.empty(),
+    "'global' options are for learned global backends; bow uses 'vocab'");
+  require(
+    b.execution_provider == "cpu" || b.execution_provider == "cuda" ||
+      b.execution_provider == "tensorrt",
+    "'backend.execution_provider' must be cpu, cuda or tensorrt");
   require(b.threads >= 0, "'threads' must be >= 0");
   require(b.vocabulary.branching >= 2 && b.vocabulary.depth >= 1, "invalid 'vocab' size");
   require(b.pairs.max_per_keyframe >= 1, "'pairs.max_per_keyframe' must be >= 1");
@@ -309,6 +319,9 @@ std::string canonicalYaml(const BuildConfigFile & config)
   }
   for (const auto & [key, value] : b.matcher_options) {
     sections["matching"][key] = text(value);
+  }
+  for (const auto & [key, value] : b.global_options) {
+    sections["global"][key] = text(value);
   }
   sections["vocab"] = {
     {"branching", std::to_string(b.vocabulary.branching)},

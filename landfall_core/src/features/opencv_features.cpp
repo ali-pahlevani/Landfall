@@ -208,7 +208,7 @@ BackendId OrbFeatures::id() const
     .add("fast_threshold", params_.fast_threshold)
     .add("min_fast_threshold", params_.min_fast_threshold)
     .add("grid", gridText(params_.grid));
-  return {"orb", "1", config.str()};
+  return {"orb", "1", config.str(), ""};
 }
 
 SiftFeatures::SiftFeatures(const SiftParams & params) : params_(params)
@@ -255,7 +255,7 @@ BackendId SiftFeatures::id() const
     .add("octave_layers", params_.octave_layers)
     .add("grid", gridText(params_.grid))
     .add("normalization", std::string("rootsift"));
-  return {"sift", "1", config.str()};
+  return {"sift", "1", config.str(), ""};
 }
 
 }  // namespace landfall

@@ -26,9 +26,10 @@ namespace landfall
 /// can refuse a database built with different backends.
 struct BackendId
 {
-  std::string name;     ///< e.g. "orb"
-  std::string version;  ///< bumped whenever the backend's output changes
-  std::string config;   ///< canonical "key: value" lines, sorted by key
+  std::string name;          ///< e.g. "orb"
+  std::string version;       ///< bumped whenever the backend's output changes
+  std::string config;        ///< canonical "key: value" lines, sorted by key
+  std::string model_sha256;  ///< the model file's, for learned backends; empty otherwise
 };
 
 /// SHA-256 of the canonical configuration.

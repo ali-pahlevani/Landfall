@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <random>
@@ -28,6 +29,9 @@
 #include "landfall/query/localization_map.hpp"
 #include "landfall/query/localizer.hpp"
 #include "synthetic_map.hpp"
+#ifdef LANDFALL_TEST_ONNX
+#include "landfall/onnx/backends.hpp"
+#endif
 #include "test_utils.hpp"
 
 using landfall::Features;
@@ -507,3 +511,105 @@ TEST_F(DuplicatedRoomTest, IsAmbiguousAndNeverWrong)
 }
 
 }  // namespace
+
+#ifdef LANDFALL_TEST_ONNX
+
+namespace
+{
+
+// The image of a camera at `base`, for a global descriptor: its color encodes where the camera is
+// (red: x, green: y), so the synthetic model's normalized channel means retrieve keyframes near
+// it. Orientation is left to the local features and the geometry.
+cv::Mat positionImage(const landfall::CameraModel & camera, const Pose2 & base)
+{
+  return {
+    camera.height(), camera.width(), CV_8UC3,
+    cv::Scalar(128.0, 128.0 + 9.0 * base.y, 128.0 + 9.0 * base.x)};
+}
+
+}  // namespace
+
+// The learned path end to end: a global descriptor on ONNX Runtime (the synthetic model standing
+// in for EigenPlaces) through the builder, the database and the localizer.
+TEST(LearnedGlobalDescriptor, BuildsAndLocalizesThroughOnnxRuntime)
+{
+  const std::string data = LANDFALL_TEST_DATA_DIR;
+  const landfall::test::TempDir dir;
+  const World world = makeWorld({Vec2::Zero()}, 400);
+  const auto path = landfall::test::loopBothWays(0, 0, 10, 6, 1.0);
+  landfall::BackendRegistry registry;
+  landfall::registerBuiltinBackends(registry);
+  landfall::onnx::registerBackends(registry);
+
+  landfall::BuildInput input;
+  input.map.grid = world.grid;
+  input.map.yaml_text = "image: room.pgm\n";
+  input.map.yaml_sha256 = "yaml";
+  input.map.image_sha256 = "image";
+  input.sessions.push_back({"synthetic", "test", "tf_with_covariance", 0, ""});
+  input.cameras.push_back({"camera_optical", world.camera, world.T_base_cam});
+  landfall::Mat3 covariance = landfall::Mat3::Zero();
+  covariance(0, 0) = covariance(1, 1) = 0.01 * 0.01;
+  covariance(2, 2) = deg(0.2) * deg(0.2);
+  for (std::size_t k = 0; k < path.size(); ++k) {
+    landfall::BuildKeyframe keyframe;
+    keyframe.stamp_ns = static_cast<int64_t>(k) * 1'000'000'000;
+    keyframe.prior = path[k];
+    keyframe.covariance = covariance;
+    keyframe.T_base_cam = world.T_base_cam;
+    keyframe.features =
+      observe(world, landfall::cameraPose(path[k], world.T_base_cam), static_cast<int>(k));
+    keyframe.load_image = [&world, pose = path[k]] { return positionImage(world.camera, pose); };
+    input.keyframes.push_back(keyframe);
+  }
+  auto config = landfall::parseBuildConfig(
+    "backend: {global: eigenplaces}\nglobal: {model: synthetic_global.onnx}\n");
+  config.builder.models_dir = data;
+  const std::string db = dir.file("learned.landfall.db");
+  landfall::buildMap(input, config, db, {}, &registry);
+
+  landfall::LocalizationMap::Options options;
+  options.registry = &registry;
+  options.models_dir = data;
+  landfall::Localizer localizer(landfall::LocalizationMap::load(db, options), {});
+  std::mt19937 rng(11);
+  std::uniform_real_distribution<double> lateral(-0.3, 0.3);
+  std::uniform_real_distribution<double> turn(-deg(8.0), deg(8.0));
+  int localized = 0;
+  int wrong = 0;
+  for (std::size_t k = 0; k < path.size(); k += 2) {
+    const Pose2 truth = landfall::compose(path[k], {0.5, lateral(rng), turn(rng)});
+    auto frame = query(world, truth, 1000 + static_cast<int>(k));
+    frame.image = positionImage(world.camera, truth);
+    const auto result = localizer.localize(frame);
+    if (result.pose) {
+      ++localized;
+      wrong += landfall::translationDistance(*result.pose, truth) > 0.25 ? 1 : 0;
+    }
+  }
+  RecordProperty("localized", localized);
+  EXPECT_EQ(wrong, 0);
+  EXPECT_GE(localized, 29);  // of 32
+
+  // Another model under the same file name, a missing model, no learned backends: refused.
+  const landfall::test::TempDir other;
+  std::filesystem::copy_file(
+    data + "/synthetic_global_other.onnx", other.file("synthetic_global.onnx"));
+  options.models_dir = other.file("");
+  try {
+    landfall::LocalizationMap::load(db, options);
+    ADD_FAILURE() << "loaded with another model";
+  } catch (const std::runtime_error & e) {
+    EXPECT_NE(std::string(e.what()).find("was built with model"), std::string::npos) << e.what();
+  }
+  options.models_dir = dir.file("no_models");
+  EXPECT_THROW(landfall::LocalizationMap::load(db, options), std::runtime_error);
+  try {
+    landfall::LocalizationMap::load(db);
+    ADD_FAILURE() << "loaded without the learned backends";
+  } catch (const std::runtime_error & e) {
+    EXPECT_NE(std::string(e.what()).find("doesn't provide"), std::string::npos) << e.what();
+  }
+}
+
+#endif  // LANDFALL_TEST_ONNX

@@ -24,6 +24,7 @@
 #include "landfall/build/builder_config.hpp"
 #include "landfall/camera_model.hpp"
 #include "landfall/grid/map_loader.hpp"
+#include "landfall/registry.hpp"
 
 namespace landfall
 {
@@ -118,14 +119,16 @@ const char * toString(BuildStage stage);
 /// (stage, done, total); called from the building thread only.
 using BuildProgress = std::function<void(BuildStage, std::size_t, std::size_t)>;
 
-/// Builds a map database from keyframes with known poses: features, vocabulary and bag-of-words,
-/// pair selection, matching with two-view verification, tracks, triangulation with the poses held
-/// fixed, the optional bounded pose-prior BA, re-triangulation, and the database (written in one
-/// transaction; its content hash depends only on the input and the configuration, not on the
-/// number of threads). `db_path` must not exist. Throws std::runtime_error on invalid input.
+/// Builds a map database from keyframes with known poses: features, global descriptors (a
+/// vocabulary and bags of words, or a learned backend), pair selection, matching with two-view
+/// verification, tracks, triangulation with the poses held fixed, the optional bounded
+/// pose-prior BA, re-triangulation, and the database (written in one transaction; its content
+/// hash depends only on the input and the configuration, not on the number of threads).
+/// `registry` provides the backends; nullptr: the built-in ones (registerBuiltinBackends()).
+/// `db_path` must not exist. Throws std::runtime_error on invalid input.
 BuildStats buildMap(
   const BuildInput & input, const BuildConfigFile & config, const std::string & db_path,
-  const BuildProgress & progress = {});
+  const BuildProgress & progress = {}, const BackendRegistry * registry = nullptr);
 
 /// JSON of the statistics (meta `build_report`).
 std::string toJson(const BuildStats & stats);

@@ -10,6 +10,7 @@ find_package(yaml-cpp REQUIRED)
 find_package(Ceres REQUIRED)
 find_package(Threads REQUIRED)
 include(cmake/PoseLib.cmake)
+include(cmake/LandfallOnnxRuntime.cmake)
 
 # yaml-cpp 0.7 (Humble) exports `yaml-cpp`, 0.8 exports `yaml-cpp::yaml-cpp`.
 if(TARGET yaml-cpp::yaml-cpp)
@@ -30,6 +31,7 @@ configure_file(include/landfall/version.hpp.in
 
 # Runtime library: everything the online relocalizer needs. Doesn't link Ceres.
 add_library(landfall_core SHARED
+  src/backend_options.cpp
   src/camera_model.cpp
   src/db/codec.cpp
   src/db/database.cpp
@@ -104,10 +106,31 @@ target_link_libraries(landfall_core_build
 landfall_set_cxx_standard(landfall_core_build)
 landfall_set_warnings(landfall_core_build)
 
-install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME} PATTERN "*.in" EXCLUDE)
+# Learned backends on ONNX Runtime (optional; docs/models.md). ONNX Runtime stays private: none of
+# its headers is installed or needed downstream, which tests for landfall_core::landfall_core_onnx.
+set(_landfall_targets landfall_core landfall_core_build)
+set(_landfall_header_excludes PATTERN "*.in" EXCLUDE)
+if(LANDFALL_ONNXRUNTIME_TARGET)
+  add_library(landfall_core_onnx SHARED
+    src/onnx/backends.cpp
+    src/onnx/global_descriptor.cpp
+    src/onnx/session.cpp
+    src/onnx/xfeat.cpp
+  )
+  target_link_libraries(landfall_core_onnx
+    PUBLIC landfall_core
+    PRIVATE ${LANDFALL_ONNXRUNTIME_TARGET} opencv_imgproc)
+  landfall_set_cxx_standard(landfall_core_onnx)
+  landfall_set_warnings(landfall_core_onnx)
+  list(APPEND _landfall_targets landfall_core_onnx)
+else()
+  list(APPEND _landfall_header_excludes PATTERN "onnx" EXCLUDE)
+endif()
+
+install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME} ${_landfall_header_excludes})
 install(FILES "${_landfall_generated_include}/landfall/version.hpp"
   DESTINATION include/${PROJECT_NAME}/landfall)
-install(TARGETS landfall_core landfall_core_build EXPORT export_landfall_core
+install(TARGETS ${_landfall_targets} EXPORT export_landfall_core
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -162,6 +185,19 @@ if(BUILD_TESTING)
   landfall_core_test(test_trajectory)
   landfall_core_test(test_localizer TIMEOUT 300 LIBRARIES landfall_core_build)
   landfall_core_test(test_auto_trigger)
+  if(TARGET landfall_core_onnx)
+    # The learned backends on synthetic models (test/data, landfall_tools/export/synthetic.py).
+    landfall_core_test(test_onnx LIBRARIES landfall_core_onnx opencv_imgproc)
+    target_compile_definitions(test_onnx PRIVATE
+      LANDFALL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+    # Parity with PyTorch: the synthetic models always, the real ones when they are present.
+    landfall_core_test(test_onnx_parity TIMEOUT 300 LIBRARIES landfall_core_onnx)
+    target_compile_definitions(test_onnx_parity PRIVATE
+      LANDFALL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+    target_link_libraries(test_localizer landfall_core_onnx)
+    target_compile_definitions(test_localizer PRIVATE LANDFALL_TEST_ONNX
+      LANDFALL_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  endif()
 endif()
 
 ament_export_targets(export_landfall_core HAS_LIBRARY_TARGET)

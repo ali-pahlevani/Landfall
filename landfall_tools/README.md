@@ -9,6 +9,11 @@ rosdep away from it, so nothing at runtime can depend on it.
 | Path | Content |
 |---|---|
 | `fixtures/depot_fixture.py` | cuts the `depot_small` test fixture out of a simulation recording (since M2; see `landfall_ros/test/fixtures/depot_small/README.md`) |
+| `models.yaml` | the learned models: pinned upstream files, licenses, SHA-256 of every file (M5, `docs/models.md`) |
+| `fetch_models.py` | downloads and checks them (`scripts/fetch_models.sh`) |
+| `export/xfeat.py`, `export/eigenplaces.py`, `export/megaloc.py` | make the ONNX models and their parity references from the pinned upstream files |
+| `export/synthetic.py` | the synthetic models and parity files of `landfall_core/test/data/` |
+| `requirements.txt` | pinned Python packages for all of the above |
 
-Model export, manifest and ONNX Runtime script arrive in M5, plotting in M7 (see `docs/PLAN.md`
-§11 and `docs/TODO.md` T-003).
+The ONNX Runtime install script (for custom GPU builds) and benchmark plotting come in M7
+(`docs/TODO.md` T-003).

@@ -32,6 +32,7 @@
 #include "landfall/interfaces/global_descriptor.hpp"
 #include "landfall/interfaces/local_features.hpp"
 #include "landfall/interfaces/retrieval_index.hpp"
+#include "landfall/registry.hpp"
 
 namespace landfall
 {
@@ -58,9 +59,22 @@ struct KeyframeFeatures
 class LocalizationMap
 {
 public:
+  struct Options
+  {
+    std::size_t feature_cache_size = 256;
+    /// The backends; nullptr: the built-in ones. Learned backends need a registry with
+    /// onnx::registerBackends().
+    const BackendRegistry * registry = nullptr;
+    std::string models_dir;                  ///< learned backends' models; "": see modelsDir()
+    std::string execution_provider = "cpu";  ///< cpu, cuda, tensorrt
+    int threads = 0;                         ///< ONNX Runtime threads; 0: its default
+  };
+
   /// Opens and validates `path`. Throws std::runtime_error with an actionable message: missing
-  /// file, wrong schema (run `landfall migrate`), not exactly one map and one camera, or backends
-  /// this build can't reproduce (rebuild the database).
+  /// file, wrong schema (run `landfall migrate`), not exactly one map and one camera, backends
+  /// this build can't reproduce (rebuild the database), or a learned backend whose model is
+  /// missing or differs from the one the database was built with.
+  static std::shared_ptr<LocalizationMap> load(const std::string & path, const Options & options);
   static std::shared_ptr<LocalizationMap> load(
     const std::string & path, std::size_t feature_cache_size = 256);
 

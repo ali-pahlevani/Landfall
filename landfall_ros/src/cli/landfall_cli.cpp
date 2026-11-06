@@ -38,6 +38,7 @@
 #include "landfall/grid/occupancy_grid.hpp"
 #include "landfall/query/localizer.hpp"
 #include "landfall/record/staging.hpp"
+#include "landfall/ros/backends.hpp"
 #include "landfall/ros/bag_query.hpp"
 #include "landfall/ros/bag_reader.hpp"
 #include "landfall/version.hpp"
@@ -69,14 +70,19 @@ commands:
 
 landfall build --map MAP.yaml --output OUT.landfall.db (--staging DIR | --bag BAG)...
                [--config BUILD.yaml] [--report-dir DIR] [--threads N]
-               [--map-semantics humble|jazzy]
+               [--map-semantics humble|jazzy] [--models-dir DIR] [--execution-provider P]
 landfall inspect DB
 landfall report DB [--output DIR]
 landfall verify DB [--map MAP.yaml] [--map-semantics humble|jazzy]
 landfall migrate DB [--no-backup]
 landfall query DB --bag BAG [--config BUILD.yaml] [--output RESULTS.csv] [--frames N]
                [--every N] [--skip-keyframes] [--set PARAMETER=VALUE]... [--threads N]
+               [--models-dir DIR] [--execution-provider P]
 landfall --version
+
+Learned backends (xfeat, eigenplaces, megaloc; docs/models.md) find their models in --models-dir,
+else backend.models_dir of BUILD.yaml, else $LANDFALL_MODELS_DIR, else
+~/.local/share/landfall/models. --execution-provider: cpu (default), cuda or tensorrt.
 )";
 
 // Minimal option parser: --name VALUE options (repeatable), --flag switches, positionals.
@@ -227,7 +233,7 @@ int build(const std::vector<std::string> & argv)
   const Args args(
     argv,
     {"--map", "--output", "--staging", "--bag", "--config", "--report-dir", "--threads",
-     "--map-semantics"},
+     "--map-semantics", "--models-dir", "--execution-provider"},
     {});
   if (!args.positional.empty()) {
     throw UsageError("unexpected argument " + args.positional.front());
@@ -251,6 +257,12 @@ int build(const std::vector<std::string> & argv)
     } catch (const std::exception &) {
       throw UsageError("--threads must be a number");
     }
+  }
+  if (const auto dir = args.one("--models-dir")) {
+    config.builder.models_dir = *dir;
+  }
+  if (const auto provider = args.one("--execution-provider")) {
+    config.builder.execution_provider = *provider;
   }
   const auto started = std::chrono::steady_clock::now();
 
@@ -314,7 +326,8 @@ int build(const std::vector<std::string> & argv)
   int last_stage = -1;
   std::size_t last_tenth = 0;
   const auto stats = landfall::buildMap(
-    input, config, output, [&](landfall::BuildStage stage, std::size_t done, std::size_t total) {
+    input, config, output,
+    [&](landfall::BuildStage stage, std::size_t done, std::size_t total) {
       const int index = static_cast<int>(stage);
       if (index != last_stage) {
         last_stage = index;
@@ -325,7 +338,8 @@ int build(const std::vector<std::string> & argv)
         last_tenth = std::max(tenth, done == total ? std::size_t{10} : tenth);
         std::cerr << "  " << landfall::toString(stage) << " " << done << "/" << total << "\n";
       }
-    });
+    },
+    &landfall::ros::backendRegistry());
 
   const std::string report_dir = args.one("--report-dir").value_or(output + ".report");
   const Database database = Database::open(output, Database::Access::kReadOnly);
@@ -377,7 +391,8 @@ int inspect(const std::vector<std::string> & argv)
   }
   for (const auto & b : db.backends()) {
     std::cout << "  backend " << b.role << ": " << b.name << " v" << b.version << " (config "
-              << b.config_sha256.substr(0, 12) << ")\n";
+              << b.config_sha256.substr(0, 12)
+              << (b.model_sha256.empty() ? "" : ", model " + b.model_sha256.substr(0, 12)) << ")\n";
   }
   const auto keyframes = db.keyframes();
   int flagged = 0;
@@ -620,7 +635,9 @@ struct ReplayedRequest
 int query(const std::vector<std::string> & argv)
 {
   const Args args(
-    argv, {"--bag", "--config", "--output", "--frames", "--every", "--set", "--threads"},
+    argv,
+    {"--bag", "--config", "--output", "--frames", "--every", "--set", "--threads", "--models-dir",
+     "--execution-provider"},
     {"--skip-keyframes"});
   const std::string db_path = onePositional(args, "database");
   const std::string bag_uri = args.required("--bag");
@@ -639,7 +656,13 @@ int query(const std::vector<std::string> & argv)
     setQueryParameter(settings, assignment);
   }
 
-  const auto map = landfall::LocalizationMap::load(db_path);
+  landfall::LocalizationMap::Options map_options;
+  map_options.registry = &landfall::ros::backendRegistry();
+  map_options.models_dir = args.one("--models-dir").value_or(config.builder.models_dir);
+  map_options.execution_provider =
+    args.one("--execution-provider").value_or(config.builder.execution_provider);
+  map_options.threads = settings.localizer.threads;
+  const auto map = landfall::LocalizationMap::load(db_path, map_options);
   landfall::Localizer localizer(map, settings.localizer);
   std::set<int64_t> keyframe_stamps;
   if (args.flag("--skip-keyframes")) {

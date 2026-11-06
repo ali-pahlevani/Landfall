@@ -100,6 +100,8 @@ private:
     std::string image_transport;
     std::string imu_topic;
     std::string imu_frame;
+    std::string models_dir;
+    std::string execution_provider;
     std::string output_mode;
     std::string output_topic;
     std::string output_service;

@@ -30,6 +30,7 @@
 #include "landfall/grid/map_loader.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
 #include "landfall/record/keyframe_selector.hpp"
+#include "landfall/ros/backends.hpp"
 #include "landfall/ros/compat/cv_bridge.hpp"
 #include "landfall/ros/conversions.hpp"
 #include "landfall/ros/parameters.hpp"
@@ -117,7 +118,19 @@ void RelocalizerNode::declareParameters()
   declare_parameter("imu.frame", "", describe("IMU frame in TF; empty: the messages' frame_id"));
   declare_parameter(
     "backend.num_threads", 0,
-    describeInt("Threads solving places in parallel; 0: hardware concurrency", 0, 64));
+    describeInt(
+      "Threads solving places in parallel, and ONNX Runtime's for learned backends; 0: hardware "
+      "concurrency",
+      0, 64));
+  declare_parameter(
+    "backend.models_dir", "",
+    describe("Models of learned backends (docs/models.md); empty: $LANDFALL_MODELS_DIR, else "
+             "~/.local/share/landfall/models"));
+  declare_parameter(
+    "backend.execution_provider", "cpu",
+    describe(
+      "Where learned backends run: cpu, cuda or tensorrt (the last two need an ONNX Runtime built "
+      "with them)"));
   declare_parameter(
     "output.mode", "topic",
     describe("topic (publish output.topic) or service (call AMCL's output.service)"));
@@ -364,6 +377,9 @@ RelocalizerNode::Settings RelocalizerNode::readSettings() const
   s.imu_topic = get_parameter("imu.topic").as_string();
   s.imu_frame = get_parameter("imu.frame").as_string();
   s.threads = static_cast<int>(get_parameter("backend.num_threads").as_int());
+  s.models_dir = expandHome(get_parameter("backend.models_dir").as_string());
+  s.execution_provider = get_parameter("backend.execution_provider").as_string();
+  requireOneOf("backend.execution_provider", s.execution_provider, {"cpu", "cuda", "tensorrt"});
   s.output_mode = get_parameter("output.mode").as_string();
   requireOneOf("output.mode", s.output_mode, {"topic", "service"});
   s.output_topic = get_parameter("output.topic").as_string();
@@ -586,11 +602,18 @@ void RelocalizerNode::loadDatabase()
   }
   try {
     const auto started = Clock::now();
-    map_ = LocalizationMap::load(settings_.database_path);
+    LocalizationMap::Options options;
+    options.registry = &backendRegistry();
+    options.models_dir = settings_.models_dir;
+    options.execution_provider = settings_.execution_provider;
+    options.threads = settings_.threads;
+    map_ = LocalizationMap::load(settings_.database_path, options);
     localizer_ = std::make_unique<Localizer>(map_, readThresholds().localizer);
     RCLCPP_INFO(
-      get_logger(), "map database %s: %zu keyframes, %zu landmarks (loaded in %.2f s)",
+      get_logger(),
+      "map database %s: %zu keyframes, %zu landmarks, backends %s + %s (loaded in %.2f s)",
       settings_.database_path.c_str(), map_->keyframes().size(), map_->numLandmarks(),
+      map_->localFeatures().id().name.c_str(), map_->globalDescriptor().id().name.c_str(),
       secondsSince(started));
   } catch (const std::exception & e) {
     map_.reset();

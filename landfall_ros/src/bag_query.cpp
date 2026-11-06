@@ -22,6 +22,7 @@
 
 #include "landfall/ros/bag_reader.hpp"
 #include "landfall/ros/conversions.hpp"
+#include "landfall/ros/scan_input.hpp"
 #include "tf2/exceptions.hpp"
 
 namespace landfall::ros
@@ -34,8 +35,14 @@ BagQueryCounts queryBagImages(
   const BagConfig & bag = options.bag;
   BagQueryCounts counts;
   counts.images = countBagImages(uri, bag.image_topic);
-  const BagSideData side =
-    readBagSideData(uri, bag.camera_info_topic, "", bag.imu_topic, bag.imu_frame);
+  const bool use_scans = options.scan_mode != ScanCheckMode::kDisabled;
+  const BagSideData side = readBagSideData(
+    uri, bag.camera_info_topic, "", bag.imu_topic, bag.imu_frame, use_scans ? bag.scan_topic : "");
+  if (options.scan_mode == ScanCheckMode::kRequired && side.scans.empty()) {
+    throw std::runtime_error(
+      "bag " + uri + " has no LaserScan on '" + bag.scan_topic +
+      "' and the scan check is required");
+  }
   if (!side.camera_info) {
     throw std::runtime_error(
       "bag " + uri + " has no camera_info on '" + bag.camera_info_topic + "'");
@@ -103,6 +110,17 @@ BagQueryCounts queryBagImages(
       } else if (gravity_source == GravitySource::kImu) {
         ++counts.skipped_gravity;
         return true;
+      }
+      if (use_scans) {
+        const auto max_offset = static_cast<int64_t>(options.scan_max_time_offset * 1e9);
+        if (const auto * scan = nearestScan(side.scans, stamp, max_offset)) {
+          frame.scan =
+            scanAtImage(*scan, *side.buffer, bag.frames.odom, bag.frames.base, stamp, nullptr);
+        }
+        if (!frame.scan && options.scan_mode == ScanCheckMode::kRequired) {
+          ++counts.skipped_scan;
+          return true;
+        }
       }
       frame.image = decode();
       FrameResult result = localizer.localize(frame);

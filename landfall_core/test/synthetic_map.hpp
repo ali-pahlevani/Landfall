@@ -19,10 +19,13 @@
 #define LANDFALL_CORE_SYNTHETIC_MAP_HPP_
 
 #include <cmath>
+#include <limits>
 #include <random>
 #include <vector>
 
 #include "landfall/camera_model.hpp"
+#include "landfall/grid/occupancy_grid.hpp"
+#include "landfall/grid/scan_verifier.hpp"
 #include "landfall/types.hpp"
 #include "synthetic_scene.hpp"
 
@@ -101,6 +104,77 @@ inline bool projectPoint(
     return false;
   }
   return camera.project(p, pixel) && camera.contains(*pixel, 2.0);
+}
+
+/// Marks the walls of the rectangle [x0, x1] x [y0, y1] occupied (two cells thick) and its inside
+/// free, leaving the rest of the grid as it is.
+inline void addRoomToGrid(OccupancyGrid * grid, double x0, double y0, double x1, double y1)
+{
+  for (int row = 0; row < grid->height; ++row) {
+    for (int col = 0; col < grid->width; ++col) {
+      const Vec2 c = grid->cellCenter(col, row);
+      const double half = grid->resolution;
+      const bool inside_outer =
+        c.x() >= x0 - half && c.x() <= x1 + half && c.y() >= y0 - half && c.y() <= y1 + half;
+      const bool inside_inner =
+        c.x() > x0 + half && c.x() < x1 - half && c.y() > y0 + half && c.y() < y1 - half;
+      auto & cell = grid->data[static_cast<std::size_t>(row) * grid->width + col];
+      if (inside_inner) {
+        cell = kCellFree;
+      } else if (inside_outer) {
+        cell = kCellOccupied;
+      }
+    }
+  }
+}
+
+/// A 2D LiDAR scan ray-cast in the grid: `beams` beams over 360 degrees from the laser at
+/// T_map_base * T_base_laser. A beam tilted down hits the floor (z = 0); otherwise its horizontal
+/// march stops at the first occupied cell. Gaussian range noise; beams that hit nothing within
+/// `max_range` come back as +inf.
+inline PlanarScan simulateScan(
+  const OccupancyGrid & grid, const Pose3 & T_map_base, const Pose3 & T_base_laser, int seed,
+  int beams = 360, double max_range = 10.0, double noise = 0.01)
+{
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> range_noise(0.0, noise);
+  PlanarScan scan;
+  scan.angle_min = -M_PI;
+  scan.angle_increment = 2.0 * M_PI / beams;
+  scan.range_min = 0.05;
+  scan.range_max = max_range;
+  scan.T_base_laser = T_base_laser;
+  const Pose3 T_map_laser = T_map_base * T_base_laser;
+  const Vec3 origin = T_map_laser.translation();
+  for (int b = 0; b < beams; ++b) {
+    const double angle = scan.angle_min + b * scan.angle_increment;
+    const Vec3 d = T_map_laser.linear() * Vec3(std::cos(angle), std::sin(angle), 0.0);
+    double range = std::numeric_limits<double>::infinity();
+    if (d.z() < -1e-9 && origin.z() > 0.0) {
+      range = -origin.z() / d.z();
+    }
+    const double horizontal = std::hypot(d.x(), d.y());
+    if (horizontal > 1e-9) {
+      const double step = 0.25 * grid.resolution;
+      for (double h = step; h / horizontal < std::min(range, max_range); h += step) {
+        int col = 0;
+        int row = 0;
+        const double x = origin.x() + d.x() / horizontal * h;
+        const double y = origin.y() + d.y() / horizontal * h;
+        if (!grid.worldToCell(x, y, &col, &row)) {
+          break;
+        }
+        if (grid.at(col, row) >= 65) {
+          range = std::min(range, h / horizontal);
+          break;
+        }
+      }
+    }
+    scan.ranges.push_back(
+      range <= max_range ? static_cast<float>(range + range_noise(rng))
+                         : std::numeric_limits<float>::infinity());
+  }
+  return scan;
 }
 
 }  // namespace landfall::test

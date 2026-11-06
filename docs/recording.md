@@ -175,6 +175,7 @@ bag:                                      # where `--bag` recordings keep their 
   pose_topic: /amcl_pose
   imu_topic: ""
   imu_frame: ""
+  scan_topic: /scan                       # LaserScan; used by `landfall query`, not by the build
   gravity_source: auto
   imu_max_age: 0.1
   pose_source: tf_with_covariance

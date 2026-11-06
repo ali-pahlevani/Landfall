@@ -172,12 +172,23 @@ TEST(PosePriorBa, ConfiguredPriorStdOverridesAPessimisticCovariance)
   const auto result =
     landfall::adjustPosePriors(problem.keyframes, problem.landmarks, problem.observations, params);
   ASSERT_TRUE(result.usable) << result.message;
+  // BA moves each keyframe toward its truth, so a keyframe's shift is about its prior's error: the
+  // worst prior of 64 at 1 cm per axis is 2.8 cm off. Bounds relative to the drawn priors hold on
+  // every platform (rounding moves the worst shift across a fixed 3 cm: 2.80 cm on x86, 3.11 cm on
+  // arm64).
   double max_shift = 0.0;
+  double max_prior_error = 0.0;
+  double max_error = 0.0;
   for (std::size_t k = 0; k < result.poses.size(); ++k) {
     max_shift = std::max(
       max_shift, landfall::translationDistance(result.poses[k], problem.keyframes[k].prior));
+    max_prior_error = std::max(
+      max_prior_error, landfall::translationDistance(problem.keyframes[k].prior, problem.truth[k]));
+    max_error =
+      std::max(max_error, landfall::translationDistance(result.poses[k], problem.truth[k]));
   }
-  EXPECT_LT(max_shift, 0.03);
+  EXPECT_LT(max_shift, max_prior_error + 0.01);
+  EXPECT_LT(max_error, 0.02);  // 1.5 cm on x86: closer to the truth than the worst prior
 }
 
 TEST(PosePriorBa, WithoutObservationsThePriorsStay)

@@ -96,7 +96,7 @@ std::shared_ptr<LocalizationMap> LocalizationMap::load(
   map->grid_ = decodeGridPng(
     map->map_record_.grid, map->map_record_.resolution,
     {map->map_record_.origin_x, map->map_record_.origin_y, map->map_record_.origin_yaw});
-  map->field_ = std::make_unique<LikelihoodField>(map->grid_);
+  map->field_ = std::make_shared<const LikelihoodField>(map->grid_);
 
   const auto cameras = db.cameras();
   if (cameras.size() != 1) {

@@ -18,7 +18,13 @@ landfall_link_package(evaluate_poses PRIVATE geometry_msgs rclcpp rosbag2_cpp ro
 landfall_set_cxx_standard(evaluate_poses)
 landfall_set_warnings(evaluate_poses)
 
-install(TARGETS evaluate_poses DESTINATION lib/${PROJECT_NAME})
+add_executable(evaluate_scan_check src/evaluate_scan_check.cpp)
+target_link_libraries(evaluate_scan_check PRIVATE
+  landfall_core::landfall_core landfall_ros::landfall_ros_common)
+landfall_set_cxx_standard(evaluate_scan_check)
+landfall_set_warnings(evaluate_scan_check)
+
+install(TARGETS evaluate_poses evaluate_scan_check DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

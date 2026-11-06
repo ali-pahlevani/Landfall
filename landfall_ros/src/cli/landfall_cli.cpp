@@ -479,6 +479,7 @@ struct QuerySettings
   landfall::GravityParams gravity;
   double min_frame_interval = 0.3;
   double timeout = 10.0;
+  double scan_max_time_offset = 0.5;
 };
 
 void setQueryParameter(QuerySettings & q, const std::string & assignment)
@@ -554,6 +555,35 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
     q.consistency.max_translation_error = number();
   } else if (name == "consistency.max_rotation_error_deg") {
     q.consistency.max_rotation_error_deg = number();
+  } else if (name == "scan_check.mode") {
+    const auto mode = landfall::parseScanCheckMode(value);
+    if (!mode) {
+      throw UsageError("--set scan_check.mode: required, optional or disabled");
+    }
+    l.scan_mode = *mode;
+  } else if (name == "scan_check.max_time_offset") {
+    q.scan_max_time_offset = number();
+  } else if (name == "scan_check.max_range") {
+    l.scan.max_range = number();
+  } else if (name == "scan_check.hit_tolerance") {
+    l.scan.hit_tolerance = number();
+  } else if (name == "scan_check.min_hit_ratio") {
+    l.scan.min_hit_ratio = number();
+  } else if (name == "scan_check.max_violation_ratio") {
+    l.scan.max_violation_ratio = number();
+  } else if (name == "scan_check.min_known_ratio") {
+    l.scan.min_known_ratio = number();
+  } else if (name == "scan_check.min_valid_beams") {
+    l.scan.min_valid_beams = static_cast<int>(number());
+  } else if (name == "scan_check.search_radius") {
+    l.scan.search_radius = number();
+  } else if (name == "scan_check.search_angle_deg") {
+    l.scan.search_angle_deg = number();
+  } else if (name == "scan_check.refine_pose") {
+    if (value != "true" && value != "false") {
+      throw UsageError("--set scan_check.refine_pose: true or false");
+    }
+    l.refine_with_scan = value == "true";
   } else if (name == "imu.max_age") {
     q.gravity.max_age = number();
   } else if (name == "imu.max_angular_rate") {
@@ -624,6 +654,8 @@ int query(const std::vector<std::string> & argv)
   options.every = static_cast<std::size_t>(every);
   options.min_frame_interval = settings.min_frame_interval;
   options.skip_stamps = keyframe_stamps;
+  options.scan_mode = settings.localizer.scan_mode;
+  options.scan_max_time_offset = settings.scan_max_time_offset;
 
   std::ofstream csv_file;
   const auto output = args.one("--output");
@@ -636,7 +668,8 @@ int query(const std::vector<std::string> & argv)
   std::ostream & csv = output ? static_cast<std::ostream &>(csv_file) : std::cout;
   csv << "request,first_stamp_ns,last_stamp_ns,status,frames,frames_used,pose_stamp_ns,x,y,yaw,"
          "inliers,inlier_ratio,coverage,height_error_m,tilt_error_deg,ambiguity_ratio,"
-         "consistency_m,consistency_deg,features,places,best_x,best_y,best_yaw,best_score,"
+         "consistency_m,consistency_deg,scan_hit_ratio,scan_violation_ratio,features,places,"
+         "best_x,best_y,best_yaw,best_score,"
          "runner_up_x,runner_up_y,runner_up_yaw,runner_up_score,message,rejection\n";
 
   std::map<std::string, int> statuses;
@@ -676,8 +709,13 @@ int query(const std::vector<std::string> & argv)
     }
     csv << fixed(scores.ambiguity_ratio, 3) << ","
         << fixed(decision.consistency.max_translation_error, 3) << ","
-        << fixed(decision.consistency.max_rotation_error_deg, 2) << "," << r.last_frame.num_features
-        << "," << r.last_frame.hypotheses.size() << ",";
+        << fixed(decision.consistency.max_rotation_error_deg, 2) << ",";
+    if (scores.scan) {
+      csv << fixed(scores.scan_hit_ratio, 3) << "," << fixed(scores.scan_violation_ratio, 3) << ",";
+    } else {
+      csv << ",,";
+    }
+    csv << r.last_frame.num_features << "," << r.last_frame.hypotheses.size() << ",";
     const auto & clusters = r.last_frame.clusters;
     if (clusters.empty()) {
       csv << ",,,,";
@@ -729,10 +767,11 @@ int query(const std::vector<std::string> & argv)
   std::cerr << "query: " << counts.images << " images in the bag, " << frame_seconds.size()
             << " localized frames in " << requests << " requests of " << frames << " frame"
             << (frames > 1 ? "s" : "") << "\n";
-  if (counts.skipped_stamps + counts.skipped_tf + counts.skipped_gravity > 0) {
+  if (
+    counts.skipped_stamps + counts.skipped_tf + counts.skipped_gravity + counts.skipped_scan > 0) {
     std::cerr << "  skipped: " << counts.skipped_stamps << " database keyframes, "
               << counts.skipped_tf << " without TF, " << counts.skipped_gravity
-              << " without usable IMU gravity\n";
+              << " without usable IMU gravity, " << counts.skipped_scan << " without a scan\n";
   }
   std::cerr << "  results:";
   for (const auto & [status, count] : statuses) {

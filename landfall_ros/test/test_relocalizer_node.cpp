@@ -13,18 +13,22 @@
 // limitations under the License.
 
 // The relocalizer node in-process, fed with the depot fixture: readiness (NOT_READY reasons), BUSY,
-// publishing to AMCL's topic, dry runs, the startup trigger, lifecycle transitions and parameter
-// validation.
+// publishing to AMCL's topic, dry runs, the scan check modes, odometry consistency, the startup and
+// automatic triggers, the extrinsics monitor, lifecycle transitions and parameter validation.
 
 #include <gtest/gtest.h>
 
 #include <chrono>
 #include <cmath>
+#include <iostream>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "fixture_data.hpp"
 #include "landfall/ros/relocalizer_node.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
@@ -79,7 +83,23 @@ protected:
       {"backend.num_threads", 2},
       {"consistency.num_frames", 2},
       {"query.timeout", 15.0},
+      {"scan_check.topic", "/reloc_test/scan"},
+      {"auto_trigger.pose_topic", "/reloc_test/amcl_pose"},
+      {"extrinsics_monitor.enabled", false},
     });
+    return o;
+  }
+
+  // The extrinsics monitor samples once a second while the localization is confident. The fixture
+  // robot drives at about 0.5 m/s, so the speed gate is opened for the tests.
+  static rclcpp::NodeOptions monitorOptions()
+  {
+    rclcpp::NodeOptions o = options(*db_path_);
+    o.append_parameter_override("extrinsics_monitor.enabled", true);
+    o.append_parameter_override("extrinsics_monitor.period", 1.0);
+    o.append_parameter_override("extrinsics_monitor.min_samples", 5);
+    o.append_parameter_override("extrinsics_monitor.max_linear_speed", 5.0);
+    o.append_parameter_override("extrinsics_monitor.max_angular_speed", 5.0);
     return o;
   }
 
@@ -99,6 +119,18 @@ protected:
         "/reloc_test/image/compressed", 10);
       map_pub = driver->create_publisher<nav_msgs::msg::OccupancyGrid>(
         "/reloc_test/map", rclcpp::QoS(1).reliable().transient_local());
+      scan_pub = driver->create_publisher<sensor_msgs::msg::LaserScan>("/reloc_test/scan", 10);
+      amcl_pub =
+        driver->create_publisher<PoseMsg>("/reloc_test/amcl_pose", rclcpp::QoS(1).reliable());
+      diagnostics_sub = driver->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+        "/diagnostics", rclcpp::QoS(10),
+        [this](const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr & array) {
+          for (const auto & status : array->status) {
+            if (status.name.find("relocalizer") != std::string::npos) {
+              diagnostics.push_back(status);
+            }
+          }
+        });
       status_sub = driver->create_subscription<Result>(
         "/landfall_relocalizer/status", rclcpp::QoS(1).reliable().transient_local(),
         [this](const Result::ConstSharedPtr & r) { statuses.push_back(*r); });
@@ -136,14 +168,23 @@ protected:
     {
       ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
       ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
-      tf_static_pub->publish(data_->tf_static);
+      tf_static_pub->publish(tf_static);
       if (with_map) {
         map_pub->publish(*map_);
       }
       if (with_camera_info) {
         info_pub->publish(data_->camera_info);
       }
+      refreshScan();
       spinFor(std::chrono::milliseconds(300));
+    }
+
+    // Republishes the last scan played: the scan check needs a live LaserScan to be ready.
+    void refreshScan()
+    {
+      if (send_scans) {
+        scan_pub->publish(data_->scans[next_scan > 0 ? next_scan - 1 : 0]);
+      }
     }
 
     // Publishes image i with its camera_info and the TF up to just after it.
@@ -153,16 +194,33 @@ protected:
       const int64_t stamp = landfall::ros::toNanoseconds(image.header.stamp);
       if (with_tf) {
         while (next_tf < data_->tf.size()) {
-          const auto & message = data_->tf[next_tf];
+          auto message = data_->tf[next_tf];
           if (
             !message.transforms.empty() &&
             landfall::ros::toNanoseconds(message.transforms.front().header.stamp) >
               stamp + 300'000'000) {
             break;
           }
+          for (auto & t : message.transforms) {
+            // Injected odometry error: from odom_jump_after on, the robot seems further ahead.
+            if (
+              t.header.frame_id == "odom" &&
+              landfall::ros::toNanoseconds(t.header.stamp) > odom_jump_after) {
+              t.transform.translation.x += odom_jump;
+            }
+          }
           tf_pub->publish(message);
           ++next_tf;
         }
+      }
+      while (send_scans && next_scan < data_->scans.size() &&
+             landfall::ros::toNanoseconds(data_->scans[next_scan].header.stamp) <=
+               stamp + 300'000'000) {
+        auto scan = data_->scans[next_scan];
+        scan.angle_min += static_cast<float>(scan_rotation);
+        scan.angle_max += static_cast<float>(scan_rotation);
+        scan_pub->publish(scan);
+        ++next_scan;
       }
       auto info = data_->camera_info;
       info.header.stamp = image.header.stamp;
@@ -180,7 +238,10 @@ protected:
       request->num_frames = static_cast<uint8_t>(num_frames);
       request->dry_run = dry_run;
       request->timeout = timeout;
+      refreshScan();
       auto future = client->async_send_request(request);
+      // Let the request start, so that its first frame is first_image.
+      spinFor(std::chrono::milliseconds(200));
       std::size_t i = first_image;
       const auto deadline = Clock::now() + std::chrono::seconds(40);
       while (future.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready &&
@@ -194,6 +255,58 @@ protected:
       return future.future.get()->result;
     }
 
+    // A localization estimate (AMCL's amcl_pose) with this standard deviation in x and y.
+    void publishLocalization(double std_xy, double std_yaw_deg = 1.0)
+    {
+      PoseMsg pose;
+      pose.header.stamp = driver->now();
+      pose.header.frame_id = "map";
+      pose.pose.pose.orientation.w = 1.0;
+      pose.pose.covariance[0] = std_xy * std_xy;
+      pose.pose.covariance[7] = std_xy * std_xy;
+      pose.pose.covariance[35] = std::pow(std_yaw_deg * M_PI / 180.0, 2);
+      amcl_pub->publish(pose);
+    }
+
+    // Plays images from `first` for `duration`, with a localization estimate before each.
+    std::size_t playFor(
+      std::size_t first, std::chrono::milliseconds duration, std::optional<double> std_xy)
+    {
+      const auto end = Clock::now() + duration;
+      std::size_t i = first;
+      while (Clock::now() < end) {
+        if (std_xy) {
+          publishLocalization(*std_xy);
+        }
+        playImage(i++);
+        spinFor(std::chrono::milliseconds(150));
+      }
+      return i;
+    }
+
+    std::size_t countTrigger(const std::string & trigger) const
+    {
+      std::size_t n = 0;
+      for (const auto & r : statuses) {
+        n += r.trigger == trigger ? 1U : 0U;
+      }
+      return n;
+    }
+
+    // The value of `key` in the latest relocalizer status on /diagnostics ("" if none).
+    std::string diagnosticValue(const std::string & key) const
+    {
+      if (diagnostics.empty()) {
+        return "";
+      }
+      for (const auto & kv : diagnostics.back().values) {
+        if (kv.key == key) {
+          return kv.value;
+        }
+      }
+      return "";
+    }
+
     std::shared_ptr<RelocalizerNode> node;
     rclcpp::Node::SharedPtr driver;
     rclcpp::Publisher<tf2_msgs::msg::TFMessage>::SharedPtr tf_pub;
@@ -201,13 +314,23 @@ protected:
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info_pub;
     rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr image_pub;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub;
+    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub;
+    rclcpp::Publisher<PoseMsg>::SharedPtr amcl_pub;
+    rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostics_sub;
     rclcpp::Subscription<Result>::SharedPtr status_sub;
     rclcpp::Subscription<PoseMsg>::SharedPtr pose_sub;
     rclcpp::Client<Relocalize>::SharedPtr client;
     rclcpp::executors::SingleThreadedExecutor executor;
     std::vector<Result> statuses;
     std::vector<PoseMsg> poses;
+    std::vector<diagnostic_msgs::msg::DiagnosticStatus> diagnostics;
+    tf2_msgs::msg::TFMessage tf_static = data_->tf_static;  ///< what up() publishes
     std::size_t next_tf = 0;
+    std::size_t next_scan = 0;
+    bool send_scans = true;
+    double scan_rotation = 0.0;  ///< rad added to every scan's angles (a scan that doesn't fit)
+    int64_t odom_jump_after = std::numeric_limits<int64_t>::max();
+    double odom_jump = 0.0;  ///< m added to the odometry after odom_jump_after
   };
 
   // Error of a published map pose against the ground truth at its stamp.
@@ -246,6 +369,7 @@ TEST_F(RelocalizerNodeTest, LocalizesPublishesAndDryRuns)
   EXPECT_EQ(result.trigger, "service");
   EXPECT_EQ(result.scores.frames_used, 2U);
   EXPECT_GE(result.scores.num_inliers, 40U);
+  EXPECT_GE(result.scores.scan_hit_ratio, 0.85F);  // the LiDAR check ran (required by default)
   EXPECT_FALSE(result.hypotheses.empty());
   EXPECT_EQ(result.pose.header.frame_id, "map");
   h.spinFor(std::chrono::milliseconds(300));
@@ -438,6 +562,154 @@ TEST_F(RelocalizerNodeTest, StartupRelocalizationPublishesOnce)
     h.spinFor(std::chrono::milliseconds(150));
   }
   EXPECT_EQ(h.poses.size(), 1U);
+}
+
+TEST_F(RelocalizerNodeTest, ScanCheckModes)
+{
+  {
+    // Required (the default): no request without a LaserScan.
+    Harness h(options(*db_path_));
+    h.send_scans = false;
+    h.subscribeInitialPose();
+    h.up();
+    const Result r = h.call(1, true, 4);
+    EXPECT_EQ(r.status, Result::NOT_READY);
+    EXPECT_NE(r.message.find("no LaserScan on '/reloc_test/scan'"), std::string::npos) << r.message;
+  }
+  {
+    // A scan that doesn't fit the map where vision puts the robot.
+    Harness h(options(*db_path_));
+    h.scan_rotation = M_PI / 2.0;
+    h.subscribeInitialPose();
+    h.up();
+    const Result r = h.call(2, false, 4);
+    EXPECT_EQ(r.status, Result::REJECTED_SCAN_CHECK) << r.message;
+    EXPECT_FALSE(r.published);
+    h.spinFor(std::chrono::milliseconds(300));
+    EXPECT_TRUE(h.poses.empty());
+  }
+  for (const char * mode : {"optional", "disabled"}) {
+    // Vision checks only.
+    rclcpp::NodeOptions o = options(*db_path_);
+    o.append_parameter_override("scan_check.mode", std::string(mode));
+    Harness h(o);
+    h.send_scans = false;
+    h.up();
+    const Result r = h.call(2, true, 4);
+    EXPECT_EQ(r.status, Result::SUCCESS) << mode << ": " << r.message;
+    EXPECT_EQ(r.scores.scan_hit_ratio, 0.0F) << mode;
+  }
+}
+
+TEST_F(RelocalizerNodeTest, OdometryThatDisagreesIsRejected)
+{
+  Harness h(options(*db_path_));
+  h.subscribeInitialPose();
+  h.up();
+  // Images 11 and 12 (0.8 s apart) are the first ones that localize; between them odometry
+  // jumps 0.5 m ahead.
+  h.odom_jump_after = (landfall::ros::toNanoseconds(data_->images[11].header.stamp) +
+                       landfall::ros::toNanoseconds(data_->images[12].header.stamp)) /
+                      2;
+  h.odom_jump = 0.5;
+  const Result r = h.call(2, false, 11);
+  EXPECT_EQ(r.status, Result::REJECTED_CONSISTENCY) << r.message;
+  EXPECT_FALSE(r.published);
+  EXPECT_GT(r.scores.consistency_translation_error_m, 0.3F);
+  h.spinFor(std::chrono::milliseconds(300));
+  EXPECT_TRUE(h.poses.empty());
+}
+
+TEST_F(RelocalizerNodeTest, AutoTriggerFiresOnceAndHonorsTheCooldown)
+{
+  rclcpp::NodeOptions o = options(*db_path_);
+  o.append_parameter_override("auto_trigger.enabled", true);
+  o.append_parameter_override("auto_trigger.duration", 1.0);
+  o.append_parameter_override("auto_trigger.cooldown", 600.0);
+  Harness h(o);
+  h.subscribeInitialPose();
+  h.up();
+  // A confident localization: nothing happens.
+  std::size_t i = h.playFor(4, std::chrono::milliseconds(2500), 0.02);
+  EXPECT_EQ(h.countTrigger("auto"), 0U);
+  // Uncertain from now on: one request after a second, then the cooldown holds.
+  i = h.playFor(i, std::chrono::milliseconds(9000), 1.0);
+  ASSERT_EQ(h.countTrigger("auto"), 1U);
+  EXPECT_EQ(h.statuses.back().status, Result::SUCCESS) << h.statuses.back().message;
+  EXPECT_EQ(h.poses.size(), 1U);
+  // A shorter cooldown applies at once: it fires again.
+  ASSERT_TRUE(h.node->set_parameter(rclcpp::Parameter("auto_trigger.cooldown", 1.0)).successful);
+  const auto deadline = Clock::now() + std::chrono::seconds(20);
+  while (h.countTrigger("auto") < 2 && Clock::now() < deadline) {
+    i = h.playFor(i, std::chrono::milliseconds(150), 1.0);
+  }
+  EXPECT_EQ(h.countTrigger("auto"), 2U);
+}
+
+TEST_F(RelocalizerNodeTest, ExtrinsicsMonitorIsSilentOnTheRecording)
+{
+  Harness h(monitorOptions());
+  h.subscribeInitialPose();
+  h.up();
+  h.playFor(4, std::chrono::milliseconds(11000), 0.02);
+  h.spinFor(std::chrono::milliseconds(1200));  // one more diagnostics period
+  const std::string monitor = h.diagnosticValue("extrinsics_monitor");
+  std::cout << "extrinsics monitor on the recording: " << monitor << "\n";
+  ASSERT_EQ(monitor.rfind("camera ", 0), 0U) << monitor;  // enough samples for an estimate
+  EXPECT_EQ(h.diagnostics.back().level, diagnostic_msgs::msg::DiagnosticStatus::OK)
+    << h.diagnostics.back().message;
+  // Dry runs: no pose, and the samples aren't relocalizations.
+  EXPECT_TRUE(h.poses.empty());
+  EXPECT_EQ(h.countTrigger("monitor"), 0U);
+}
+
+TEST_F(RelocalizerNodeTest, ExtrinsicsMonitorFlagsACameraThatMoved)
+{
+  Harness h(monitorOptions());
+  // The camera turned 2 degrees and slid 3 cm sideways on its mount; TF still says otherwise.
+  bool found = false;
+  for (auto & t : h.tf_static.transforms) {
+    if (t.child_frame_id == "oakd_rgb_camera_frame") {
+      t.transform.translation.y += 0.03;
+      const double half = 0.5 * 2.0 * M_PI / 180.0;
+      t.transform.rotation.x = 0.0;
+      t.transform.rotation.y = 0.0;
+      t.transform.rotation.z = std::sin(half);
+      t.transform.rotation.w = std::cos(half);
+      found = true;
+    }
+  }
+  ASSERT_TRUE(found);
+  h.subscribeInitialPose();
+  h.up();
+  h.playFor(4, std::chrono::milliseconds(11000), 0.02);
+  h.spinFor(std::chrono::milliseconds(1200));
+  const std::string monitor = h.diagnosticValue("extrinsics_monitor");
+  std::cout << "extrinsics monitor with the moved camera: " << monitor << "\n";
+  ASSERT_EQ(monitor.rfind("camera ", 0), 0U) << monitor;
+  EXPECT_GE(h.diagnostics.back().level, diagnostic_msgs::msg::DiagnosticStatus::WARN);
+  EXPECT_NE(h.diagnostics.back().message.find("extrinsics monitor: camera"), std::string::npos)
+    << h.diagnostics.back().message;
+}
+
+TEST_F(RelocalizerNodeTest, ServiceRequestsPreemptTheMonitor)
+{
+  Harness h(monitorOptions());
+  h.subscribeInitialPose();
+  h.up();
+  // After a second of confident localization a monitor sample starts; without images it waits.
+  const auto end = Clock::now() + std::chrono::milliseconds(2500);
+  while (Clock::now() < end) {
+    h.publishLocalization(0.02);
+    h.refreshScan();
+    h.spinFor(std::chrono::milliseconds(200));
+  }
+  ASSERT_FALSE(h.diagnostics.empty());
+  ASSERT_EQ(h.diagnostics.back().message, "relocalizing");
+  // A service request doesn't get BUSY: the sample stops and the request runs.
+  const Result r = h.call(2, true, 11);
+  EXPECT_EQ(r.status, Result::SUCCESS) << r.message;
+  EXPECT_EQ(r.trigger, "service");
 }
 
 TEST_F(RelocalizerNodeTest, ValidatesParameters)

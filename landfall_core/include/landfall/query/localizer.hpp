@@ -25,6 +25,7 @@
 #include "landfall/features/matchers.hpp"
 #include "landfall/geometry/gravity.hpp"
 #include "landfall/geometry/pnp.hpp"
+#include "landfall/grid/scan_verifier.hpp"
 #include "landfall/interfaces/retrieval_index.hpp"
 #include "landfall/query/clustering.hpp"
 #include "landfall/query/decision.hpp"
@@ -34,6 +35,16 @@
 
 namespace landfall
 {
+
+/// `scan_check.mode`: whether poses must also fit the LiDAR scan (plan §7.12).
+enum class ScanCheckMode : uint8_t {
+  kRequired,  ///< no scan, no pose
+  kOptional,  ///< checked when a scan is there, vision only otherwise
+  kDisabled,  ///< vision only (camera-only robots, explicit opt-in)
+};
+
+/// Parses "required", "optional" or "disabled".
+std::optional<ScanCheckMode> parseScanCheckMode(const std::string & name);
 
 struct LocalizerParams
 {
@@ -53,8 +64,13 @@ struct LocalizerParams
   /// `max_mean_reprojection_px` 0 means half the PnP threshold.
   SanityParams sanity;
   ClusterParams clustering;
-  double max_score_ratio = 0.5;  ///< ambiguity: S2 / S1 at or above this (S2 >= min_inliers)
-  int threads = 0;               ///< places solved in parallel; 0: hardware concurrency
+  /// Ambiguity: a second valid cluster with S2 >= min_inliers and S2 / S1 at or above this. 0: any
+  /// such competitor (with the LiDAR check, a far place that also fits the scan is a real one).
+  double max_score_ratio = 0.0;
+  ScanCheckMode scan_mode = ScanCheckMode::kRequired;
+  ScanCheckParams scan;
+  bool refine_with_scan = false;  ///< use the scan check's best pose of its search window
+  int threads = 0;                ///< places solved in parallel; 0: hardware concurrency
 };
 
 /// One query image with what the robot knew at its stamp.
@@ -66,6 +82,9 @@ struct QueryFrame
   CameraModel camera;
   Pose3 T_base_cam = Pose3::Identity();  ///< extrinsics at the stamp (TF)
   GravityEstimate gravity;
+  /// LiDAR scan taken near the image, its laser pose expressed in the base frame *at the image
+  /// stamp* (the odometry between the two stamps folded in).
+  std::optional<PlanarScan> scan;
 };
 
 /// A pose candidate from one place (group of retrieved keyframes).
@@ -79,6 +98,9 @@ struct Hypothesis
   PnpMethod method = PnpMethod::kP3P;
   Pose3 T_map_cam = Pose3::Identity();
   SanityResult sanity;  ///< metrics; valid when solved
+  bool scan_checked = false;
+  ScanCheckResult scan;  ///< valid when scan_checked
+  Pose2 pose;            ///< base pose: the sanity check's, refined by the scan check if enabled
   std::vector<Vec2> inlier_pixels;
   std::vector<Vec2> outlier_pixels;
   int cluster = -1;  ///< index into FrameResult::clusters for valid hypotheses
@@ -99,6 +121,9 @@ struct FrameResult
   std::vector<Hypothesis> hypotheses;  ///< best first: deeper stage, then more inliers
   std::vector<PoseCluster> clusters;   ///< of the valid hypotheses, best first
   AmbiguityResult ambiguity;
+  /// Valid hypotheses passed the scan check (else sanity only: no scan in optional mode, or
+  /// disabled).
+  bool scan_checked = false;
   Stage deepest_stage = Stage::kRetrieved;
   /// Base pose of the best valid cluster (also set when ambiguous, for diagnostics).
   std::optional<Pose2> pose;
@@ -108,7 +133,8 @@ struct FrameResult
 
 /// Scores of a request (RelocalizationScores), worst across its frames: over each frame's winning
 /// hypothesis, or its best solved one when it has none, the fewest inliers, the lowest inlier
-/// ratio and coverage, and the largest reprojection, height and tilt errors and ambiguity ratio.
+/// ratio, coverage and scan hit ratio, and the largest reprojection, height and tilt errors, scan
+/// violation ratio and ambiguity ratio.
 struct ScoreSummary
 {
   bool any = false;  ///< false when no frame solved a pose (the pose scores are then 0)
@@ -119,14 +145,18 @@ struct ScoreSummary
   double tilt_error_deg = 0.0;
   double inlier_coverage = 0.0;
   double ambiguity_ratio = 0.0;
+  bool scan = false;  ///< a scan score exists
+  double scan_hit_ratio = 0.0;
+  double scan_violation_ratio = 0.0;
 };
 
 ScoreSummary summarizeScores(const std::vector<FrameResult> & frames);
 
-/// Single-frame visual relocalization against a map database (plan §7.7-7.9, §7.11): retrieve the
-/// top-k keyframes, group them into places, match each place 2D-3D, solve the pose (upright
-/// LO-RANSAC with P3P fallback), run the sanity checks, cluster the valid poses and test for
-/// ambiguity. Not reentrant: one localize() at a time per instance.
+/// Single-frame relocalization against a map database (plan §7.7-7.12): retrieve the top-k
+/// keyframes, group them into places, match each place 2D-3D, solve the pose (upright LO-RANSAC with
+/// P3P fallback), run the sanity checks and the LiDAR scan check, then cluster the poses that passed
+/// and test for ambiguity, so a look-alike place that fails LiDAR is no competitor. Not reentrant:
+/// one localize() at a time per instance.
 class Localizer
 {
 public:
@@ -146,12 +176,15 @@ private:
     std::vector<int64_t> keyframe_ids;
   };
   std::vector<Place> groupPlaces(const std::vector<RetrievalCandidate> & retrieved) const;
+  /// `scan` is the projected scan when the scan check applies, nullptr without one.
   Hypothesis solvePlace(
-    const Place & place, const QueryFrame & frame, const Features & features) const;
+    const Place & place, const QueryFrame & frame, const Features & features, bool check_scan,
+    const ProjectedScan * scan) const;
 
   std::shared_ptr<const LocalizationMap> map_;
   LocalizerParams params_;
   std::unique_ptr<IMatcher> matcher_;
+  std::unique_ptr<ScanVerifier> verifier_;
   ThreadPool pool_;
 };
 

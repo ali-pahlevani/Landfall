@@ -15,6 +15,7 @@
 #ifndef LANDFALL_GRID_LIKELIHOOD_FIELD_HPP_
 #define LANDFALL_GRID_LIKELIHOOD_FIELD_HPP_
 
+#include <optional>
 #include <vector>
 
 #include "landfall/grid/occupancy_grid.hpp"
@@ -48,6 +49,11 @@ public:
   /// True if the segment from `from` to `to` passes through an obstacle cell. Cells outside the
   /// grid end the traversal.
   bool segmentHitsObstacle(const Vec2 & from, const Vec2 & to) const;
+  /// Length (m) of the segment's last stretch after the last obstacle cell it crosses: how far a
+  /// ray from `from` continued past an obstacle before ending at `to`. 0 when `to` lies in an
+  /// obstacle cell, nullopt when the segment crosses none. Cells outside the grid end the
+  /// traversal.
+  std::optional<double> clearanceAfterObstacle(const Vec2 & from, const Vec2 & to) const;
 
 private:
   OccupancyGrid grid_;

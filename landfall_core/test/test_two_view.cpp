@@ -137,20 +137,28 @@ TEST(TwoView, RelativePosePrecisionWithoutOutliers)
 }
 
 // The builder uses the inliers (tracks are then re-checked against the prior poses by
-// triangulation) and the rotation only for a 5 deg check against the prior; random outliers
-// that fall within 4 px of their epipolar line legitimately tilt the estimate by a few tenths.
+// triangulation) and the rotation only for a 5 deg check against the prior. Random outliers that
+// fall within 4 px of their epipolar line legitimately tilt the estimate: the rotation by a few
+// tenths of a degree, and the translation direction, which the builder doesn't use, by a few
+// degrees (a 0.4 m baseline against 3 to 10 m depth hardly separates a sideways translation from
+// a turn). Which outliers fall within the threshold depends on rounding: arm64 kept 3 in trial 25
+// and tilted the direction by 8 degrees, x86 kept 1 (1.3 degrees).
 TEST(TwoView, RelativePoseClassifiesOutliers)
 {
   std::string failures;
+  std::vector<double> directions;
   for (int trial = 0; trial < 50; ++trial) {
     const TrialResult r = runTrial(trial, 0.4);
+    directions.push_back(r.direction_deg);
     if (
-      r.rotation_deg > 1.0 || r.direction_deg > 6.0 || r.good_kept < 0.95 * r.good ||
+      r.rotation_deg > 1.0 || r.direction_deg > 10.0 || r.good_kept < 0.95 * r.good ||
       r.outliers_kept > 0.05 * r.outliers + 3) {
       failures += describe(trial, r);
     }
   }
   EXPECT_TRUE(failures.empty()) << failures;
+  std::nth_element(directions.begin(), directions.begin() + 25, directions.end());
+  EXPECT_LT(directions[25], 2.0);  // the median: 1.1 degrees on x86
 }
 
 TEST(TwoView, RotationOnlyModel)

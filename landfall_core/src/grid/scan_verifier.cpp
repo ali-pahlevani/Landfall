@@ -76,13 +76,11 @@ ScanScore ScanVerifier::score(
       }
     }
     if (with_violations) {
-      const Vec2 ray = endpoint - origin;
-      const double length = ray.norm();
-      if (length > params_.violation_margin) {
-        const Vec2 stop = origin + ray * ((length - params_.violation_margin) / length);
-        if (field_->segmentHitsObstacle(origin, stop)) {
-          ++result.violations;
-        }
+      // Seeing through an obstacle: the beam crossed one and went on through free space. A beam
+      // that ends inside an obstacle drawn thicker than the real surface doesn't count.
+      const auto clearance = field_->clearanceAfterObstacle(origin, endpoint);
+      if (clearance && *clearance >= params_.violation_margin) {
+        ++result.violations;
       }
     }
   }

@@ -1,6 +1,6 @@
 # Landfall — v1.0 Implementation Plan
 
-Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22; rev 6: V23–V28)
+Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22; rev 6: V23–V29; rev 7: V30–V37)
 
 **Review decisions folded into this revision (2026-10-29):**
 
@@ -19,6 +19,7 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | D11 | GPU: CPU-only release gate. The GPU path ships labeled **experimental** (not covered by 1.0 validation) unless cuDNN is installed for testing. |
 | D12 | Fusion recommendation: **robot_localization `ekf_node`** (EKF; ROS 1's `ekf_localization_node`), over its UKF and over `fuse`. It's Nav2's documented odometry-smoothing setup, available on all three distros, and light enough for a CPU-only PC. UKF adds compute for no gain on planar wheel + IMU. `fuse` isn't released for Humble. Gravity (roll/pitch) comes separately from the IMU's orientation, because the EKF in `two_d_mode` discards roll/pitch: the driver's own AHRS output if present, else `imu_complementary_filter` (BSD-3). |
 | D13 | Field target: **your forklift, industrial mini PC, no GPU** (assumed x86_64). It gets the `classical` and `learned_cpu` presets, and real-robot timings and validation come from it (M8). |
+| D14 | (2026-11-05) Forklift work, meaning M8 and the open items of §14 and R25–R27, starts only once M1–M7 are done and a real dataset is to be tested. |
 
 **Revisions after approval** (rev 4, 2026-10-30; found while implementing M0 and M1, sections below updated):
 
@@ -52,7 +53,7 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | V21 | BoW global descriptors are stored as blob type 3 (sparse u32/f32 pairs); the schema (v1) is unchanged | the vocabulary has up to 10^5 words, a vector holds ~10^3 |
 | V22 | Deferred: generated `docs/parameters.md` (T-005, with the relocalizer in M3) and the optional BA extrinsics refinement (T-006) | the recorder's parameters are documented in `docs/recording.md`; nothing needs extrinsics refinement yet |
 
-**Revisions in M3** (rev 6, 2026-10-31; sections below updated):
+**Revisions in M3** (rev 6, 2026-10-31, V29 on 2026-11-05; sections below updated):
 
 | # | Change | Why |
 |---|---|---|
@@ -62,6 +63,20 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | V26 | The startup extrinsics check treats `base → camera` as static when `/tf_static` alone connects the two frames, and skips otherwise (§7.19) | tf2 doesn't expose whether a transform is static; the forklift's camera rides the fork carriage (§14) |
 | V27 | `landfall query` emulates node requests on a bag (`--frames N`) and writes one CSV row per request; `evaluate_poses --queries` scores them against ground truth (§4.2) | one code path (`queryBagImages`) for the CLI and the tests |
 | V28 | M3's query set: the fixture's images that are not database keyframes (it has no separate query segment), plus cross-session queries between the two full depot drives (run 1 ↔ run 2) | the fixture's two windows drive the same stretch in opposite directions; both feed the build |
+| V29 | (2026-11-05, your decision on the M3 report) M3's two accuracy criteria (≥ 90 % success within 0.25 m / 5°, no published pose off by more than 0.5 m) are measured at the end of M4, with LiDAR verification, on the cross-session depot drives (run 1 ↔ run 2, requests of 3 frames); CI keeps the fixture regression test (no wrong pose, at least 20 of 35 frames correct) (§11) | the depot looks alike rotated 180°: vision alone published 1 mirror pose in 156 requests, which only the LiDAR check of M4 can stop |
+
+**Revisions in M4** (rev 7, 2026-11-05; sections below updated):
+
+| # | Change | Why |
+|---|---|---|
+| V30 | A scan **violation** is a beam that continues at least `violation_margin` (0.15 m) through non-occupied cells after the last occupied cell it crosses (exact grid traversal) (§7.12) | the rule "crosses an occupied cell up to 0.15 m before its endpoint" also flagged beams that end inside a thick map obstacle: a median of 11 % violations at the *true* poses of the depot drives, more than the 5 % allowed |
+| V31 | Scan check defaults from the depot drives: `scan_check.min_hit_ratio` **0.85** (was 0.60), `scan_check.refine_pose` **false** (was true) (§4.5, §7.12) | on the two depot drives (every scan at its true pose and at 20 wrong poses 0.5–5 m away, 213,240 wrong poses in all) a hit-ratio threshold of 0.60 accepted 344 wrong poses, 0.70 accepted 110, 0.80 accepted 9 and 0.85 none, while the true poses accepted stayed at 10,652 of 10,662 (10,653 at 0.60). The window's best pose (a 2.5 cm, 1° grid) was less accurate than vision's: 3-frame cross-session requests published poses 2.1 / 1.9 cm off (median; p95 6.2 / 5.5 cm) with refinement, 1.3 / 1.1 cm (p95 3.5 / 2.5 cm) without |
+| V32 | `ambiguity.max_score_ratio` defaults to **0**: any second valid place (all vision and LiDAR checks passed, ≥ `sanity.min_inliers`) makes the frame AMBIGUOUS, whatever its score (§4.5, §7.11) | a competitor that passes the LiDAR check is a real alternative; in the depot's mirrored halves the wrong place out-scored the right one in 8 of 20 ambiguous frames (M3), so the score ratio says nothing about which one is right |
+| V33 | New relocalizer parameters: `scan_check.topic` (as `camera_info.topic`, V24); `extrinsics_monitor.max_linear_speed` / `extrinsics_monitor.max_angular_speed` (0.2 m/s / 0.1 rad/s), the "robot is slow" gate of §7.19; `extrinsics_monitor.period` range [1, 3600] s (was [5, 3600]) (§4.5) | time-sync error and the localization's lag look like a camera offset while the robot moves; tests and shadow runs can sample every second |
+| V34 | The monitor's samples are full dry-run requests (the node's `consistency.num_frames`, every check). Only a SUCCESS adds a sample (from its latest frame that passed the speed gate), they never publish `~/status`, and a service request preempts them instead of being answered BUSY (the startup and auto triggers wait while any request runs) (§7.19) | the shadow log (M8) must measure the requests a robot really runs; a sample from a rejected request may come from a wrong place; a Nav2 BT's request must not fail because a background sample happens to run |
+| V35 | `IHypothesisVerifier` (V11) stays deferred to Stage 3: the scan verifier is the only verifier, and the localizer calls it for every hypothesis that passed the sanity checks (§4.1) | no interface without a second implementation |
+| V36 | `bag.scan_topic` in the builder config (default `/scan`): `landfall query` checks scans as the node does. `evaluate_scan_check` (landfall_benchmark) runs the scan check on a recording at the true poses and at wrong ones (§4.2, §11) | M4's acceptance numbers come from recordings with ground truth (fixture, depot drives) |
+| V37 | Tests: the extrinsics monitor and the odometry-consistency rejection are tested in-process (`test_relocalizer_node`, TF tampered there); the auto-trigger launch test closes the loop with AMCL scattered by `reinitialize_global_localization`. CI posts build errors and failing tests as public check annotations (`scripts/ci_build_test.sh`) (§12) | the in-process harness controls TF and timing exactly; the launch test shows the trigger stops because AMCL became confident, not only because of the cooldown; GitHub job logs need a login |
 
 ---
 
@@ -264,9 +279,9 @@ landfall_msgs/Hypothesis[] hypotheses            # diagnostics, best first: pose
 |---|---|---|---|---|
 | both | `image` / `image/compressed` (param `image.topic`, `image.transport`) | sensor_msgs/Image / CompressedImage | sub | SensorData (best effort, depth 5) |
 | both | `camera_info` | sensor_msgs/CameraInfo | sub | SensorData (matches reliable publishers too) |
-| relocalizer | `scan` | sensor_msgs/LaserScan | sub | SensorData |
+| relocalizer | `scan` (`scan_check.topic`) | sensor_msgs/LaserScan | sub | SensorData |
 | relocalizer | `map` | nav_msgs/OccupancyGrid | sub | reliable + **transient_local**, depth 1 |
-| relocalizer | `amcl_pose` (auto-trigger) | geometry_msgs/PoseWithCovarianceStamped | sub | reliable, volatile (matches AMCL's latched and slam_toolbox's volatile publishers) |
+| relocalizer | `amcl_pose` (`auto_trigger.pose_topic`: auto trigger, extrinsics monitor) | geometry_msgs/PoseWithCovarianceStamped | sub | reliable, volatile (matches AMCL's latched and slam_toolbox's volatile publishers) |
 | recorder | `amcl_pose` (`pose_source.covariance_topic`) | PoseWithCovarianceStamped | sub | reliable, volatile |
 | both | `imu` (optional, `imu.topic`) | sensor_msgs/Imu (orientation only) | sub | SensorData |
 | both | `/tf`, `/tf_static` | tf2_msgs/TFMessage | sub | tf2_ros defaults. `odom→base` is the **only** odometry input; there is no odometry topic |
@@ -329,16 +344,17 @@ by a small dump tool, and CI fails if it is stale.
 | `consistency.max_translation_error` | double | 0.15 | [0.01, 2] m | solved relative motion vs odometry |
 | `consistency.max_rotation_error_deg` | double | 5.0 | [0.5, 45] | |
 | `ambiguity.cluster_radius` / `ambiguity.cluster_angle_deg` | double | 0.5 / 15 | [0.05, 5] m / [1, 180] | |
-| `ambiguity.max_score_ratio` | double | 0.5 | [0, 1] | S2/S1 above this ⇒ AMBIGUOUS (if S2 ≥ min_inliers) |
+| `ambiguity.max_score_ratio` | double | 0.0 | [0, 1] | S2/S1 at or above this ⇒ AMBIGUOUS (if S2 ≥ min_inliers); 0: any valid competitor (V32) |
 | `scan_check.mode` | string | required | required, optional, disabled | |
+| `scan_check.topic` | string | scan | — | sensor_msgs/LaserScan (V33) |
 | `scan_check.max_time_offset` | double | 0.5 | [0, 5] s | scan vs image stamp |
 | `scan_check.max_range` | double | 10.0 | [0.5, 100] m | |
 | `scan_check.hit_tolerance` | double | 0.10 | [0.01, 1] m | |
-| `scan_check.min_hit_ratio` | double | 0.60 | [0, 1] | |
-| `scan_check.max_violation_ratio` | double | 0.05 | [0, 1] | beams passing through occupied cells |
+| `scan_check.min_hit_ratio` | double | 0.85 | [0, 1] | among beams ending in known space (V31) |
+| `scan_check.max_violation_ratio` | double | 0.05 | [0, 1] | beams continuing ≥ 0.15 m beyond an occupied cell (V30) |
 | `scan_check.min_known_ratio` / `scan_check.min_valid_beams` | double / int | 0.5 / 60 | [0, 1] / [10, 1e5] | |
 | `scan_check.search_radius` / `scan_check.search_angle_deg` | double | 0.10 / 3.0 | [0, 0.5] m / [0, 10] | local refinement window |
-| `scan_check.refine_pose` | bool | true | — | |
+| `scan_check.refine_pose` | bool | false | — | publish the window's best scan pose instead of vision's (V31) |
 | `output.mode` | string | topic | topic, service | |
 | `output.topic` / `output.service` | string | /initialpose / /set_initial_pose | — | |
 | `output.amcl_node` | string | amcl | "" disables the check | require AMCL to be `active` |
@@ -355,8 +371,9 @@ by a small dump tool, and CI fails if it is stale.
 | `bond.enabled` | bool | true | — | heartbeat for nav2_lifecycle_manager |
 | `extrinsics_check.warn_translation` / `extrinsics_check.warn_rotation_deg` | double | 0.01 / 0.5 | [0.001, 1] m / [0.1, 10] | startup: DB extrinsics vs current TF (WARN only) |
 | `extrinsics_monitor.enabled` | bool | true | — | detection only; never changes any transform |
-| `extrinsics_monitor.period` | double | 60 | [5, 3600] s | non-publishing localization while AMCL is confident |
+| `extrinsics_monitor.period` | double | 60 | [1, 3600] s | one dry-run request while AMCL is confident (V33, V34) |
 | `extrinsics_monitor.max_amcl_std_xy` | double | 0.05 | [0.01, 1] m | confidence gate for taking a sample |
+| `extrinsics_monitor.max_linear_speed` / `extrinsics_monitor.max_angular_speed` | double | 0.2 / 0.1 | [0, 5] m/s / [0, 5] rad/s | speed gate for taking a sample (V33) |
 | `extrinsics_monitor.min_samples` | int | 10 | [3, 1000] | median over a sliding window |
 | `extrinsics_monitor.warn_translation` / `extrinsics_monitor.warn_rotation_deg` | double | 0.02 / 1.0 | [0.001, 1] m / [0.1, 10] | WARN on `/diagnostics` (ERROR at 2.5×) |
 | `shadow.log_path` | string | "" | — | if set, every non-publishing query (monitor or `dry_run`) is appended to a CSV with AMCL's pose; field validation (M8) |
@@ -608,16 +625,16 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 **7.11 Hypothesis clustering and ambiguity.**
 - Per frame, cluster place hypotheses in SE(2) (0.5 m / 15°). Score = inliers.
 - Scan verification runs on the top clusters **before** the ambiguity decision, so a visually similar competitor that fails LiDAR is not a competitor.
-- AMBIGUOUS if the second-best *valid* cluster has S2 ≥ `min_inliers` and S2/S1 ≥ 0.5. Then nothing is published.
+- AMBIGUOUS if the second-best *valid* cluster has S2 ≥ `min_inliers` and S2/S1 ≥ `ambiguity.max_score_ratio` (default 0: any such cluster, V32). Then nothing is published.
 - Limitation, documented: in geometrically *and* visually identical aisles both clusters pass. The result is AMBIGUOUS (a miss, never a wrong pose).
 
 **7.12 Scan verification ("vision proposes, LiDAR verifies").**
 - From `/map`: an occupied mask (≥ 65), an unknown mask (−1), and an L2 distance transform (`cv::distanceTransform`) capped at 1 m. This is the likelihood field.
 - The scan nearest the image (≤ 0.5 s) is propagated to the hypothesis via odometry and transformed with `base→laser`. Valid beams are those inside [range_min, min(range_max, 10 m)].
-- Per beam: an endpoint in unknown space is excluded. A **hit** is an endpoint within 0.10 m of an occupied cell. A **violation** is a ray (Bresenham, stopping 0.15 m short) crossing an occupied cell, i.e. "seeing through a wall".
-- Accept if: valid beams ≥ 60, known ratio ≥ 0.5, hit ratio ≥ 0.60, violation ratio ≤ 0.05.
-- Evaluation runs over a local search window (±0.10 m at 2.5 cm steps × ±3° at 1° steps, about 570 poses, < 50 ms). The best pose optionally refines the output.
-- Rationale: dynamic obstacles produce *short* readings (misses, tolerated up to 40 %) but never violations. AMCL's own field (σ = 0.2, 2 m) is looser on purpose; ours is a stricter gate.
+- Per beam: an endpoint in unknown space is excluded. A **hit** is an endpoint within 0.10 m of an occupied cell. A **violation** is a ray that continues at least 0.15 m through non-occupied cells after the last occupied cell it crosses (exact grid traversal), i.e. "seeing through a wall" (V30).
+- Accept if: valid beams ≥ 60, known ratio ≥ 0.5, hit ratio ≥ 0.85 (V31), violation ratio ≤ 0.05.
+- Evaluation runs over a local search window (±0.10 m at 2.5 cm steps × ±3° at 1° steps, about 570 poses, < 50 ms). The best pose can replace vision's (`scan_check.refine_pose`, off by default, V31).
+- Rationale: dynamic obstacles produce *short* readings (misses, tolerated up to 15 %) but never violations. AMCL's own field (σ = 0.2, 2 m) is looser on purpose; ours is a stricter gate.
 - On a ramp (IMU tilt > 1.5°): beam endpoints are projected with the IMU tilt, and beams that hit the floor or ramp (projected endpoint height < 0.05 m) are dropped. Expect more misses on ramps, which is safe.
 - Limitation, documented: lengthwise error in featureless corridors is weakly constrained by LiDAR. Vision coverage and multi-frame checks carry it.
 
@@ -666,8 +683,8 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 **7.19 Extrinsics health (detection only, never correction).**
 - **Startup check:** compare the `T_base_cam` stored in the DB with the current TF. WARN on `/diagnostics` if they differ by > 1 cm or > 0.5°. This catches a DB built for another robot or URDF. The map itself stays valid; the operator should simply know. If base→camera isn't static (camera on a moving joint), the check is skipped and the monitor below covers it.
 - **Health monitor:**
-  - Every 60 s, while AMCL is confident (σxy ≤ 0.05 m) and the robot is slow, run the query pipeline **without publishing**.
-  - Each success yields the camera pose from vision and the camera pose predicted by AMCL + TF. Their difference is one sample of extrinsic error.
+  - Every 60 s, while AMCL is confident (σxy ≤ 0.05 m), run a full request **without publishing** (V34). A service request preempts it.
+  - Each successful request yields the camera pose from vision and the camera pose predicted by AMCL + TF, taken from its latest frame where the robot was slow (≤ 0.2 m/s, ≤ 0.1 rad/s, V33). Their difference is one sample of extrinsic error.
   - A median over ≥ 10 samples raises WARN past 2 cm / 1° and ERROR past 5 cm / 2.5°.
 - **Why necessary:** a camera rotated left or right (yaw) on its mount passes the height and tilt checks. With an IMU, roll/pitch shifts already show up through the tilt check. The monitor is the only thing that catches yaw and position shifts before success rates silently drop.
 - Recalibration stays a human URDF change. Cost: about one 0.2 s query per minute on x86.
@@ -787,8 +804,8 @@ Working agreement for every milestone:
 | **M0** Skeleton | Apache-2.0 relicense (+ NOTICE), `.gitignore`, 7 package skeletons, CMake helpers, `.clang-format`/`.clang-tidy`, Dockerfile (ARG distro) + `docker_ci.sh`, GH Actions (build/test matrix, lint), TODO.md, README stub, THIRD_PARTY_LICENSES skeleton. **Compat probes**: tiny compiled tests for cv_bridge shim, rosbag2 timestamp accessor, bond + diagnostic_updater with `LifecycleNode`, BT v3/v4 detection + BtServiceNode subclass compile, Ceres manifold shim, `landfall_link_package` on Nav2 | `colcon build && colcon test` green in Docker for humble + jazzy (lyrical attempted, result reported); compat probes pass on each; CI green on GitHub for humble + jazzy after your push; no `ament_target_dependencies` (grep gate); image sizes reported |
 | **M1** Core | types/cameras (plumb_bob, rational, equidistant), SHA-256, SQLite DB v1 + migration framework, map loader (map_server semantics) + grid hash, ORB + bucketing, vocab tree + BoW + inverted index, brute-force retrieval (+ FAISS opt), matchers, multi-view DLT + Ceres refine + filters, upright PoseLib LO-RANSAC + P3P + refine, OpenCV fallback, sanity/clustering/consistency/decision logic, likelihood field + scan verifier, Ceres compat, gravity utilities (IMU / flat floor) + ramp-aware sanity logic, extrinsics-offset robust estimator | Synthetic gtests: triangulation (10 views, 0.5 px noise) median 3D error < 1 cm at 3 m; upright PnP (50 % outliers, 1 px noise, 1000 trials) ≥ 99.5 % within 2 cm / 0.2°; P3P fallback same with 2° tilt; upright PnP with IMU-style gravity on a synthetic 6° ramp same accuracy; ramp height/tilt logic covered; injected outliers (> 4 px) 100 % filtered; DB round-trip bit-exact + version-mismatch + read-only; BoW recall@1 ≥ 0.95 on synthetic places; scan verifier: true pose hit ≥ 0.9, 0.5 m offset rejected, through-wall violation detected; decision table covers every status. ASan/UBSan job clean |
 | **M2** Recorder + builder | `ImageInput`, `TfPoseSource`/`BagTfPoseSource` (IPoseSource), `KeyframeSelector` (TF-based speed, IMU tilt gate), recorder lifecycle node + staging writer, `landfall build/inspect/report/verify/migrate`, report + coverage heatmap. **Sim bag**: Jazzy + nav2_minimal_tb4_sim depot, AMCL localized, both-direction route; fixture ≤ 5 MB (sqlite3, compressed images, readable on Humble) + recorded `ros2 bag record` command in docs | On a ~5 min depot drive: ≥ 150 keyframes, mean track length ≥ 3.5, post-BA reprojection RMS ≤ 1.5 px, BA shifts ≤ 3 cm; recorder keyframe poses vs Gazebo GT ≤ 5 cm / 1°; map loader equals nav2_map_server's `/map` (integration test); build deterministic (same content hash twice); fixture builds in CI < 60 s |
-| **M3** Relocalizer | lifecycle node, DB/map checks, query pipeline (single frame first), sanity, `/initialpose` with motion compensation, service (deferred response), `~/status`, diagnostics, debug image, markers, startup trigger, bond, AMCL state check, IMU gravity input, startup extrinsics check, component registration | On the fixture query segment: success ≥ 90 % (≤ 0.25 m / 5° vs GT), **0** published poses with error > 0.5 m; NOT_READY paths (no DB, map mismatch, no camera_info, no TF, AMCL inactive) and BUSY tested; launch_test: AMCL converges after our `/initialpose`; lifecycle transitions + composition tested; latency logged |
-| **M4** Safety layer | scan verification in-node, multi-frame consistency, ambiguity with LiDAR-filtered competitors, auto-trigger state machine, ramp-aware LiDAR projection, extrinsics health monitor (diagnostics only) | Injected wrong poses (0.5–5 m) rejected 100 %; true poses accepted ≥ 95 %; synthetic odometry inconsistency ⇒ REJECTED_CONSISTENCY; duplicated-region DB ⇒ AMBIGUOUS, never wrong SUCCESS; auto-trigger fires once and honors cooldown (launch_test); monitor flags an injected 2° yaw / 3 cm camera offset and stays silent on unmodified data; synthetic ramp queries never yield a wrong SUCCESS |
+| **M3** Relocalizer | lifecycle node, DB/map checks, query pipeline (single frame first), sanity, `/initialpose` with motion compensation, service (deferred response), `~/status`, diagnostics, debug image, markers, startup trigger, bond, AMCL state check, IMU gravity input, startup extrinsics check, component registration | Fixture query regression in CI (no wrong pose); success ≥ 90 % (≤ 0.25 m / 5° vs GT) and **0** published poses with error > 0.5 m are measured with M4 (V29); NOT_READY paths (no DB, map mismatch, no camera_info, no TF, AMCL inactive) and BUSY tested; launch_test: AMCL converges after our `/initialpose`; lifecycle transitions + composition tested; latency logged |
+| **M4** Safety layer | scan verification in-node, multi-frame consistency, ambiguity with LiDAR-filtered competitors, auto-trigger state machine, ramp-aware LiDAR projection, extrinsics health monitor (diagnostics only) | Injected wrong poses (0.5–5 m) rejected 100 %; true poses accepted ≥ 95 %; synthetic odometry inconsistency ⇒ REJECTED_CONSISTENCY; duplicated-region DB ⇒ AMBIGUOUS, never wrong SUCCESS; auto-trigger fires once and honors cooldown (launch_test); monitor flags an injected 2° yaw / 3 cm camera offset and stays silent on unmodified data; synthetic ramp queries never yield a wrong SUCCESS; M3's criteria on the cross-session depot drives (run 1 ↔ run 2, 3-frame requests): success ≥ 90 % and **0** published poses off by more than 0.5 m (V29) |
 | **M5** Learned (optional build) | FindONNXRuntime, `LANDFALL_WITH_ONNXRUNTIME=AUTO\|ON\|OFF`, XFeat (dense ONNX + C++ post-proc), ALIKED + LightGlue (export check; fallback XFeat + LighterGlue), generic ONNX global (MegaLoc, EigenPlaces), MNN; export scripts, `models.yaml`, `fetch_models.sh`, license audit doc | Parity vs PyTorch: keypoints ≤ 0.5 px for ≥ 95 %, descriptor and global cosine ≥ 0.999; full suite passes with ORT **OFF** and ON (vendor CPU); compiles against Lyrical apt ORT 1.23.2; learned vs classical on fixture reported; CUDA EP verified **only if** cuDNN is available (else marked unverified + TODO) |
 | **M6** Nav2 | `ReLocalize` + `IsLocalized` BT nodes, example BTs (startup: `Fallback[IsLocalized, RetryUntilSuccessful[ReLocalize]]` before navigation; recovery: `RoundRobin[ReLocalize, ClearCostmaps, Spin, Wait, BackUp]`), XML launch files (+ `startup_relocalization:=true`), per-distro Nav2 overlays, `docs/nav2_integration.md` (lifecycle order, AMCL params, server_timeout > query.timeout) | All XMLs load on all distros (gtest); Jazzy sim: unknown start pose ⇒ startup relocalization ⇒ AMCL converges ⇒ NavigateToPose succeeds (logs); kidnap ⇒ recovery runs ReLocalize first ⇒ success; Humble TB4/Fortress demo attempted, outcome reported |
 | **M7** Benchmark + release | kidnap runner (teleport via `ros_gz_interfaces/SetEntityPose`, verified to exist on Jazzy and Lyrical), scenarios: same session / different session / lighting / moved objects (procedural world variants), baselines: AMCL global localization (`reinitialize_global_localization` + spin), Landfall classical and learned; CSV + plots + Markdown report; README results table, all docs (incl. `docs/sensors.md`, `docs/field_validation.md`), CHANGELOG, interface-freeze review, **v1.0.0-rc.1** (tagged by you) | ≥ 100 placements per scenario-condition on depot (+ warehouse locally, NC assets not redistributed); metrics: success (≤ 0.25 m / 5° after AMCL converges), time-to-localize, **FP** (published pose error > 0.5 m or > 10°) with 95 % Clopper-Pearson upper bound, miss rate; target observed FP = 0; docs complete; frozen-interface list (msgs, params, DB schema v1) recorded in CHANGELOG |

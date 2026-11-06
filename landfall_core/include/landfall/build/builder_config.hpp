@@ -77,6 +77,7 @@ struct BagConfig
   std::string camera_info_topic = "/camera/camera_info";
   std::string pose_topic = "/amcl_pose";           ///< PoseWithCovarianceStamped; "" with tf_only
   std::string imu_topic;                           ///< optional: ramp gate
+  std::string scan_topic = "/scan";                ///< LaserScan; used by `landfall query` only
   std::string imu_frame;                           ///< IMU frame in TF; "" = the messages' frame_id
   std::string gravity_source = "auto";             ///< auto, imu, flat_floor (as the recorder)
   double imu_max_age = 0.1;                        ///< s

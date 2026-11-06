@@ -58,6 +58,8 @@ class ExtrinsicsMonitor
 public:
   explicit ExtrinsicsMonitor(const ExtrinsicsMonitorParams & params = ExtrinsicsMonitorParams());
 
+  /// Thresholds can change; the samples are kept.
+  void setParams(const ExtrinsicsMonitorParams & params) { params_ = params; }
   void addSample(const Pose3 & T_map_cam_visual, const Pose3 & T_map_cam_predicted);
   ExtrinsicsEstimate estimate() const;
   void reset() { samples_.clear(); }

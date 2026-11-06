@@ -28,11 +28,11 @@ struct ScanCheckParams
 {
   double max_range = 10.0;            ///< m; longer readings are ignored
   double hit_tolerance = 0.10;        ///< m; endpoint this close to an obstacle is a hit
-  double min_hit_ratio = 0.60;        ///< hits / beams ending in known space
+  double min_hit_ratio = 0.85;        ///< hits / beams ending in known space
   double max_violation_ratio = 0.05;  ///< beams passing through an obstacle / valid beams
   double min_known_ratio = 0.5;       ///< beams ending in known space / valid beams
   int min_valid_beams = 60;
-  double violation_margin = 0.15;  ///< m; rays stop this short of their endpoint
+  double violation_margin = 0.15;  ///< m a beam must go on past an obstacle to see through it
   double search_radius = 0.10;     ///< m; local search window (0 disables the search)
   double search_step = 0.025;
   double search_angle_deg = 3.0;

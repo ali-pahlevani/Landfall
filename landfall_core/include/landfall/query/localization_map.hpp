@@ -75,6 +75,7 @@ public:
   const OccupancyGrid & grid() const { return grid_; }
   /// Likelihood field of the map (free-space check, LiDAR verification).
   const LikelihoodField & field() const { return *field_; }
+  std::shared_ptr<const LikelihoodField> fieldPtr() const { return field_; }
   const db::CameraRecord & cameraRecord() const { return camera_record_; }
   /// Camera model the database's images were taken with.
   const CameraModel & camera() const { return camera_; }
@@ -104,7 +105,7 @@ private:
   std::string content_sha256_;
   db::MapRecord map_record_;
   OccupancyGrid grid_;
-  std::unique_ptr<LikelihoodField> field_;
+  std::shared_ptr<const LikelihoodField> field_;
   db::CameraRecord camera_record_;
   CameraModel camera_;
   std::vector<MapKeyframe> keyframes_;

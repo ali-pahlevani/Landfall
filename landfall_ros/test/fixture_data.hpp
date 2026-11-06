@@ -38,6 +38,7 @@
 #include "rosbag2_cpp/reader.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/compressed_image.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include "tf2_msgs/msg/tf_message.hpp"
 
 namespace landfall::test
@@ -78,6 +79,7 @@ struct FixtureMessages
   tf2_msgs::msg::TFMessage tf_static;
   sensor_msgs::msg::CameraInfo camera_info;
   std::vector<sensor_msgs::msg::CompressedImage> images;
+  std::vector<sensor_msgs::msg::LaserScan> scans;
   eval::Trajectory truth;  ///< Gazebo's world frame
 };
 
@@ -109,6 +111,8 @@ inline FixtureMessages readFixtureMessages()
       m.camera_info = deserializeBagMessage<sensor_msgs::msg::CameraInfo>(*message);
     } else if (topic == "/rgbd_camera/image/compressed") {
       m.images.push_back(deserializeBagMessage<sensor_msgs::msg::CompressedImage>(*message));
+    } else if (topic == "/scan") {
+      m.scans.push_back(deserializeBagMessage<sensor_msgs::msg::LaserScan>(*message));
     } else if (topic == "/ground_truth/pose") {
       const auto pose = deserializeBagMessage<geometry_msgs::msg::PoseStamped>(*message);
       m.truth.add(ros::toNanoseconds(pose.header.stamp), toPose2(ros::toPose3(pose.pose)));

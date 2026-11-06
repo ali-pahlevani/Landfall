@@ -76,6 +76,20 @@ double toRad(double degrees) { return degrees * M_PI / 180.0; }
 
 }  // namespace
 
+std::optional<ScanCheckMode> parseScanCheckMode(const std::string & name)
+{
+  if (name == "required") {
+    return ScanCheckMode::kRequired;
+  }
+  if (name == "optional") {
+    return ScanCheckMode::kOptional;
+  }
+  if (name == "disabled") {
+    return ScanCheckMode::kDisabled;
+  }
+  return std::nullopt;
+}
+
 Localizer::Localizer(std::shared_ptr<const LocalizationMap> map, const LocalizerParams & params)
 : map_(std::move(map)), params_(params), pool_(params.threads)
 {
@@ -83,12 +97,14 @@ Localizer::Localizer(std::shared_ptr<const LocalizationMap> map, const Localizer
     throw std::invalid_argument("Localizer: no map");
   }
   matcher_ = makeMatcher(map_->descriptorType(), params_);
+  verifier_ = std::make_unique<ScanVerifier>(map_->fieldPtr(), params_.scan);
 }
 
 void Localizer::setParams(const LocalizerParams & params)
 {
   params_ = params;
   matcher_ = makeMatcher(map_->descriptorType(), params_);
+  verifier_ = std::make_unique<ScanVerifier>(map_->fieldPtr(), params_.scan);
 }
 
 std::vector<Localizer::Place> Localizer::groupPlaces(
@@ -134,7 +150,8 @@ std::vector<Localizer::Place> Localizer::groupPlaces(
 }
 
 Hypothesis Localizer::solvePlace(
-  const Place & place, const QueryFrame & frame, const Features & features) const
+  const Place & place, const QueryFrame & frame, const Features & features, bool check_scan,
+  const ProjectedScan * scan) const
 {
   Hypothesis h;
   h.keyframe_ids = place.keyframe_ids;
@@ -239,10 +256,29 @@ Hypothesis Localizer::solvePlace(
   input.mean_reprojection_px = solution->mean_reprojection_px;
   input.image_size = cv::Size(frame.camera.width(), frame.camera.height());
   h.sanity = checkSanity(input, sanity, &map_->field());
-  if (h.sanity.passed) {
-    h.stage = Stage::kSanityPassed;
-  } else {
+  h.pose = h.sanity.pose;
+  if (!h.sanity.passed) {
     h.rejection = h.sanity.reason;
+    return h;
+  }
+  h.stage = Stage::kSanityPassed;
+  if (!check_scan) {
+    return h;
+  }
+  // Vision proposes, LiDAR verifies.
+  h.scan_checked = true;
+  if (scan == nullptr) {
+    h.rejection = "no LiDAR scan for this image";
+    return h;
+  }
+  h.scan = verifier_->verify(*scan, h.sanity.pose);
+  if (!h.scan.passed) {
+    h.rejection = "scan check: " + h.scan.reason;
+    return h;
+  }
+  h.stage = Stage::kScanPassed;
+  if (params_.refine_with_scan) {
+    h.pose = h.scan.best_pose;
   }
   return h;
 }
@@ -270,9 +306,21 @@ FrameResult Localizer::localize(const QueryFrame & frame)
   const std::vector<Place> places = groupPlaces(result.retrieved);
   result.timings.retrieval_s = watch.lap();
 
+  // The scan check applies when required, or when optional and a scan came with the image.
+  const bool check_scan = params_.scan_mode == ScanCheckMode::kRequired ||
+                          (params_.scan_mode == ScanCheckMode::kOptional && frame.scan);
+  std::optional<ProjectedScan> projected;
+  if (check_scan && frame.scan) {
+    projected = verifier_->project(*frame.scan, frame.gravity.gravity_base);
+  }
+  result.scan_checked = check_scan;
+  const Stage valid_stage = check_scan ? Stage::kScanPassed : Stage::kSanityPassed;
+
   std::vector<Hypothesis> hypotheses(places.size());
-  pool_.parallelFor(
-    places.size(), [&](std::size_t i) { hypotheses[i] = solvePlace(places[i], frame, features); });
+  pool_.parallelFor(places.size(), [&](std::size_t i) {
+    hypotheses[i] =
+      solvePlace(places[i], frame, features, check_scan, projected ? &*projected : nullptr);
+  });
   // Best first: deeper stage, more inliers, more matches, better retrieval rank.
   std::vector<std::size_t> order(hypotheses.size());
   std::iota(order.begin(), order.end(), 0);
@@ -297,9 +345,9 @@ FrameResult Localizer::localize(const QueryFrame & frame)
   std::vector<double> scores;
   for (int i = 0; i < static_cast<int>(result.hypotheses.size()); ++i) {
     const Hypothesis & h = result.hypotheses[static_cast<std::size_t>(i)];
-    if (h.stage == Stage::kSanityPassed) {
+    if (h.stage == valid_stage) {
       valid.push_back(i);
-      poses.push_back(h.sanity.pose);
+      poses.push_back(h.pose);
       scores.push_back(h.sanity.num_inliers);
     }
   }
@@ -348,6 +396,12 @@ ScoreSummary summarizeScores(const std::vector<FrameResult> & frames)
     s.mean_reprojection_px = std::max(s.mean_reprojection_px, m.mean_reprojection_px);
     s.height_error_m = std::max(s.height_error_m, m.height_error_m);
     s.tilt_error_deg = std::max(s.tilt_error_deg, m.tilt_error_deg);
+    if (h->scan_checked) {
+      const ScanScore & scan = h->scan.score;
+      s.scan_hit_ratio = s.scan ? std::min(s.scan_hit_ratio, scan.hit_ratio) : scan.hit_ratio;
+      s.scan_violation_ratio = std::max(s.scan_violation_ratio, scan.violation_ratio);
+      s.scan = true;
+    }
   }
   return s;
 }

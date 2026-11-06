@@ -13,13 +13,21 @@
 // limitations under the License.
 
 // relocalization_check: plays one window of the depot fixture (simulated time, real-time rate)
-// into a running map_server + AMCL + landfall_relocalizer stack, asks the relocalizer for a pose,
-// and waits until AMCL, started without any pose, converges on the ground truth.
+// into a running map_server + AMCL + landfall_relocalizer stack and checks that AMCL converges on
+// the ground truth after the relocalizer's pose.
 //
-//   relocalization_check BAG START_S END_S
+//   relocalization_check BAG START_S END_S [service|auto]
+//
+// service (default): AMCL starts without any pose; the check asks ~/relocalize for one. Exit 0 when
+//   AMCL's pose is within 0.20 m / 3 deg of the truth twice in a row.
+// auto: the check scatters AMCL's particles over the whole map (reinitialize_global_localization)
+//   and asks nothing; the relocalizer's auto trigger must relocalize once, AMCL must converge, and
+//   no further automatic request may follow while AMCL stays confident. Exit 0 when that holds for
+//   kQuietAfter seconds after the automatic success (longer than the trigger's duration plus its
+//   cooldown in the launch test).
 //
 // The recorded map->odom (the recording's own AMCL) is dropped, so the AMCL under test is the only
-// localization. Exit 0 when AMCL's pose is within 0.20 m / 3 deg of the truth twice in a row.
+// localization.
 
 #include <algorithm>
 #include <atomic>
@@ -50,6 +58,7 @@
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
+#include "std_srvs/srv/empty.hpp"
 #include "tf2_msgs/msg/tf_message.hpp"
 
 namespace
@@ -58,6 +67,10 @@ namespace
 using Clock = std::chrono::steady_clock;
 using landfall::Pose2;
 using Result = landfall_msgs::msg::RelocalizationResult;
+
+/// auto mode: seconds of recording that must pass, AMCL confident and no further automatic request,
+/// after the automatic success.
+constexpr double kQuietAfter = 15.0;
 
 template <typename MessageT>
 MessageT deserialize(const rosbag2_storage::SerializedBagMessage & bag_message)
@@ -77,10 +90,12 @@ struct Recorded
 
 int check(int argc, char ** argv)
 {
-  if (argc != 4) {
-    std::fprintf(stderr, "usage: relocalization_check BAG START_S END_S\n");
+  const std::string mode = argc == 5 ? argv[4] : "service";
+  if ((argc != 4 && argc != 5) || (mode != "service" && mode != "auto")) {
+    std::fprintf(stderr, "usage: relocalization_check BAG START_S END_S [service|auto]\n");
     return 2;
   }
+  const bool automatic = mode == "auto";
   std::setvbuf(stdout, nullptr, _IOLBF, 0);  // launch_testing captures a pipe
   const std::string bag = argv[1];
   const auto start_ns = static_cast<int64_t>(std::stod(argv[2]) * 1e9);
@@ -139,8 +154,18 @@ int check(int argc, char ** argv)
       const std::lock_guard<std::mutex> lock(amcl_mutex);
       amcl_poses.push_back(*p);
     });
+  std::vector<Result> statuses;  // the relocalizer's results with trigger "auto"
+  auto status_sub = node->create_subscription<Result>(
+    "/landfall_relocalizer/status", rclcpp::QoS(10).reliable().transient_local(),
+    [&](const Result::ConstSharedPtr & r) {
+      if (r->trigger == "auto") {
+        const std::lock_guard<std::mutex> lock(amcl_mutex);
+        statuses.push_back(*r);
+      }
+    });
   auto relocalize =
     node->create_client<landfall_msgs::srv::Relocalize>("/landfall_relocalizer/relocalize");
+  auto scatter = node->create_client<std_srvs::srv::Empty>("/reinitialize_global_localization");
   auto amcl_state = node->create_client<lifecycle_msgs::srv::GetState>("/amcl/get_state");
   auto reloc_state =
     node->create_client<lifecycle_msgs::srv::GetState>("/landfall_relocalizer/get_state");
@@ -196,11 +221,16 @@ int check(int argc, char ** argv)
     "stack active after %.1f s; playing %zu messages\n",
     std::chrono::duration<double>(Clock::now() - lead_in).count(), messages.size());
 
-  // Playback at real-time rate. Three seconds in, ask for a pose.
+  // Playback at real-time rate. Three seconds in, ask for a pose (service mode); one second in,
+  // scatter AMCL's particles (auto mode).
   const auto play_start = Clock::now();
   std::optional<rclcpp::Client<landfall_msgs::srv::Relocalize>::FutureAndRequestId> request;
   std::optional<Result> result;
+  bool scattered = false;
+  bool reported_uncertain = false;
+  std::size_t automatic_requests = 0;
   int64_t published_stamp = 0;
+  int64_t converged_stamp = 0;
   int converged = 0;
   for (const auto & r : messages) {
     const auto due = play_start + std::chrono::nanoseconds(r.stamp_ns - messages.front().stamp_ns);
@@ -230,7 +260,47 @@ int check(int argc, char ** argv)
     } else if (m.topic_name == "/imu") {
       imu_pub->publish(deserialize<sensor_msgs::msg::Imu>(m));
     }
-    if (!request && r.stamp_ns - messages.front().stamp_ns > 3'000'000'000) {
+    if (automatic && !scattered && r.stamp_ns - messages.front().stamp_ns > 1'000'000'000) {
+      if (!scatter->service_is_ready()) {
+        std::fprintf(
+          stderr, "relocalization_check: AMCL serves no reinitialize_global_localization\n");
+        return finish(7);
+      }
+      scatter->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>());
+      scattered = true;
+      std::printf("AMCL scattered at %.2f s\n", static_cast<double>(r.stamp_ns) * 1e-9);
+    }
+    if (automatic) {
+      std::vector<Result> fresh;
+      {
+        const std::lock_guard<std::mutex> lock(amcl_mutex);
+        fresh.swap(statuses);
+        if (scattered && !reported_uncertain && !amcl_poses.empty()) {
+          const auto & p = amcl_poses.back();
+          std::printf(
+            "amcl after scattering: std %.2f m x %.2f m\n", std::sqrt(p.pose.covariance[0]),
+            std::sqrt(p.pose.covariance[7]));
+          reported_uncertain = true;
+        }
+      }
+      for (const auto & s : fresh) {
+        ++automatic_requests;
+        std::printf(
+          "automatic relocalization %zu at %.2f s: status %u, published %d: %s\n",
+          automatic_requests, static_cast<double>(r.stamp_ns) * 1e-9, s.status, s.published ? 1 : 0,
+          s.message.c_str());
+        if (automatic_requests > 1) {
+          std::fprintf(stderr, "relocalization_check: the auto trigger fired again\n");
+          return finish(8);
+        }
+        if (s.status != Result::SUCCESS || !s.published) {
+          return finish(4);
+        }
+        result = s;
+        published_stamp = landfall::ros::toNanoseconds(s.pose.header.stamp);
+      }
+    }
+    if (!automatic && !request && r.stamp_ns - messages.front().stamp_ns > 3'000'000'000) {
       auto req = std::make_shared<landfall_msgs::srv::Relocalize::Request>();
       req->num_frames = 2;
       req->timeout = 20.0F;
@@ -257,6 +327,22 @@ int check(int argc, char ** argv)
       const std::lock_guard<std::mutex> lock(amcl_mutex);
       poses.swap(amcl_poses);
     }
+    if (converged_stamp > 0) {
+      // auto mode, after convergence: AMCL stays confident and nothing fires for kQuietAfter.
+      for (const auto & p : poses) {
+        if (std::sqrt(p.pose.covariance[0]) > 0.5 || std::sqrt(p.pose.covariance[7]) > 0.5) {
+          std::fprintf(stderr, "relocalization_check: AMCL became uncertain again\n");
+          return finish(9);
+        }
+      }
+      if (static_cast<double>(r.stamp_ns - converged_stamp) * 1e-9 >= kQuietAfter) {
+        std::printf(
+          "no further automatic request in the %.0f s after convergence; AMCL stayed confident\n",
+          kQuietAfter);
+        return finish(0);
+      }
+      continue;
+    }
     for (const auto & p : poses) {
       const int64_t stamp = landfall::ros::toNanoseconds(p.header.stamp);
       if (stamp < published_stamp) {
@@ -276,9 +362,19 @@ int check(int argc, char ** argv)
       converged = position <= 0.20 && yaw <= 3.0 ? converged + 1 : 0;
       if (converged >= 2) {
         std::printf("AMCL converged\n");
-        return finish(0);
+        if (!automatic) {
+          return finish(0);
+        }
+        converged_stamp = r.stamp_ns;
+        break;
       }
     }
+  }
+  if (converged_stamp > 0) {
+    std::fprintf(
+      stderr, "relocalization_check: the window ended %.1f s after convergence (need %.0f s)\n",
+      static_cast<double>(messages.back().stamp_ns - converged_stamp) * 1e-9, kQuietAfter);
+    return finish(10);
   }
   std::fprintf(
     stderr, "relocalization_check: %s\n",

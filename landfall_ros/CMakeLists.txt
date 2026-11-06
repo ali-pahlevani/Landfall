@@ -50,6 +50,8 @@ add_library(landfall_ros_common SHARED
   src/conversions.cpp
   src/frame_gate.cpp
   src/imu_gravity_source.cpp
+  src/scan_evaluation.cpp
+  src/scan_input.cpp
   src/tf_pose_source.cpp
 )
 target_link_libraries(landfall_ros_common
@@ -205,10 +207,19 @@ if(BUILD_TESTING)
   add_executable(relocalization_check test/relocalization_check.cpp)
   target_link_libraries(relocalization_check PRIVATE landfall_ros_common)
   landfall_link_package(relocalization_check PRIVATE
-    landfall_msgs lifecycle_msgs rosgraph_msgs sensor_msgs tf2_msgs)
+    landfall_msgs lifecycle_msgs rosgraph_msgs sensor_msgs std_srvs tf2_msgs)
   landfall_set_cxx_standard(relocalization_check)
   landfall_set_warnings(relocalization_check)
   add_launch_test(test/test_relocalizer_amcl.py
+    TIMEOUT 300
+    ENV
+      LANDFALL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/depot_small
+      LANDFALL_AMCL_PARAMS=${CMAKE_CURRENT_SOURCE_DIR}/test/amcl_fixture.yaml
+      LANDFALL_CLI=$<TARGET_FILE:landfall>
+      LANDFALL_RELOCALIZER=$<TARGET_FILE:relocalizer_node>
+      LANDFALL_RELOCALIZATION_CHECK=$<TARGET_FILE:relocalization_check>)
+  # AMCL loses its pose: the auto trigger relocalizes once and AMCL stays confident (launch test).
+  add_launch_test(test/test_auto_trigger_amcl.py
     TIMEOUT 300
     ENV
       LANDFALL_FIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/depot_small

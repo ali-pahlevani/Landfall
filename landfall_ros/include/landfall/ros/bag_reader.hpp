@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -28,28 +29,31 @@
 #include "landfall/build/map_builder.hpp"
 #include "landfall/ros/imu_gravity_source.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include "tf2/buffer_core.hpp"
 
 namespace landfall::ros
 {
 
 /// Everything of a bag except its images: TF (static and dynamic) in a buffer spanning the whole
-/// recording, the first camera_info, localization covariances and IMU attitudes.
+/// recording, the first camera_info, localization covariances, IMU attitudes and LiDAR scans.
 struct BagSideData
 {
   std::shared_ptr<tf2::BufferCore> buffer;
   std::optional<sensor_msgs::msg::CameraInfo> camera_info;
   std::vector<std::pair<int64_t, Mat3>> covariances;  ///< (stamp, x/y/yaw covariance)
   ImuGravitySource imu{std::numeric_limits<std::size_t>::max()};
-  std::string imu_frame;               ///< `imu_frame` if given, else the samples' frame_id
-  std::size_t invalid_transforms = 0;  ///< TF entries tf2 refused (skipped)
+  std::string imu_frame;  ///< `imu_frame` if given, else the samples' frame_id
+  std::deque<sensor_msgs::msg::LaserScan> scans;  ///< ordered by stamp
+  std::size_t invalid_transforms = 0;             ///< TF entries tf2 refused (skipped)
 };
 
 /// Reads the side data. Empty topic names are skipped. Throws std::runtime_error for a missing or
 /// unreadable bag.
 BagSideData readBagSideData(
   const std::string & uri, const std::string & camera_info_topic, const std::string & pose_topic,
-  const std::string & imu_topic, const std::string & imu_frame);
+  const std::string & imu_topic, const std::string & imu_frame,
+  const std::string & scan_topic = "");
 
 /// Number of messages on an Image or CompressedImage topic. Throws std::runtime_error, listing the
 /// bag's image topics, if the topic is missing or of another type.

@@ -14,6 +14,7 @@
 
 #include "landfall/ros/bag_reader.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -69,7 +70,7 @@ rosbag2_storage::StorageFilter topicsFilter(std::vector<std::string> topics)
 
 BagSideData readBagSideData(
   const std::string & uri, const std::string & camera_info_topic, const std::string & pose_topic,
-  const std::string & imu_topic, const std::string & imu_frame)
+  const std::string & imu_topic, const std::string & imu_frame, const std::string & scan_topic)
 {
   if (!std::filesystem::exists(uri)) {
     throw std::runtime_error("bag not found: " + uri);
@@ -79,7 +80,7 @@ BagSideData readBagSideData(
   BagSideData data;
   data.buffer = std::make_shared<tf2::BufferCore>(duration + std::chrono::seconds(60));
   std::vector<std::string> topics = {kTfTopic, kTfStaticTopic};
-  for (const auto & topic : {camera_info_topic, pose_topic, imu_topic}) {
+  for (const auto & topic : {camera_info_topic, pose_topic, imu_topic, scan_topic}) {
     if (!topic.empty()) {
       topics.push_back(topic);
     }
@@ -113,8 +114,13 @@ BagSideData readBagSideData(
       if (data.imu.add(sample) && data.imu_frame.empty()) {
         data.imu_frame = imu_frame.empty() ? sample.header.frame_id : imu_frame;
       }
+    } else if (topic == scan_topic) {
+      data.scans.push_back(deserialize<sensor_msgs::msg::LaserScan>(*message));
     }
   }
+  std::stable_sort(data.scans.begin(), data.scans.end(), [](const auto & a, const auto & b) {
+    return toNanoseconds(a.header.stamp) < toNanoseconds(b.header.stamp);
+  });
   return data;
 }
 

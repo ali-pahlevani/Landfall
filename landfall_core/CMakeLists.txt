@@ -42,6 +42,7 @@ add_library(landfall_core SHARED
   src/geometry/gravity.cpp
   src/geometry/pnp.cpp
   src/geometry/two_view.cpp
+  src/query/auto_trigger.cpp
   src/query/clustering.cpp
   src/query/decision.cpp
   src/query/extrinsics_monitor.cpp
@@ -160,6 +161,7 @@ if(BUILD_TESTING)
   landfall_core_test(test_map_builder TIMEOUT 600 LIBRARIES landfall_core_build)
   landfall_core_test(test_trajectory)
   landfall_core_test(test_localizer TIMEOUT 300 LIBRARIES landfall_core_build)
+  landfall_core_test(test_auto_trigger)
 endif()
 
 ament_export_targets(export_landfall_core HAS_LIBRARY_TARGET)

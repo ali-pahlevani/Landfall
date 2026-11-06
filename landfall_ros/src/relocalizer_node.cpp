@@ -29,9 +29,11 @@
 
 #include "landfall/grid/map_loader.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
+#include "landfall/record/keyframe_selector.hpp"
 #include "landfall/ros/compat/cv_bridge.hpp"
 #include "landfall/ros/conversions.hpp"
 #include "landfall/ros/parameters.hpp"
+#include "landfall/ros/scan_input.hpp"
 #include "landfall/util/json.hpp"
 #include "landfall/util/sha256.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
@@ -148,6 +150,26 @@ void RelocalizerNode::declareParameters()
       10.0));
   declare_parameter(
     "autostart", false, describe("relocalizer_node executable: configure and activate on start"));
+  declare_parameter(
+    "scan_check.mode", "required",
+    describe("LiDAR check of every pose: required, optional (when a scan is there) or disabled"));
+  declare_parameter("scan_check.topic", "scan", describe("sensor_msgs/LaserScan topic"));
+  declare_parameter(
+    "auto_trigger.enabled", false,
+    describe("Relocalize on its own while the localization stays uncertain"));
+  declare_parameter(
+    "auto_trigger.pose_topic", "amcl_pose",
+    describe("PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor)"));
+  declare_parameter(
+    "extrinsics_monitor.enabled", true,
+    describe("Compare vision's camera pose with TF's while the localization is confident"));
+  declare_parameter(
+    "extrinsics_monitor.period", 60.0,
+    describe("Seconds between the monitor's dry-run requests", 1.0, 3600.0));
+  declare_parameter(
+    "shadow.log_path", "",
+    describe("If set, every request that publishes nothing (dry runs, the monitor) is appended "
+             "there as CSV with the localization's pose"));
 
   // Thresholds: read at the start of every request.
   declare_parameter(
@@ -225,8 +247,11 @@ void RelocalizerNode::declareParameters()
     describe(
       "Poses this close (and within cluster_radius) are one place, degrees", 1.0, 180.0, kDynamic));
   declare_parameter(
-    "ambiguity.max_score_ratio", 0.5,
-    describe("Runner-up / best inliers at or above this is AMBIGUOUS", 0.0, 1.0, kDynamic));
+    "ambiguity.max_score_ratio", 0.0,
+    describe(
+      "A second valid place with at least sanity.min_inliers inliers and this fraction of the "
+      "best one's makes the result AMBIGUOUS; 0: any such place",
+      0.0, 1.0, kDynamic));
   declare_parameter(
     "output.std_xy", 0.25,
     describe("Standard deviation in x and y of the published pose, metres", 0.01, 5.0, kDynamic));
@@ -243,6 +268,79 @@ void RelocalizerNode::declareParameters()
   declare_parameter(
     "debug.dump_dir", "",
     describe("If set, every query frame and its result are saved there for tuning", kDynamic));
+  declare_parameter(
+    "scan_check.max_time_offset", 0.5,
+    describe(
+      "Largest time between an image and the scan that checks it, seconds", 0.0, 5.0, kDynamic));
+  declare_parameter(
+    "scan_check.max_range", 10.0,
+    describe("Longer readings are ignored, metres", 0.5, 100.0, kDynamic));
+  declare_parameter(
+    "scan_check.hit_tolerance", 0.10,
+    describe("A beam ending this close to an obstacle is a hit, metres", 0.01, 1.0, kDynamic));
+  declare_parameter(
+    "scan_check.min_hit_ratio", 0.85,
+    describe(
+      "Smallest fraction of hits among the beams ending in known space", 0.0, 1.0, kDynamic));
+  declare_parameter(
+    "scan_check.max_violation_ratio", 0.05,
+    describe("Largest fraction of beams that see through an obstacle", 0.0, 1.0, kDynamic));
+  declare_parameter(
+    "scan_check.min_known_ratio", 0.5,
+    describe("Smallest fraction of beams ending in known space", 0.0, 1.0, kDynamic));
+  declare_parameter(
+    "scan_check.min_valid_beams", 60, describeInt("Fewest usable beams", 10, 100000, kDynamic));
+  declare_parameter(
+    "scan_check.search_radius", 0.10,
+    describe("Local search window around a pose, metres", 0.0, 0.5, kDynamic));
+  declare_parameter(
+    "scan_check.search_angle_deg", 3.0,
+    describe("Local search window around a pose, degrees", 0.0, 10.0, kDynamic));
+  declare_parameter(
+    "scan_check.refine_pose", false,
+    describe(
+      "Publish the scan check's best pose of its search window instead of vision's", kDynamic));
+  declare_parameter(
+    "auto_trigger.max_std_xy", 0.5,
+    describe(
+      "The localization is uncertain above this std in x or y, metres", 0.05, 10.0, kDynamic));
+  declare_parameter(
+    "auto_trigger.max_std_yaw_deg", 15.0,
+    describe("The localization is uncertain above this std in yaw, degrees", 1.0, 180.0, kDynamic));
+  declare_parameter(
+    "auto_trigger.duration", 5.0,
+    describe(
+      "Seconds the localization must stay uncertain before a request", 0.0, 600.0, kDynamic));
+  declare_parameter(
+    "auto_trigger.cooldown", 30.0,
+    describe("Seconds after an automatic request before the next one", 0.0, 3600.0, kDynamic));
+  declare_parameter(
+    "extrinsics_monitor.max_amcl_std_xy", 0.05,
+    describe(
+      "The monitor samples only while the localization's std is below this, metres", 0.01, 1.0,
+      kDynamic));
+  declare_parameter(
+    "extrinsics_monitor.max_linear_speed", 0.2,
+    describe(
+      "The monitor samples only while the robot is slower than this, m/s", 0.0, 5.0, kDynamic));
+  declare_parameter(
+    "extrinsics_monitor.max_angular_speed", 0.1,
+    describe(
+      "The monitor samples only while the robot turns slower than this, rad/s", 0.0, 5.0,
+      kDynamic));
+  declare_parameter(
+    "extrinsics_monitor.min_samples", 10,
+    describeInt("Samples needed before the monitor reports an offset", 3, 1000, kDynamic));
+  declare_parameter(
+    "extrinsics_monitor.warn_translation", 0.02,
+    describe(
+      "WARN when the camera moved this much on its mount, metres (ERROR at 2.5 times)", 0.001, 1.0,
+      kDynamic));
+  declare_parameter(
+    "extrinsics_monitor.warn_rotation_deg", 1.0,
+    describe(
+      "WARN when the camera turned this much on its mount, degrees (ERROR at 2.5 times)", 0.1, 10.0,
+      kDynamic));
 }
 
 RelocalizerNode::Settings RelocalizerNode::readSettings() const
@@ -278,6 +376,15 @@ RelocalizerNode::Settings RelocalizerNode::readSettings() const
   s.bond_enabled = get_parameter("bond.enabled").as_bool();
   s.extrinsics_warn_translation = get_parameter("extrinsics_check.warn_translation").as_double();
   s.extrinsics_warn_rotation_deg = get_parameter("extrinsics_check.warn_rotation_deg").as_double();
+  const std::string scan_mode = get_parameter("scan_check.mode").as_string();
+  requireOneOf("scan_check.mode", scan_mode, {"required", "optional", "disabled"});
+  s.scan_mode = parseScanCheckMode(scan_mode).value_or(ScanCheckMode::kRequired);  // validated
+  s.scan_topic = get_parameter("scan_check.topic").as_string();
+  s.auto_trigger_enabled = get_parameter("auto_trigger.enabled").as_bool();
+  s.localization_pose_topic = get_parameter("auto_trigger.pose_topic").as_string();
+  s.monitor_enabled = get_parameter("extrinsics_monitor.enabled").as_bool();
+  s.monitor_period = get_parameter("extrinsics_monitor.period").as_double();
+  s.shadow_log_path = expandHome(get_parameter("shadow.log_path").as_string());
   return s;
 }
 
@@ -305,6 +412,28 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   l.clustering.angle_deg = get_parameter("ambiguity.cluster_angle_deg").as_double();
   l.max_score_ratio = get_parameter("ambiguity.max_score_ratio").as_double();
   l.threads = settings_.threads;
+  l.scan_mode = settings_.scan_mode;
+  l.scan.max_range = get_parameter("scan_check.max_range").as_double();
+  l.scan.hit_tolerance = get_parameter("scan_check.hit_tolerance").as_double();
+  l.scan.min_hit_ratio = get_parameter("scan_check.min_hit_ratio").as_double();
+  l.scan.max_violation_ratio = get_parameter("scan_check.max_violation_ratio").as_double();
+  l.scan.min_known_ratio = get_parameter("scan_check.min_known_ratio").as_double();
+  l.scan.min_valid_beams = static_cast<int>(get_parameter("scan_check.min_valid_beams").as_int());
+  l.scan.search_radius = get_parameter("scan_check.search_radius").as_double();
+  l.scan.search_angle_deg = get_parameter("scan_check.search_angle_deg").as_double();
+  l.refine_with_scan = get_parameter("scan_check.refine_pose").as_bool();
+  t.scan_max_time_offset = get_parameter("scan_check.max_time_offset").as_double();
+  t.auto_trigger.max_std_xy = get_parameter("auto_trigger.max_std_xy").as_double();
+  t.auto_trigger.max_std_yaw_deg = get_parameter("auto_trigger.max_std_yaw_deg").as_double();
+  t.auto_trigger.duration = get_parameter("auto_trigger.duration").as_double();
+  t.auto_trigger.cooldown = get_parameter("auto_trigger.cooldown").as_double();
+  t.monitor.min_samples =
+    static_cast<std::size_t>(get_parameter("extrinsics_monitor.min_samples").as_int());
+  t.monitor.warn_translation = get_parameter("extrinsics_monitor.warn_translation").as_double();
+  t.monitor.warn_rotation_deg = get_parameter("extrinsics_monitor.warn_rotation_deg").as_double();
+  t.monitor_max_amcl_std_xy = get_parameter("extrinsics_monitor.max_amcl_std_xy").as_double();
+  t.monitor_max_linear_speed = get_parameter("extrinsics_monitor.max_linear_speed").as_double();
+  t.monitor_max_angular_speed = get_parameter("extrinsics_monitor.max_angular_speed").as_double();
   t.consistency.max_translation_error =
     get_parameter("consistency.max_translation_error").as_double();
   t.consistency.max_rotation_error_deg =
@@ -363,7 +492,12 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_configure(const rclcpp_lifec
     extrinsics_status_.clear();
     extrinsics_level_ = 0;
     last_result_.reset();
+    scans_.clear();
+    last_scan_.reset();
+    estimate_.reset();
+    monitor_.reset();
   }
+  auto_trigger_.reset();
   loadDatabase();
 
   camera_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -388,6 +522,19 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_configure(const rclcpp_lifec
   tf_static_sub_ = create_subscription<tf2_msgs::msg::TFMessage>(
     "/tf_static", rclcpp::QoS(100).reliable().transient_local(),
     [this](const tf2_msgs::msg::TFMessage::ConstSharedPtr & message) { onTfStatic(*message); });
+  if (settings_.scan_mode != ScanCheckMode::kDisabled) {
+    scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
+      settings_.scan_topic, rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::LaserScan::ConstSharedPtr & scan) { onScan(*scan); });
+  }
+  if (settings_.auto_trigger_enabled || settings_.monitor_enabled) {
+    // AMCL publishes amcl_pose latched (transient local) on every filter update.
+    localization_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+      settings_.localization_pose_topic, rclcpp::QoS(1).reliable(),
+      [this](const geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr & pose) {
+        onLocalizationPose(*pose);
+      });
+  }
 
   initial_pose_pub_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
     settings_.output_topic, rclcpp::QoS(1).reliable());
@@ -511,6 +658,17 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_activate(const rclcpp_lifecy
   if (settings_.startup_enabled) {
     startup_timer_ = create_wall_timer(std::chrono::milliseconds(200), [this] { startupTick(); });
   }
+  auto_trigger_.reset();
+  if (settings_.auto_trigger_enabled) {
+    auto_trigger_timer_ =
+      create_wall_timer(std::chrono::milliseconds(250), [this] { autoTriggerTick(); });
+  }
+  if (settings_.monitor_enabled) {
+    monitor_timer_ = create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(settings_.monitor_period)),
+      [this] { monitorTick(); });
+  }
   if (settings_.bond_enabled) {
     bond_ = std::make_shared<bond::Bond>("bond", get_name(), shared_from_this());
     bond_->setHeartbeatPeriod(0.10);
@@ -526,6 +684,8 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_activate(const rclcpp_lifecy
 RelocalizerNode::CallbackReturn RelocalizerNode::on_deactivate(const rclcpp_lifecycle::State &)
 {
   startup_timer_.reset();
+  auto_trigger_timer_.reset();
+  monitor_timer_.reset();
   stopWorker();
   image_sub_.reset();
   compressed_sub_.reset();
@@ -551,6 +711,8 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_cleanup(const rclcpp_lifecyc
   map_sub_.reset();
   imu_sub_.reset();
   tf_static_sub_.reset();
+  scan_sub_.reset();
+  localization_pose_sub_.reset();
   localizer_.reset();
   map_.reset();
   tf_listener_.reset();
@@ -561,6 +723,8 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_cleanup(const rclcpp_lifecyc
 RelocalizerNode::CallbackReturn RelocalizerNode::on_shutdown(const rclcpp_lifecycle::State &)
 {
   startup_timer_.reset();
+  auto_trigger_timer_.reset();
+  monitor_timer_.reset();
   stopWorker();
   bond_.reset();
   image_sub_.reset();
@@ -650,6 +814,65 @@ void RelocalizerNode::onTfStatic(const tf2_msgs::msg::TFMessage & message)
   }
 }
 
+void RelocalizerNode::onScan(const sensor_msgs::msg::LaserScan & scan)
+{
+  const std::lock_guard<std::mutex> lock(mutex_);
+  last_scan_ = now();
+  scans_.push_back(scan);
+  // Keep a few seconds: enough for the image-scan offset and for TF to catch up.
+  const int64_t newest = toNanoseconds(scans_.back().header.stamp);
+  while (scans_.size() > 1 && toNanoseconds(scans_.front().header.stamp) < newest - 3'000'000'000) {
+    scans_.pop_front();
+  }
+}
+
+void RelocalizerNode::onLocalizationPose(const geometry_msgs::msg::PoseWithCovarianceStamped & pose)
+{
+  const Mat3 covariance = planarCovariance(pose.pose.covariance);
+  LocalizationEstimate e;
+  e.pose = toPose2(toPose3(pose.pose.pose));
+  e.std_xy = worstStdXy(covariance);
+  e.std_yaw_deg = deg(std::sqrt(std::max(0.0, covariance(2, 2))));
+  auto_trigger_.observe(now().seconds(), e.std_xy, e.std_yaw_deg);
+  const std::lock_guard<std::mutex> lock(mutex_);
+  estimate_ = e;
+}
+
+void RelocalizerNode::autoTriggerTick()
+{
+  auto_trigger_.setParams(readThresholds().auto_trigger);
+  const double t = now().seconds();
+  if (!auto_trigger_.shouldFire(t, busy_)) {
+    return;
+  }
+  auto_trigger_.fired(t);
+  RCLCPP_INFO(get_logger(), "the localization stays uncertain: relocalizing (auto trigger)");
+  Request r;
+  r.trigger = "auto";
+  submit(std::move(r));
+}
+
+void RelocalizerNode::monitorTick()
+{
+  if (busy_) {
+    return;
+  }
+  const Thresholds t = readThresholds();
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!estimate_ || estimate_->std_xy > t.monitor_max_amcl_std_xy) {
+      return;  // only while the localization is confident
+    }
+  }
+  // A full request, as the service would run it, that publishes nothing: its result feeds the
+  // shadow log (field validation, M8) and, on success, the monitor.
+  Request r;
+  r.trigger = "monitor";
+  r.timeout = std::min(t.timeout, 5.0);
+  r.dry_run = true;
+  submit(std::move(r));
+}
+
 bool RelocalizerNode::staticChain(const std::string & a, const std::string & b) const
 {
   // True if a and b are joined by /tf_static transforms only (a common static ancestor).
@@ -677,17 +900,35 @@ bool RelocalizerNode::staticChain(const std::string & a, const std::string & b) 
 
 void RelocalizerNode::submit(Request request)
 {
-  if (busy_.exchange(true)) {
-    Result busy;
-    busy.status = Result::BUSY;
-    busy.trigger = request.trigger;
-    busy.message = "a relocalization is already running";
-    answer(request, busy);
-    return;
-  }
+  std::optional<Request> refused;
+  bool preempting = false;
   {
     const std::lock_guard<std::mutex> lock(queue_mutex_);
-    queued_ = std::move(request);
+    if (!busy_) {
+      busy_ = true;
+      queued_ = std::move(request);
+    } else if (running_trigger_ == "monitor" && request.trigger != "monitor" && !queued_) {
+      // A monitor sample gives way: it stops at its next frame and this request runs next.
+      queued_ = std::move(request);
+      preempt_ = true;
+      preempting = true;
+    } else {
+      refused = std::move(request);
+    }
+  }
+  if (refused) {
+    Result busy;
+    busy.status = Result::BUSY;
+    busy.trigger = refused->trigger;
+    busy.message = "a relocalization is already running";
+    answer(*refused, busy);
+    return;
+  }
+  if (preempting) {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);  // the frame loop waits on images_cv_
+    }
+    images_cv_.notify_all();
   }
   queue_cv_.notify_one();
 }
@@ -695,7 +936,8 @@ void RelocalizerNode::submit(Request request)
 void RelocalizerNode::answer(const Request & request, Result result)
 {
   result.stamp = now();
-  if (result.status != Result::BUSY) {
+  // The monitor's samples are not relocalizations: they go to /diagnostics and the shadow log.
+  if (result.status != Result::BUSY && request.trigger != "monitor") {
     if (status_pub_ && status_pub_->is_activated()) {
       status_pub_->publish(result);
     }
@@ -721,10 +963,13 @@ void RelocalizerNode::workerLoop()
       }
       request = std::move(*queued_);
       queued_.reset();
+      running_trigger_ = request.trigger;
+      preempt_ = false;
     }
     Result result;
+    bool preempted = false;
     try {
-      result = run(request);
+      result = run(request, &preempted);
     } catch (const std::exception & e) {
       result = Result();
       result.status = Result::NOT_READY;
@@ -733,6 +978,9 @@ void RelocalizerNode::workerLoop()
     }
     result.trigger = request.trigger;
     answer(request, result);
+    if (request.dry_run && !preempted) {
+      logShadow(request, result);
+    }
     if (request.trigger == "startup") {
       const std::lock_guard<std::mutex> lock(queue_mutex_);
       if (result.status == Result::SUCCESS) {
@@ -750,7 +998,11 @@ void RelocalizerNode::workerLoop()
           result.message.c_str());
       }
     }
-    busy_ = false;
+    const std::lock_guard<std::mutex> lock(queue_mutex_);
+    running_trigger_.clear();
+    if (!queued_) {
+      busy_ = false;  // else the request that preempted this one runs next
+    }
   }
 }
 
@@ -795,6 +1047,11 @@ std::optional<std::string> RelocalizerNode::notReadyLocal() const
   }
   if (!camera_info_) {
     return "no camera_info on '" + settings_.camera_info_topic + "'";
+  }
+  if (
+    settings_.scan_mode == ScanCheckMode::kRequired &&
+    (!last_scan_ || (now() - *last_scan_).seconds() > 2.0)) {
+    return "no LaserScan on '" + settings_.scan_topic + "' (scan_check.mode is required)";
   }
   CameraModel camera;
   try {
@@ -916,7 +1173,7 @@ void RelocalizerNode::checkExtrinsics()
   }
 }
 
-RelocalizerNode::Result RelocalizerNode::run(const Request & request)
+RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * preempted)
 {
   const auto started = Clock::now();
   const Thresholds t = readThresholds();
@@ -961,11 +1218,15 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request)
   std::string skipped;  // why the latest image couldn't be used
   int valid = 0;
   double localize_s = 0.0;
-  while (!cancel_ && valid < required && Clock::now() < deadline) {
+  const bool yields = request.trigger == "monitor";  // to a service request (submit())
+  std::optional<std::pair<Pose3, Pose3>> monitor_sample;
+  while (!cancel_ && !(yields && preempt_) && valid < required && Clock::now() < deadline) {
     PendingImage image;
     {
       std::unique_lock<std::mutex> lock(mutex_);
-      images_cv_.wait_until(lock, deadline, [this] { return cancel_ || !images_.empty(); });
+      images_cv_.wait_until(lock, deadline, [this, yields] {
+        return cancel_ || (yields && preempt_) || !images_.empty();
+      });
       if (images_.empty()) {
         continue;
       }
@@ -1028,6 +1289,41 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request)
       }
       frame.gravity = *gravity;
     }
+    if (settings_.scan_mode != ScanCheckMode::kDisabled) {
+      std::optional<sensor_msgs::msg::LaserScan> scan;
+      {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (
+          const auto * nearest = nearestScan(
+            scans_, image.stamp_ns, static_cast<int64_t>(t.scan_max_time_offset * 1e9))) {
+          scan = *nearest;
+        }
+      }
+      std::string scan_error;
+      if (scan) {
+        // The laser at the scan's stamp and the odometry at both stamps.
+        if (
+          waitForTransform(
+            settings_.frame_base, scan->header.frame_id, toNanoseconds(scan->header.stamp),
+            t.tf_timeout) &&
+          waitForTransform(
+            settings_.frame_odom, settings_.frame_base, toNanoseconds(scan->header.stamp),
+            t.tf_timeout)) {
+          frame.scan = scanAtImage(
+            *scan, *tf_buffer_, settings_.frame_odom, settings_.frame_base, image.stamp_ns,
+            &scan_error);
+        } else {
+          scan_error = "no transform to the laser at the scan";
+        }
+      } else {
+        scan_error = "no scan on '" + settings_.scan_topic + "' within " +
+                     fixed(t.scan_max_time_offset, 2) + " s of the image";
+      }
+      if (!frame.scan && settings_.scan_mode == ScanCheckMode::kRequired) {
+        skipped = scan_error;
+        continue;
+      }
+    }
     try {
       frame.image = image.decode();
     } catch (const std::exception & e) {
@@ -1045,6 +1341,11 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request)
       ++valid;
       valid_frames.push_back(result_frame);
       valid_stamps.push_back(image.stamp_ns);
+      if (yields) {
+        if (auto sample = extrinsicsSample(t, image.stamp_ns, frame, result_frame)) {
+          monitor_sample = std::move(sample);
+        }
+      }
     }
     outcomes.push_back(outcome);
     if (!t.dump_dir.empty()) {
@@ -1071,6 +1372,12 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request)
     result.message = "the relocalizer stopped during the request";
     return result;
   }
+  if (yields && preempt_) {
+    *preempted = true;
+    result.status = Result::NOT_READY;
+    result.message = "stopped for another request";
+    return result;
+  }
   if (outcomes.empty()) {
     result.status = Result::NOT_READY;
     if (!skipped.empty()) {
@@ -1092,6 +1399,16 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request)
   const Decision decision = decide(input, t.consistency);
   result.status = static_cast<uint8_t>(decision.status);
   result.message = decision.message;
+  if (monitor_sample && decision.status == Status::kSuccess) {
+    // Only requests that passed every check: one sample, from the latest slow frame.
+    const std::lock_guard<std::mutex> lock(mutex_);
+    monitor_.setParams(t.monitor);
+    monitor_.addSample(monitor_sample->first, monitor_sample->second);
+    const auto estimate = monitor_.estimate();
+    RCLCPP_DEBUG(
+      get_logger(), "extrinsics monitor: %zu samples, offset %.3f m / %.2f deg", estimate.samples,
+      estimate.translation_norm, estimate.rotation_deg);
+  }
 
   // Scores: worst across the frames that produced a pose (else the last frame's).
   auto & s = result.scores;
@@ -1105,6 +1422,8 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request)
   s.tilt_error_deg = static_cast<float>(summary.tilt_error_deg);
   s.inlier_coverage = static_cast<float>(summary.inlier_coverage);
   s.ambiguity_ratio = static_cast<float>(summary.ambiguity_ratio);
+  s.scan_hit_ratio = static_cast<float>(summary.scan_hit_ratio);
+  s.scan_violation_ratio = static_cast<float>(summary.scan_violation_ratio);
   s.consistency_translation_error_m =
     static_cast<float>(decision.consistency.max_translation_error);
   s.consistency_rotation_error_deg =
@@ -1238,7 +1557,7 @@ void RelocalizerNode::publishMarkers(const FrameResult * frame, const Result & r
       if (!h.solved) {
         continue;
       }
-      const bool ok = h.stage == Stage::kSanityPassed;
+      const bool ok = h.stage == (frame->scan_checked ? Stage::kScanPassed : Stage::kSanityPassed);
       arrow("hypotheses", id++, h.sanity.pose, ok ? 0.1F : 0.9F, ok ? 0.8F : 0.5F, 0.1F, 0.5);
     }
     if (frame->best >= 0) {
@@ -1326,6 +1645,10 @@ void RelocalizerNode::dump(
         .field("correspondences", h.correspondences)
         .field("inliers", h.sanity.num_inliers)
         .field("rejection", h.rejection);
+      if (h.scan_checked) {
+        json.field("scan_hit_ratio", h.scan.score.hit_ratio)
+          .field("scan_violation_ratio", h.scan.score.violation_ratio);
+      }
       json.key("keyframes").beginArray();
       for (const int64_t id : h.keyframe_ids) {
         json.value(static_cast<int64_t>(id));
@@ -1339,6 +1662,86 @@ void RelocalizerNode::dump(
   } catch (const std::exception & e) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 10000, "cannot write to debug.dump_dir: %s", e.what());
+  }
+}
+
+std::optional<std::pair<Pose3, Pose3>> RelocalizerNode::extrinsicsSample(
+  const Thresholds & t, int64_t stamp_ns, const QueryFrame & frame,
+  const FrameResult & result) const
+{
+  // Only while the robot is slow: time sync and the localization's lag would look like an offset.
+  const auto window = std::chrono::milliseconds(200);
+  const tf2::TimePoint at = timePoint(stamp_ns);
+  const auto before = lookup(settings_.frame_odom, settings_.frame_base, at - window);
+  const auto after = lookup(settings_.frame_odom, settings_.frame_base, at);
+  const auto T_map_base = lookup(settings_.frame_global, settings_.frame_base, at);
+  if (!before || !after || !T_map_base || result.best < 0) {
+    return std::nullopt;
+  }
+  const double seconds = std::chrono::duration<double>(window).count();
+  const Pose2 motion = between(toPose2(*before), toPose2(*after));
+  if (
+    std::hypot(motion.x, motion.y) / seconds > t.monitor_max_linear_speed ||
+    std::abs(motion.yaw) / seconds > t.monitor_max_angular_speed) {
+    return std::nullopt;
+  }
+  const Pose3 & visual = result.hypotheses[static_cast<std::size_t>(result.best)].T_map_cam;
+  return std::make_pair(visual, *T_map_base * frame.T_base_cam);
+}
+
+void RelocalizerNode::logShadow(const Request & request, const Result & result)
+{
+  if (settings_.shadow_log_path.empty()) {
+    return;
+  }
+  std::ostringstream line;
+  line << toNanoseconds(result.stamp) << "," << request.trigger << ","
+       << toString(static_cast<Status>(result.status)) << "," << result.scores.frames_used << ",";
+  std::optional<LocalizationEstimate> estimate;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    estimate = estimate_;
+  }
+  if (result.status == Result::SUCCESS) {
+    const int64_t stamp = toNanoseconds(result.pose.header.stamp);
+    const Pose2 pose = toPose2(toPose3(result.pose.pose.pose));
+    line << stamp << "," << fixed(pose.x, 4) << "," << fixed(pose.y, 4) << "," << fixed(pose.yaw, 5)
+         << ",";
+    // The localization's own pose at the same stamp, through TF.
+    if (
+      const auto T_map_base =
+        lookup(settings_.frame_global, settings_.frame_base, timePoint(stamp))) {
+      const Pose2 other = toPose2(*T_map_base);
+      line << fixed(other.x, 4) << "," << fixed(other.y, 4) << "," << fixed(other.yaw, 5) << ","
+           << fixed(translationDistance(pose, other), 4) << ","
+           << fixed(deg(rotationDistance(pose, other)), 3) << ",";
+    } else {
+      line << ",,,,,";
+    }
+  } else {
+    line << ",,,,,,,,,";
+  }
+  if (estimate) {
+    line << fixed(estimate->std_xy, 4) << "," << fixed(estimate->std_yaw_deg, 3) << ",";
+  } else {
+    line << ",,";
+  }
+  std::string message = result.message;
+  std::replace(message.begin(), message.end(), ',', ';');
+  line << result.scores.num_inliers << "," << fixed(result.scores.scan_hit_ratio, 3) << ","
+       << fixed(result.scores.elapsed_s, 3) << "," << message;
+  try {
+    const bool fresh = !std::filesystem::exists(settings_.shadow_log_path);
+    std::ofstream out(settings_.shadow_log_path, std::ios::app);
+    if (fresh) {
+      out << "stamp_ns,trigger,status,frames_used,pose_stamp_ns,x,y,yaw,localization_x,"
+             "localization_y,localization_yaw,error_m,error_deg,localization_std_xy,"
+             "localization_std_yaw_deg,inliers,scan_hit_ratio,elapsed_s,message\n";
+    }
+    out << line.str() << "\n";
+  } catch (const std::exception & e) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 10000, "cannot write shadow.log_path: %s", e.what());
   }
 }
 
@@ -1373,6 +1776,24 @@ void RelocalizerNode::diagnose(diagnostic_updater::DiagnosticStatusWrapper & sta
     status.add("last_message", last_result_->message);
     status.add("last_trigger", last_result_->trigger);
     status.add("last_elapsed_s", last_result_->scores.elapsed_s);
+  }
+  if (settings_.monitor_enabled) {
+    // Detection only: a camera that moved on its mount is reported, never corrected.
+    const auto e = monitor_.estimate();
+    status.add("extrinsics_monitor_samples", e.samples);
+    if (e.level == HealthLevel::kInsufficientData) {
+      status.add("extrinsics_monitor", "collecting samples");
+    } else {
+      const std::string text = "camera " + fixed(100.0 * e.translation_norm, 1) + " cm / " +
+                               fixed(e.rotation_deg, 2) + " deg from where TF puts it (median of " +
+                               std::to_string(e.samples) + " samples)";
+      status.add("extrinsics_monitor", text);
+      if (e.level == HealthLevel::kWarn) {
+        status.mergeSummary(DiagnosticStatus::WARN, "extrinsics monitor: " + text);
+      } else if (e.level == HealthLevel::kError) {
+        status.mergeSummary(DiagnosticStatus::ERROR, "extrinsics monitor: " + text);
+      }
+    }
   }
 }
 

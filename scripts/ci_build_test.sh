@@ -48,8 +48,57 @@ fi
 
 echo "=== Landfall CI: ROS ${ROS_DISTRO}, $(uname -m), CMake args: ${cmake_args[*]}"
 
-colcon build --base-paths src --event-handlers console_cohesion+ "${package_args[@]}" \
-  --cmake-args "${cmake_args[@]}"
-colcon test --base-paths src --event-handlers console_cohesion+ "${package_args[@]}" \
-  --return-code-on-test-failure
+# GitHub keeps job logs and artifacts behind a login, but annotations are public: on failure, the
+# first compiler errors or the failed tests are also published as annotations (GitHub shows at
+# most 10 per step).
+annotate() {  # annotate TITLE MESSAGE
+  [[ -n "${GITHUB_ACTIONS:-}" ]] || return 0
+  local message="${2:0:4000}"
+  message="${message//'%'/'%25'}"
+  message="${message//$'\r'/'%0D'}"
+  message="${message//$'\n'/'%0A'}"
+  echo "::error title=${1//[:,]/ }::${message}"
+}
+
+annotate_build_failure() {
+  local errors
+  errors="$(grep -h -E 'error:|error [0-9]+|undefined reference|CMake Error' \
+    log/latest_build/*/stderr.log 2> /dev/null | head -n 40 || true)"
+  annotate "build failed (${ROS_DISTRO} $(uname -m))" "${errors:-no compiler error found; see the log}"
+}
+
+annotate_test_failures() {
+  local line title="" block="" count=0
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ^build/.*\ [0-9]+\ tests?, ]]; then
+      if [[ -n "${title}" ]]; then
+        annotate "${title}" "${block}"
+        count=$((count + 1))
+      fi
+      title="${line}"
+      block=""
+      if ((count >= 9)); then
+        title=""
+        break
+      fi
+    elif [[ -n "${title}" ]]; then
+      block+="${line}"$'\n'
+    fi
+  done < <(colcon test-result --verbose 2>&1 || true)
+  if [[ -n "${title}" ]]; then
+    annotate "${title}" "${block}"
+  fi
+}
+
+if ! colcon build --base-paths src --event-handlers console_cohesion+ "${package_args[@]}" \
+  --cmake-args "${cmake_args[@]}"; then
+  annotate_build_failure
+  exit 1
+fi
+if ! colcon test --base-paths src --event-handlers console_cohesion+ "${package_args[@]}" \
+  --return-code-on-test-failure; then
+  colcon test-result --verbose || true
+  annotate_test_failures
+  exit 1
+fi
 colcon test-result --verbose

@@ -235,6 +235,7 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   bag_section.read("pose_topic", &bag.pose_topic);
   bag_section.read("imu_topic", &bag.imu_topic);
   bag_section.read("imu_frame", &bag.imu_frame);
+  bag_section.read("scan_topic", &bag.scan_topic);
   bag_section.read("gravity_source", &bag.gravity_source);
   bag_section.read("imu_max_age", &bag.imu_max_age);
   bag_section.read("pose_source", &bag.pose_source);
@@ -358,6 +359,7 @@ std::string canonicalYaml(const BuildConfigFile & config)
     {"imu_topic", text(bag.imu_topic)},
     {"pose_source", text(bag.pose_source)},
     {"pose_topic", text(bag.pose_topic)},
+    {"scan_topic", text(bag.scan_topic)},
     {"speed_window", number(bag.speed_window)}};
   sections["gating"] = {
     {"max_angular_speed", number(g.max_angular_speed)},

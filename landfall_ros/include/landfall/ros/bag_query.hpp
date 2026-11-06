@@ -31,9 +31,11 @@ struct BagQueryOptions
 {
   BagConfig bag;  ///< topics, frames, image time offset and gravity source of the recording
   GravityParams gravity;
-  std::size_t every = 1;            ///< use every n-th image
-  double min_frame_interval = 0.0;  ///< s between the images used
-  std::set<int64_t> skip_stamps;    ///< e.g. the database's own keyframes
+  ScanCheckMode scan_mode = ScanCheckMode::kRequired;  ///< as the localizer's
+  double scan_max_time_offset = 0.5;  ///< s between an image and the scan that checks it
+  std::size_t every = 1;              ///< use every n-th image
+  double min_frame_interval = 0.0;    ///< s between the images used
+  std::set<int64_t> skip_stamps;      ///< e.g. the database's own keyframes
 };
 
 struct BagQueryCounts
@@ -42,11 +44,13 @@ struct BagQueryCounts
   std::size_t skipped_stamps = 0;
   std::size_t skipped_tf = 0;
   std::size_t skipped_gravity = 0;  ///< IMU stale, or the robot turning
+  std::size_t skipped_scan = 0;     ///< no scan near the image (scan check required)
   std::size_t localized = 0;
 };
 
 /// Localizes a bag's images the way the relocalizer does live: extrinsics and odometry from the
-/// bag's TF at each image stamp, gravity from its IMU (`bag.gravity_source`). Calls
+/// bag's TF at each image stamp, gravity from its IMU (`bag.gravity_source`), the nearest LiDAR
+/// scan (`bag.scan_topic`; frames without one are skipped when the check is required). Calls
 /// `visit(stamp_ns, odom_T_base, result)` for every localized frame, in bag order. Throws
 /// std::runtime_error when the bag lacks the topics or its camera differs from the database's.
 BagQueryCounts queryBagImages(

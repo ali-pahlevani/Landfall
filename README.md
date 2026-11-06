@@ -22,14 +22,14 @@ Under development toward **v1.0.0**. Done:
   verification, decision logic).
 - M2: keyframe recorder and map builder, see [`docs/recording.md`](docs/recording.md).
 - M3: the relocalizer node, see [`docs/relocalization.md`](docs/relocalization.md).
+- M4: the safety layer: LiDAR verification of every pose, the automatic trigger, the extrinsics
+  monitor and the shadow log.
 
-Next: M4 (the safety layer: LiDAR verification in the node, the auto trigger, the extrinsics
-monitor).
+Next: M5 (learned features and global descriptors on ONNX Runtime, optional).
 
-The relocalizer works, but it checks poses with vision and odometry only until M4. In places that
-look alike, it can publish a wrong pose, so use `dry_run` for now. The full plan, including
-interfaces, algorithms and milestones, is in [`docs/PLAN.md`](docs/PLAN.md). Parameters are listed
-in [`docs/parameters.md`](docs/parameters.md).
+The relocalizer has been tested in simulation only; field validation on a real robot comes last
+(M8). The full plan, including interfaces, algorithms and milestones, is in
+[`docs/PLAN.md`](docs/PLAN.md). Parameters are listed in [`docs/parameters.md`](docs/parameters.md).
 
 ## Building
 

@@ -13,12 +13,14 @@
 // limitations under the License.
 
 // The depot fixture's images that are not database keyframes, relocalized one frame at a time (as
-// `landfall query`) against the fixture's database, scored against Gazebo's ground truth.
+// `landfall query`) against the fixture's database and scored against Gazebo's ground truth; and
+// the LiDAR scan check at the fixture's true and wrong poses.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <set>
 #include <string>
 #include <vector>
@@ -26,6 +28,7 @@
 #include "fixture_data.hpp"
 #include "landfall/db/database.hpp"
 #include "landfall/ros/bag_query.hpp"
+#include "landfall/ros/scan_evaluation.hpp"
 
 TEST(FixtureQuery, NonKeyframeImagesLocalizeAccuratelyAndNeverWrongly)
 {
@@ -79,6 +82,7 @@ TEST(FixtureQuery, NonKeyframeImagesLocalizeAccuratelyAndNeverWrongly)
   RecordProperty("median_frame_ms", std::to_string(1000.0 * seconds[seconds.size() / 2]));
   RecordProperty("max_frame_ms", std::to_string(1000.0 * seconds.back()));
   EXPECT_EQ(counts.skipped_stamps, options.skip_stamps.size());
+  EXPECT_EQ(counts.skipped_scan, 0U);  // every image has a scan within 0.5 s
   EXPECT_GE(frames, 30);
   // The map holds only this L-shaped stretch, so nothing looks alike: no ambiguity, no wrong pose.
   EXPECT_EQ(ambiguous, 0);
@@ -87,4 +91,37 @@ TEST(FixtureQuery, NonKeyframeImagesLocalizeAccuratelyAndNeverWrongly)
   // keyframes per direction and too few landmarks (a miss, never a wrong pose).
   EXPECT_GE(accurate, 20);
   EXPECT_LT(worst_accurate, 0.10);
+}
+
+TEST(FixtureQuery, ScanCheckAcceptsTruePosesAndRejectsWrongOnes)
+{
+  // Plan §11, M4: every scan of the fixture at its true pose, and at 20 wrong poses 0.5 to 5 m away
+  // (turned by up to 15 degrees, on known-free cells) where it must fail.
+  landfall::ros::ScanEvaluationOptions options;
+  options.world_to_map = landfall::test::kWorldToMap;
+  options.wrong_per_scan = 20;
+  const auto map = landfall::loadMap(
+    landfall::test::kFixtureDir + "/depot.yaml", landfall::test::distroSemantics());
+  const auto e =
+    landfall::ros::evaluateScanCheck(landfall::test::kFixtureDir + "/bag", map.grid, options);
+  RecordProperty("true_checks", static_cast<int>(e.true_checks));
+  RecordProperty("true_accepted", static_cast<int>(e.true_accepted));
+  RecordProperty("wrong_checks", static_cast<int>(e.wrong_checks));
+  RecordProperty("wrong_accepted", static_cast<int>(e.wrong_accepted));
+  for (const auto & [reason, count] : e.true_rejections) {
+    std::cout << "true pose rejected " << count << " times: " << reason << "\n";
+  }
+  std::cout << "true poses accepted " << e.true_accepted << " of " << e.true_checks
+            << ", wrong poses accepted " << e.wrong_accepted << " of " << e.wrong_checks << " ("
+            << e.skipped << " scans without ground truth or TF)\n";
+  EXPECT_LE(e.skipped, 1U);  // the first scan, at the very start of the recording
+  EXPECT_GE(e.true_checks, 140U);
+  // Measured 143 of 143 on Jazzy.
+  EXPECT_GE(static_cast<double>(e.true_accepted), 0.95 * static_cast<double>(e.true_checks));
+  EXPECT_GE(e.wrong_checks, 2000U);
+  EXPECT_EQ(e.wrong_accepted, 0U);
+  for (const auto & w : e.wrong_examples) {
+    ADD_FAILURE() << "wrong pose accepted " << w.offset << " m / " << w.yaw_offset_deg
+                  << " deg off: hit ratio " << w.hit_ratio;
+  }
 }

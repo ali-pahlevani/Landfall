@@ -122,4 +122,55 @@ bool LikelihoodField::segmentHitsObstacle(const Vec2 & from, const Vec2 & to) co
   return false;
 }
 
+std::optional<double> LikelihoodField::clearanceAfterObstacle(
+  const Vec2 & from, const Vec2 & to) const
+{
+  // Amanatides-Woo traversal, as segmentHitsObstacle(), keeping where the segment leaves its last
+  // obstacle cell (t in [0, 1] along the segment).
+  const double res = grid_.resolution;
+  const Vec2 start((from.x() - grid_.origin.x) / res, (from.y() - grid_.origin.y) / res);
+  const Vec2 end((to.x() - grid_.origin.x) / res, (to.y() - grid_.origin.y) / res);
+  int col = static_cast<int>(std::floor(start.x()));
+  int row = static_cast<int>(std::floor(start.y()));
+  const int end_col = static_cast<int>(std::floor(end.x()));
+  const int end_row = static_cast<int>(std::floor(end.y()));
+  const Vec2 direction = end - start;
+  const int step_col = direction.x() > 0 ? 1 : -1;
+  const int step_row = direction.y() > 0 ? 1 : -1;
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  const double delta_col = direction.x() != 0.0 ? std::abs(1.0 / direction.x()) : kInf;
+  const double delta_row = direction.y() != 0.0 ? std::abs(1.0 / direction.y()) : kInf;
+  double next_col = direction.x() != 0.0
+                      ? (step_col > 0 ? (col + 1 - start.x()) : (start.x() - col)) * delta_col
+                      : kInf;
+  double next_row = direction.y() != 0.0
+                      ? (step_row > 0 ? (row + 1 - start.y()) : (start.y() - row)) * delta_row
+                      : kInf;
+  std::optional<double> last_exit;  // t where the segment left its last obstacle cell
+  const int max_steps = std::abs(end_col - col) + std::abs(end_row - row) + 1;
+  for (int i = 0; i < max_steps; ++i) {
+    if (!grid_.contains(col, row)) {
+      break;
+    }
+    const bool at_end = col == end_col && row == end_row;
+    if (cells_[static_cast<std::size_t>(row) * grid_.width + col] == Cell::kOccupied) {
+      last_exit = at_end ? 1.0 : std::min(1.0, std::min(next_col, next_row));
+    }
+    if (at_end) {
+      break;
+    }
+    if (next_col < next_row) {
+      next_col += delta_col;
+      col += step_col;
+    } else {
+      next_row += delta_row;
+      row += step_row;
+    }
+  }
+  if (!last_exit) {
+    return std::nullopt;
+  }
+  return (1.0 - *last_exit) * (to - from).norm();
+}
+
 }  // namespace landfall

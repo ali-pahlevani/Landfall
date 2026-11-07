@@ -79,6 +79,8 @@ jobs:
         run: |
           python3 src/landfall/landfall_tools/fetch_models.py --parity --models-dir models
           echo "LANDFALL_MODELS_DIR=${PWD}/models" >> "${GITHUB_ENV}"
+          # test_onnx_parity fails instead of skipping the real models.
+          echo "LANDFALL_REQUIRE_MODELS=1" >> "${GITHUB_ENV}"
 
       - name: Build and test
         env:

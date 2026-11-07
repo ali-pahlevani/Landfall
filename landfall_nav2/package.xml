@@ -13,19 +13,27 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>landfall_core</depend>
+  <build_depend>landfall_core</build_depend>  <!-- CMake helpers only -->
+  <depend>geometry_msgs</depend>
   <depend>landfall_msgs</depend>
   <depend>nav2_behavior_tree</depend>
+  <depend>rclcpp</depend>
   <depend condition="$ROS_DISTRO == humble">behaviortree_cpp_v3</depend>
   <depend condition="$ROS_DISTRO != humble">behaviortree_cpp</depend>
+  <!-- Nav2 1.4 and later put a nav2::LifecycleNode on the behavior tree's blackboard. -->
+  <depend condition="$ROS_DISTRO != humble and $ROS_DISTRO != jazzy">nav2_ros_common</depend>
   <!-- nav2_behavior_tree 1.5.x (Lyrical) exports nav2_common in its CMake config, but its binary
        package doesn't depend on it, so find_package(nav2_behavior_tree) fails without this.
        TODO(T-004): drop once the Nav2 Lyrical package declares the dependency itself. -->
   <build_depend condition="$ROS_DISTRO != humble and $ROS_DISTRO != jazzy">nav2_common</build_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_ros</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>nav2_msgs</test_depend>
+  <test_depend>rclcpp_action</test_depend>
+  <test_depend>tf2_ros</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

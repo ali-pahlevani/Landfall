@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<!--
+  Localization with relocalization (docs/nav2_integration.md): map_server, AMCL and the relocalizer
+  under one lifecycle manager, in that order, so the relocalizer starts once AMCL is active. In
+  place of nav2_bringup's localization_launch.py:
+
+    ros2 launch landfall_bringup localization.launch.xml map:=/path/site.yaml \
+      database:=/path/site.landfall.db params_file:=/path/nav2_params.yaml
+
+  params_file holds map_server's and amcl's parameters, as for nav2_bringup. Its keys name the
+  nodes without a namespace; with namespace:=..., key them /**/amcl and /**/map_server.
+-->
+<launch>
+  <arg name="map" description="Occupancy map YAML: the map the database was built for"/>
+  <arg name="database" description="Map database built by `landfall build` (*.landfall.db)"/>
+  <arg name="params_file" description="Nav2 parameters of map_server and amcl"/>
+  <arg name="relocalizer_params_file"
+    default="$(find-pkg-share landfall_bringup)/params/relocalizer.yaml"
+    description="Relocalizer parameters (docs/parameters.md)"/>
+  <arg name="startup_relocalization" default="true"
+    description="Relocalize once AMCL is active (the robot starts without a pose)"/>
+  <arg name="autostart" default="true" description="The lifecycle manager activates all at once"/>
+  <arg name="namespace" default=""/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="log_level" default="info"/>
+
+  <node pkg="nav2_map_server" exec="map_server" name="map_server" namespace="$(var namespace)"
+    output="screen" args="--ros-args --log-level $(var log_level)">
+    <param from="$(var params_file)"/>
+    <param name="yaml_filename" value="$(var map)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <node pkg="nav2_amcl" exec="amcl" name="amcl" namespace="$(var namespace)" output="screen"
+    args="--ros-args --log-level $(var log_level)">
+    <param from="$(var params_file)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <group>  <!-- scoped: the include's arguments stay inside -->
+    <include file="$(find-pkg-share landfall_bringup)/launch/relocalizer.launch.xml">
+      <arg name="database" value="$(var database)"/>
+      <arg name="params_file" value="$(var relocalizer_params_file)"/>
+      <arg name="startup_relocalization" value="$(var startup_relocalization)"/>
+      <arg name="use_lifecycle_manager" value="false"/>
+      <arg name="namespace" value="$(var namespace)"/>
+      <arg name="use_sim_time" value="$(var use_sim_time)"/>
+      <arg name="log_level" value="$(var log_level)"/>
+    </include>
+  </group>
+
+  <node pkg="nav2_lifecycle_manager" exec="lifecycle_manager" name="lifecycle_manager_localization"
+    namespace="$(var namespace)" output="screen" args="--ros-args --log-level $(var log_level)">
+    <param name="autostart" value="$(var autostart)"/>
+    <param name="node_names" value="[map_server, amcl, landfall_relocalizer]"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+</launch>

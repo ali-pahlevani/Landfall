@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+  Nav2's navigation (nav2_bringup's navigation_launch.py, which must be installed) with Landfall's
+  behavior tree: relocalize before navigating when the localization is uncertain, and first among
+  the recoveries (docs/nav2_integration.md).
+
+    ros2 launch landfall_bringup navigation.launch.xml params_file:=/path/nav2_params.yaml
+
+  Nav2's nodes get params/nav2_$ROS_DISTRO.yaml (Landfall's behavior tree plugin) and the tree in
+  default_nav_to_pose_bt_xml beneath params_file: keys that params_file sets win. On Humble,
+  params_file must list landfall_nav2_bt_nodes in bt_navigator's plugin_lib_names
+  (params/nav2_humble.yaml shows the list).
+-->
+<launch>
+  <arg name="params_file" description="Your Nav2 parameters, as for nav2_bringup"/>
+  <arg name="behavior_tree"
+    default="$(find-pkg-share landfall_nav2)/behavior_trees/navigate_to_pose_w_relocalization.xml"
+    description="bt_navigator's default_nav_to_pose_bt_xml"/>
+  <arg name="autostart" default="true"/>
+  <arg name="namespace" default=""/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="log_level" default="info"/>
+
+  <group>
+    <set_parameters_from_file
+      filename="$(find-pkg-share landfall_bringup)/params/nav2_$(env ROS_DISTRO).yaml"/>
+    <set_parameter name="default_nav_to_pose_bt_xml" value="$(var behavior_tree)"/>
+    <include file="$(find-pkg-share nav2_bringup)/launch/navigation_launch.py">
+      <arg name="params_file" value="$(var params_file)"/>
+      <arg name="autostart" value="$(var autostart)"/>
+      <arg name="namespace" value="$(var namespace)"/>
+      <arg name="use_sim_time" value="$(var use_sim_time)"/>
+      <arg name="log_level" value="$(var log_level)"/>
+    </include>
+  </group>
+</launch>

@@ -20,8 +20,9 @@ ros2 run landfall_ros relocalizer_node --ros-args \
 ```
 
 The node is also a component, `landfall::ros::RelocalizerNode`. It is a lifecycle node with a bond,
-so it can be listed after `amcl` in the `node_names` of
-`lifecycle_manager_localization`. Nav2 launch files and parameter overlays come with M6.
+so it can be listed after `amcl` in the `node_names` of `lifecycle_manager_localization`.
+`landfall_bringup`'s launch files do that, and Nav2's navigator can ask it for a pose through the
+behavior tree node `ReLocalize`: see [`docs/nav2_integration.md`](nav2_integration.md).
 
 A missing or unusable database doesn't fail the *configure* transition, because it must not stop
 AMCL's lifecycle manager. Instead, every request answers `NOT_READY` with the reason, and

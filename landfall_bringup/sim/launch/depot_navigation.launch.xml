@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!--
+  Nav2 navigation of the TurtleBot 4 depot simulation with Landfall (docs/nav2_integration.md),
+  started by sim/scripts/start_depot_sim.sh (SIM_LAUNCH) inside the simulation image:
+  - nav2_bringup's tb4_simulation_launch.py without its localization, its navigation using
+    Landfall's behavior tree (the same parameters as launch/navigation.launch.xml);
+  - Landfall's localization.launch.xml: map_server, AMCL without an initial pose, and the
+    relocalizer with its startup relocalization.
+  The nodes run as separate processes (use_composition false): launch gives the behavior tree
+  parameters to the nodes it starts beneath their own parameters.
+-->
+<launch>
+  <arg name="database" description="Map database of the depot (*.landfall.db)"/>
+  <arg name="map" default="$(find-pkg-share nav2_bringup)/maps/depot.yaml"
+    description="The map the database was built for"/>
+  <arg name="startup_relocalization" default="true"/>
+  <arg name="relocalizer_params_file"
+    default="$(find-pkg-share landfall_bringup)/sim/params/relocalizer_depot_sim.yaml"/>
+
+  <group>
+    <set_parameters_from_file
+      filename="$(find-pkg-share landfall_bringup)/params/nav2_$(env ROS_DISTRO).yaml"/>
+    <set_parameter name="default_nav_to_pose_bt_xml"
+      value="$(find-pkg-share landfall_nav2)/behavior_trees/navigate_to_pose_w_relocalization.xml"/>
+    <include file="$(find-pkg-share nav2_bringup)/launch/tb4_simulation_launch.py">
+      <arg name="use_localization" value="False"/>
+      <arg name="use_composition" value="False"/>
+      <arg name="map" value="$(var map)"/>
+    </include>
+  </group>
+
+  <group>
+    <include file="$(find-pkg-share landfall_bringup)/launch/localization.launch.xml">
+      <arg name="map" value="$(var map)"/>
+      <arg name="database" value="$(var database)"/>
+      <arg name="params_file"
+        value="$(find-pkg-share landfall_bringup)/sim/params/localization_depot_sim.yaml"/>
+      <arg name="relocalizer_params_file" value="$(var relocalizer_params_file)"/>
+      <arg name="startup_relocalization" value="$(var startup_relocalization)"/>
+      <arg name="use_sim_time" value="true"/>
+    </include>
+  </group>
+</launch>

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Export the learned models from their pinned upstream files, with the parity files of the C++
-# tests (docs/models.md, docs/TODO.md T-007).
+# tests (docs/models.md).
 #
 #   scripts/export_models.sh [OUTPUT_DIR]
 #

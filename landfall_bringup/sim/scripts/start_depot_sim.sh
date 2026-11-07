@@ -8,6 +8,10 @@
 # renders no camera images without a display; so the launch runs with use_simulator:=False (it
 # still starts Nav2, robot_state_publisher and the bridges) and this script starts the Gazebo
 # server and spawns the robot itself.
+#
+# SIM_LAUNCH replaces the launch (package and file, or a file's path), e.g. Nav2 with Landfall's
+# relocalization: SIM_LAUNCH=<landfall_bringup share>/sim/launch/depot_navigation.launch.xml
+# (sim/scripts/navigate_depot.sh). Arguments of this script go to the launch.
 set -euo pipefail
 
 robot_name="${ROBOT_NAME:-nav2_turtlebot4}"
@@ -26,7 +30,8 @@ share_root="$(ros2 pkg prefix nav2_minimal_tb4_description)/share"
 export GZ_SIM_RESOURCE_PATH="${share_tb4}/worlds:${share_root}${GZ_SIM_RESOURCE_PATH:+:${GZ_SIM_RESOURCE_PATH}}"
 gz sim -r -s --headless-rendering "${work}/world.sdf" &
 
-ros2 launch nav2_bringup tb4_simulation_launch.py use_simulator:=False headless:=True \
+read -r -a sim_launch <<< "${SIM_LAUNCH:-nav2_bringup tb4_simulation_launch.py}"
+ros2 launch "${sim_launch[@]}" use_simulator:=False headless:=True \
   use_rviz:=False robot_name:="${robot_name}" \
   robot_sdf:="${share_bringup}/sim/urdf/landfall_tb4.urdf.xacro" "$@" &
 

@@ -107,7 +107,7 @@ def main():
                 continue
             fetch(url or f'{manifest["release"]}/{file}', expected, directory / file)
     if missing:
-        print(f'not published yet (docs/TODO.md T-007): {", ".join(missing)}', file=sys.stderr)
+        print(f'no SHA-256 in models.yaml: {", ".join(missing)}', file=sys.stderr)
         return 1
     print(f'models in {directory}')
     return 0

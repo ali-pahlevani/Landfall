@@ -6,7 +6,7 @@
 #
 # source_sha256: the upstream files an export reads, at source_base + path
 # (scripts/fetch_models.sh --upstream DIR downloads and checks them).
-release: https://github.com/ali-pahlevani/Landfall/releases/download/models-v1  # TODO(T-007): publish
+release: https://github.com/ali-pahlevani/Landfall/releases/download/models-v1
 
 models:
   - file: xfeat.onnx

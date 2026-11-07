@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!--
+  Localization with relocalization and Nav2's navigation with Landfall's behavior tree: the two
+  launch files of this package together (docs/nav2_integration.md). Needs nav2_bringup.
+
+    ros2 launch landfall_bringup bringup.launch.xml map:=/path/site.yaml \
+      database:=/path/site.landfall.db params_file:=/path/nav2_params.yaml
+-->
+<launch>
+  <arg name="map" description="Occupancy map YAML: the map the database was built for"/>
+  <arg name="database" description="Map database built by `landfall build` (*.landfall.db)"/>
+  <arg name="params_file" description="Your Nav2 parameters, as for nav2_bringup"/>
+  <arg name="relocalizer_params_file"
+    default="$(find-pkg-share landfall_bringup)/params/relocalizer.yaml"/>
+  <arg name="startup_relocalization" default="true"/>
+  <arg name="autostart" default="true"/>
+  <arg name="namespace" default=""/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="log_level" default="info"/>
+
+  <group>  <!-- scoped: the include's arguments stay inside -->
+    <include file="$(find-pkg-share landfall_bringup)/launch/localization.launch.xml">
+      <arg name="map" value="$(var map)"/>
+      <arg name="database" value="$(var database)"/>
+      <arg name="params_file" value="$(var params_file)"/>
+      <arg name="relocalizer_params_file" value="$(var relocalizer_params_file)"/>
+      <arg name="startup_relocalization" value="$(var startup_relocalization)"/>
+      <arg name="autostart" value="$(var autostart)"/>
+      <arg name="namespace" value="$(var namespace)"/>
+      <arg name="use_sim_time" value="$(var use_sim_time)"/>
+      <arg name="log_level" value="$(var log_level)"/>
+    </include>
+  </group>
+
+  <group>  <!-- scoped: the include's arguments stay inside -->
+    <include file="$(find-pkg-share landfall_bringup)/launch/navigation.launch.xml">
+      <arg name="params_file" value="$(var params_file)"/>
+      <arg name="autostart" value="$(var autostart)"/>
+      <arg name="namespace" value="$(var namespace)"/>
+      <arg name="use_sim_time" value="$(var use_sim_time)"/>
+      <arg name="log_level" value="$(var log_level)"/>
+    </include>
+  </group>
+</launch>

@@ -102,6 +102,20 @@ All notable changes to this project are documented here. The format follows
   and a learned global descriptor end to end through the builder, the database and the localizer.
   A CI job builds without ONNX Runtime; the build also compiles against Ubuntu 26.04's ONNX
   Runtime 1.23.2.
+- Nav2 integration (M6): the behavior tree nodes `ReLocalize` (asks the relocalizer for a pose)
+  and `IsLocalized` (AMCL's pose is certain enough) in the plugin library `landfall_nav2_bt_nodes`,
+  for Nav2 1.1, 1.3 and 1.5 (BehaviorTree.CPP 3 and 4). `ReLocalize` doesn't need its service when
+  the tree is loaded, retries a busy relocalizer and waits 20 s for an answer by default.
+- Example tree `navigate_to_pose_w_relocalization.xml`, Nav2's default tree of each release with
+  relocalization before navigating (when the localization is uncertain) and as the first recovery.
+  It relocalizes from up to eight headings (turning 45° after a failed attempt), then clears both
+  costmaps, and in the recovery plans the path again from the new pose.
+- Launch files in `landfall_bringup`: localization (map_server, AMCL and the relocalizer under one
+  lifecycle manager), navigation (nav2_bringup's, with Landfall's tree), both together, and the
+  relocalizer alone; `params/relocalizer.yaml` and the per-distro Nav2 overlays
+  `params/nav2_<distro>.yaml`. `docs/nav2_integration.md`.
+- Simulation: the M6 navigation run (`sim/scripts/navigate_depot.sh`,
+  `sim/launch/depot_navigation.launch.xml`): startup relocalization, navigation, a kidnap.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
@@ -125,7 +139,12 @@ All notable changes to this project are documented here. The format follows
 - CI: runner labels pinned to `ubuntu-24.04`; `ubuntu-latest` is moving to Ubuntu 26.04 (the jobs
   run in ROS containers either way).
 - CI: the Jazzy amd64 job fetches the published learned models and parity files (cached until
-  `models.yaml` changes) and runs `test_onnx_parity` on them.
+  `models.yaml` changes) and runs `test_onnx_parity` on them; with `LANDFALL_REQUIRE_MODELS` set
+  there, missing models fail the test instead of skipping it.
+- `landfall_nav2`'s tests run on isolated ROS domains, `landfall_bringup`'s launch tests in a
+  namespace: colcon tests packages in parallel.
+- `sim/scripts/start_depot_sim.sh` runs another launch with `SIM_LAUNCH`.
+- The M0 compile probe `test_compat_bt` gave way to the behavior tree nodes' tests.
 
 ### Fixed
 - The auto-trigger node test expected no third automatic request after shortening the cooldown,

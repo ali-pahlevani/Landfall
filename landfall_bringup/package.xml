@@ -10,8 +10,20 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <exec_depend>landfall_nav2</exec_depend>
+  <exec_depend>landfall_ros</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+  <exec_depend>nav2_map_server</exec_depend>
+  <!-- navigation.launch.xml includes nav2_bringup's navigation_launch.py; nav2_bringup is not a
+       dependency because it pulls in the simulators (docs/nav2_integration.md). -->
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>landfall_msgs</test_depend>
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>lifecycle_msgs</test_depend>
+  <test_depend>rclpy</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

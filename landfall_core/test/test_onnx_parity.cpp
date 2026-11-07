@@ -20,13 +20,15 @@
 // The synthetic models' files (test/data) always run: their references use torch's own
 // grid_sample and interpolate, the reference for the C++ post-processing. The real models' run
 // when they and their parity files are in the models directory ($LANDFALL_MODELS_DIR, see
-// scripts/fetch_models.sh --parity); otherwise those tests are skipped.
+// scripts/fetch_models.sh --parity); otherwise those tests are skipped, or fail when
+// $LANDFALL_REQUIRE_MODELS is set (the CI job that fetches the models sets it).
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -131,6 +133,28 @@ bool present(const std::string & dir, const std::vector<std::string> & files)
   });
 }
 
+bool modelsRequired()
+{
+  const char * required = std::getenv("LANDFALL_REQUIRE_MODELS");
+  return required != nullptr && *required != '\0' && std::string(required) != "0";
+}
+
+// Skips the calling test when a file is missing, or fails it when the models are required.
+void needFiles(const std::string & dir, const std::vector<std::string> & files)
+{
+  if (present(dir, files)) {
+    return;
+  }
+  if (modelsRequired()) {
+    FAIL() << "LANDFALL_REQUIRE_MODELS is set, but a model or parity file is missing in " << dir;
+  }
+  GTEST_SKIP() << "a model or parity file is missing in " << dir
+               << " (scripts/fetch_models.sh --parity)";
+}
+
+// After needFiles: whether the test has to stop.
+bool stopped() { return ::testing::Test::IsSkipped() || ::testing::Test::HasFatalFailure(); }
+
 // XFeat on every image of the parity file against its reference.
 void checkLocal(const std::string & model, const std::string & parity, int max_keypoints)
 {
@@ -218,8 +242,9 @@ TEST(OnnxParity, SyntheticGlobalMatchesPython)
 TEST(OnnxParity, XFeatMatchesPyTorch)
 {
   const std::string dir = modelsDirectory();
-  if (!present(dir, {"xfeat.onnx", "xfeat.parity.bin"})) {
-    GTEST_SKIP() << "no xfeat.onnx and xfeat.parity.bin in " << dir << " (docs/TODO.md T-007)";
+  needFiles(dir, {"xfeat.onnx", "xfeat.parity.bin"});
+  if (stopped()) {
+    return;
   }
   checkLocal(dir + "/xfeat.onnx", dir + "/xfeat.parity.bin", 4096);
 }
@@ -227,8 +252,9 @@ TEST(OnnxParity, XFeatMatchesPyTorch)
 TEST(OnnxParity, EigenPlacesMatchesPyTorch)
 {
   const std::string dir = modelsDirectory();
-  if (!present(dir, {"eigenplaces_resnet18_512.onnx", "eigenplaces.parity.bin"})) {
-    GTEST_SKIP() << "no EigenPlaces model and parity file in " << dir << " (docs/TODO.md T-007)";
+  needFiles(dir, {"eigenplaces_resnet18_512.onnx", "eigenplaces.parity.bin"});
+  if (stopped()) {
+    return;
   }
   checkGlobal(
     preset("eigenplaces", dir + "/eigenplaces_resnet18_512.onnx", 0, 0),
@@ -238,8 +264,9 @@ TEST(OnnxParity, EigenPlacesMatchesPyTorch)
 TEST(OnnxParity, MegaLocMatchesPython)
 {
   const std::string dir = modelsDirectory();
-  if (!present(dir, {"megaloc.onnx", "megaloc.parity.bin"})) {
-    GTEST_SKIP() << "no megaloc.onnx and megaloc.parity.bin in " << dir << " (docs/TODO.md T-007)";
+  needFiles(dir, {"megaloc.onnx", "megaloc.parity.bin"});
+  if (stopped()) {
+    return;
   }
   checkGlobal(preset("megaloc", dir + "/megaloc.onnx", 322, 322), dir + "/megaloc.parity.bin");
 }

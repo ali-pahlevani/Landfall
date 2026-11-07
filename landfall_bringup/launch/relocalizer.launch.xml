@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  The relocalizer, with a lifecycle manager of its own (docs/nav2_integration.md):
+
+    ros2 launch landfall_bringup relocalizer.launch.xml database:=/path/site.landfall.db
+
+  Better: start it with the localization, after AMCL, so that its startup relocalization runs once
+  AMCL is active. localization.launch.xml does that; or set use_lifecycle_manager:=false and add
+  landfall_relocalizer after amcl to the node_names of your localization lifecycle manager.
+-->
+<launch>
+  <arg name="database" description="Map database built by `landfall build` (*.landfall.db)"/>
+  <arg name="params_file" default="$(find-pkg-share landfall_bringup)/params/relocalizer.yaml"
+    description="Relocalizer parameters (docs/parameters.md)"/>
+  <arg name="startup_relocalization" default="false"
+    description="Relocalize once after activation, when AMCL is active and data arrives"/>
+  <arg name="use_lifecycle_manager" default="true"
+    description="Start lifecycle_manager_relocalization for the relocalizer"/>
+  <arg name="autostart" default="true" description="The lifecycle manager activates it at once"/>
+  <arg name="namespace" default="" description="Namespace of the relocalizer and its manager"/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="log_level" default="info"/>
+
+  <node pkg="landfall_ros" exec="relocalizer_node" name="landfall_relocalizer"
+    namespace="$(var namespace)" output="screen" args="--ros-args --log-level $(var log_level)">
+    <param from="$(var params_file)"/>
+    <param name="database_path" value="$(var database)"/>
+    <param name="startup.enabled" value="$(var startup_relocalization)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+
+  <node if="$(var use_lifecycle_manager)" pkg="nav2_lifecycle_manager" exec="lifecycle_manager"
+    name="lifecycle_manager_relocalization" namespace="$(var namespace)" output="screen"
+    args="--ros-args --log-level $(var log_level)">
+    <param name="autostart" value="$(var autostart)"/>
+    <param name="node_names" value="[landfall_relocalizer]"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+</launch>

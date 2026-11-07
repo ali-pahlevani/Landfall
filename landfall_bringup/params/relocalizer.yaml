@@ -1,0 +1,36 @@
+# Landfall relocalizer: a starting configuration for a robot. Every parameter, with its range, is in
+# docs/parameters.md; tuning in docs/relocalization.md, the Nav2 setup in docs/nav2_integration.md.
+# The launch files set database_path and startup.enabled from their arguments.
+/**:
+  ros__parameters:
+    frames:
+      global: map
+      odom: odom
+      base: base_footprint     # a frame on the floor: the camera height check measures from it
+      camera: ""               # empty: camera_info's frame_id
+    image:
+      topic: image             # your camera's topic, or remap `image`
+      transport: raw           # raw, or compressed (subscribes <topic>/compressed)
+      time_offset: 0.0         # negative latency of a camera that stamps images late
+    camera_info:
+      topic: camera_info
+    scan_check:
+      topic: scan              # the LaserScan AMCL uses
+      mode: required           # every pose is checked against the scan before it is published
+    imu:
+      topic: imu               # optional: orientation gives gravity on ramps
+    gravity:
+      source: auto             # IMU when fresh, else the flat floor
+    output:
+      mode: topic              # publish /initialpose; or service: call AMCL's set_initial_pose
+      topic: /initialpose
+      amcl_node: amcl          # publish only while this AMCL is active ("" to skip the check)
+    startup:
+      delay: 2.0
+      max_attempts: 3
+      retry_interval: 5.0
+    auto_trigger:
+      enabled: false           # relocalize on its own while AMCL stays uncertain
+      pose_topic: amcl_pose
+    bond:
+      enabled: true            # heartbeat with nav2_lifecycle_manager

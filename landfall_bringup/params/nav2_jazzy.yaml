@@ -1,0 +1,17 @@
+# What Landfall adds to Nav2's parameters on Jazzy (docs/nav2_integration.md).
+#
+# launch/navigation.launch.xml gives this file to Nav2's nodes beneath your own parameters file: a
+# key your file sets wins. It also sets bt_navigator's default_nav_to_pose_bt_xml to
+#   $(find-pkg-share landfall_nav2)/behavior_trees/navigate_to_pose_w_relocalization.xml
+# Without the launch file, copy both into your parameters.
+#
+# Jazzy's navigator loads Nav2's own behavior tree plugins by itself; plugin_lib_names adds
+# Landfall's library (ReLocalize, IsLocalized). If your file sets plugin_lib_names, add
+# landfall_nav2_bt_nodes to it there.
+/**/bt_navigator:
+  ros__parameters:
+    plugin_lib_names: ["landfall_nav2_bt_nodes"]
+
+# Recommended for AMCL (not set by the launch files; see docs/nav2_integration.md):
+#   set_initial_pose: false           # the relocalizer gives the first pose
+#   always_reset_initial_pose: true   # forget the last pose when AMCL is restarted

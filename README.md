@@ -26,8 +26,10 @@ Under development toward **v1.0.0**. Done:
   monitor and the shadow log.
 - M5: learned features and global descriptors on ONNX Runtime (optional), with their parity with
   PyTorch and a first comparison in simulation; see [`docs/models.md`](docs/models.md).
+- M6: the Nav2 integration: behavior tree nodes, an example tree for each Nav2 release and launch
+  files; see [`docs/nav2_integration.md`](docs/nav2_integration.md).
 
-Next: M6, the Nav2 integration (behavior tree nodes, launch files).
+Next: M7, the kidnap benchmark and the release candidate v1.0.0-rc.1.
 
 The relocalizer has been tested in simulation only; field validation on a real robot comes last
 (M8). The full plan, including interfaces, algorithms and milestones, is in

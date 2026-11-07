@@ -7,8 +7,8 @@ them when it finds ONNX Runtime (rosdep's `onnxruntime_vendor`, the CPU release)
 
 > **Status (M5):** the backends work through the builder, the database and the relocalizer. Their
 > parity with PyTorch holds on the real models, and they've had a first comparison with the
-> classical backends in simulation (below). The exported models go to GitHub release `models-v1`
-> (`docs/TODO.md` T-007 until it is published).
+> classical backends in simulation (below). The exported models are published as GitHub release
+> `models-v1`.
 
 ## Presets
 
@@ -53,7 +53,7 @@ scripts/fetch_models.sh --parity        # with the parity references of the C++ 
 
 Every file is checked against its SHA-256 before it is installed. `megaloc.onnx` is upstream's own
 file, fetched from its pinned Hugging Face revision; the others come from Landfall's `models-v1`
-release once T-007 is done.
+release.
 
 To export them yourself:
 

@@ -57,13 +57,20 @@ OPSET = 17
 
 
 class GeM(torch.nn.Module):
+    """Generalized mean pooling over the whole feature map.
+
+    Upstream averages with F.avg_pool2d and a kernel the size of the feature map. That kernel is
+    an attribute in ONNX and can't follow the image size, so the export fails with a dynamic
+    input. The same mean is taken with mean() here; the parameter is the same.
+    """
+
     def __init__(self):
         super().__init__()
         self.p = torch.nn.Parameter(torch.ones(1) * 3)
         self.eps = 1e-6
 
     def forward(self, x):
-        pooled = F.avg_pool2d(x.clamp(min=self.eps).pow(self.p), (x.size(-2), x.size(-1)))
+        pooled = x.clamp(min=self.eps).pow(self.p).mean(dim=(-2, -1), keepdim=True)
         return pooled.pow(1.0 / self.p)
 
 

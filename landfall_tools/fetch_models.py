@@ -15,11 +15,14 @@
 """Download the learned models of models.yaml and check their SHA-256 (scripts/fetch_models.sh).
 
     fetch_models.py [--models-dir DIR] [--parity] [FILE ...]
+    fetch_models.py --upstream DIR [FILE ...]
 
 DIR: --models-dir, else $LANDFALL_MODELS_DIR, else ~/.local/share/landfall/models (as the
 relocalizer looks them up). FILE: model files of models.yaml (default: all). --parity also
-fetches the parity references of the C++ tests. A file already present with the right SHA-256
-is kept; nothing is installed unless its checksum matches.
+fetches the parity references of the C++ tests. --upstream fetches, instead of the models, the
+upstream files their export reads (source_sha256 in models.yaml) into DIR/<backend>/, for
+scripts/export_models.sh. A file already present with the right SHA-256 is kept; nothing is
+installed unless its checksum matches.
 """
 
 import argparse
@@ -42,12 +45,14 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def fetch(url, expected, target):
+def fetch(url, expected, target, label=None):
+    label = label or target.name
     if target.is_file() and sha256(target) == expected:
-        print(f'{target.name}: present')
+        print(f'{label}: present')
         return
+    target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(target.name + '.part')
-    print(f'{target.name}: downloading {url}')
+    print(f'{label}: downloading {url}')
     with urllib.request.urlopen(url, timeout=60) as response, open(partial, 'wb') as out:
         while True:
             block = response.read(1 << 20)
@@ -57,15 +62,16 @@ def fetch(url, expected, target):
     actual = sha256(partial)
     if actual != expected:
         partial.unlink()
-        raise SystemExit(f'{target.name}: SHA-256 {actual}, expected {expected}; not installed')
+        raise SystemExit(f'{label}: SHA-256 {actual}, expected {expected}; not installed')
     partial.replace(target)
-    print(f'{target.name}: ok')
+    print(f'{label}: ok')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--models-dir', type=pathlib.Path)
     parser.add_argument('--parity', action='store_true')
+    parser.add_argument('--upstream', type=pathlib.Path, metavar='DIR')
     parser.add_argument('files', nargs='*')
     args = parser.parse_args()
 
@@ -75,6 +81,15 @@ def main():
     unknown = [f for f in wanted if f not in models]
     if unknown:
         raise SystemExit(f'not in models.yaml: {", ".join(unknown)} (known: {", ".join(models)})')
+
+    if args.upstream:
+        for name in wanted:
+            model = models[name]
+            for path, expected in model['source_sha256'].items():
+                fetch(model['source_base'] + path, expected,
+                      args.upstream / model['backend'] / path, f'{model["backend"]}/{path}')
+        print(f'upstream files in {args.upstream}')
+        return 0
     directory = args.models_dir or pathlib.Path(
         os.environ.get('LANDFALL_MODELS_DIR') or
         pathlib.Path.home() / '.local/share/landfall/models')

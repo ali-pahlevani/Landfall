@@ -87,6 +87,12 @@ All notable changes to this project are documented here. The format follows
 - Model management: `landfall_tools/models.yaml` (pinned upstream files, licenses, checksums),
   `scripts/fetch_models.sh`, export scripts for XFeat and EigenPlaces, and MegaLoc's own ONNX file.
   A database records the SHA-256 of its models and refuses a missing or different one.
+- `scripts/export_models.sh`: the whole export in one command. It sets up the pinned Python
+  packages in a virtual environment, downloads the pinned upstream files with
+  `fetch_models.sh --upstream` (each SHA-256 checked) and takes the parity images from the
+  fixture bag (`landfall_tools/export/parity_images.py`). Its work files are kept in
+  `~/.cache/landfall/export`. `megaloc.py --pytorch` also checks the SHA-256 of upstream's model
+  code.
 - `landfall build` and `landfall query` take `--models-dir` and `--execution-provider`; the
   relocalizer takes `backend.models_dir` and `backend.execution_provider`.
 - `docs/models.md`: presets, usage, the ONNX contracts, parity, and the license and provenance
@@ -116,9 +122,21 @@ All notable changes to this project are documented here. The format follows
 - The localizer gives global descriptors the color image (bag of words ignores it).
 - CI: `actions/checkout` and `actions/upload-artifact` v7 (Node 24); flake8 checks
   `landfall_tools`.
+- CI: runner labels pinned to `ubuntu-24.04`; `ubuntu-latest` is moving to Ubuntu 26.04 (the jobs
+  run in ROS containers either way).
+- CI: the Jazzy amd64 job fetches the published learned models and parity files (cached until
+  `models.yaml` changes) and runs `test_onnx_parity` on them.
 
 ### Fixed
 - The auto-trigger node test expected no third automatic request after shortening the cooldown,
   but with the localization still uncertain the trigger rightly keeps firing; it failed on GitHub's
   arm64 runner. The odometry-consistency and preemption tests no longer depend on timing, and the
   extrinsics monitor tests take one-frame samples.
+- The model exports would have failed: `xfeat.py` couldn't import its helper module when run with
+  `python3 -I`, the documented invocation, and neither network exported with a dynamic image size.
+  XFeat's 8x8 unfolding (`Tensor.unfold`) is swapped for `pixel_unshuffle`, which gives the same
+  values bit for bit (the script checks). EigenPlaces' GeM pooling takes a mean instead of a
+  pooling kernel the size of the feature map. Found by exporting with random weights.
+- The accuracy table in `docs/relocalization.md` counted images instead of requests: a frame that
+  finds nothing doesn't end a request, so run 1 gives 434 successes in 440 requests, not 434 of
+  448 (re-run in M5; same successes and wrong poses).

@@ -21,28 +21,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Pinned runner labels: the jobs run in ros:<distro> containers, so the host only needs
+        # to be stable (ubuntu-latest started moving to Ubuntu 26.04 on 2026-10-19).
         include:
-          - {distro: humble, arch: amd64, runner: ubuntu-latest, experimental: false}
-          - {distro: jazzy, arch: amd64, runner: ubuntu-latest, experimental: false}
-          - {distro: lyrical, arch: amd64, runner: ubuntu-latest, experimental: false}
+          - {distro: humble, arch: amd64, runner: ubuntu-24.04, experimental: false}
+          # models: also test the learned backends on the published models (test_onnx_parity).
+          - {distro: jazzy, arch: amd64, runner: ubuntu-24.04, experimental: false, models: true}
+          - {distro: lyrical, arch: amd64, runner: ubuntu-24.04, experimental: false}
           - {distro: humble, arch: arm64, runner: ubuntu-22.04-arm, experimental: false}
           - {distro: jazzy, arch: arm64, runner: ubuntu-24.04-arm, experimental: false}
           - distro: jazzy
             arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             experimental: false
             variant: C++20
             cmake_args: -DCMAKE_CXX_STANDARD=20
           # The classical backends alone: a build without ONNX Runtime (docs/models.md).
           - distro: jazzy
             arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             experimental: false
             variant: no ONNX Runtime
             cmake_args: -DLANDFALL_WITH_ONNXRUNTIME=OFF
           - distro: jazzy
             arch: amd64
-            runner: ubuntu-latest
+            runner: ubuntu-24.04
             experimental: false
             variant: ASan+UBSan
             sanitize: 1
@@ -61,6 +64,21 @@ jobs:
           apt-get install -y --no-install-recommends ccache
           rosdep update --rosdistro "${ROS_DISTRO}"
           rosdep install --from-paths src --ignore-src --rosdistro "${ROS_DISTRO}" -y
+
+      # The published learned models and their parity files (docs/models.md), each checked
+      # against its SHA-256 in models.yaml; cached until models.yaml changes.
+      - name: Cache the learned models
+        if: matrix.models
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: learned-models-${{ hashFiles('src/landfall/landfall_tools/models.yaml') }}
+
+      - name: Fetch the learned models
+        if: matrix.models
+        run: |
+          python3 src/landfall/landfall_tools/fetch_models.py --parity --models-dir models
+          echo "LANDFALL_MODELS_DIR=${PWD}/models" >> "${GITHUB_ENV}"
 
       - name: Build and test
         env:

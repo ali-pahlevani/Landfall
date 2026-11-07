@@ -210,20 +210,22 @@ evaluate_poses --bag other_session_bag --world-to-map 8.015 0.023 0.105 --querie
 evaluate_scan_check --bag other_session_bag --map site.yaml --world-to-map 8.015 0.023 0.105
 ```
 
-## Accuracy so far (simulation, M4)
+## Accuracy so far (simulation, M4; re-run in M5)
 
 These runs used the Gazebo depot drives from M2 (run 1 and run 2, about 9 minutes each, both
 directions). Each run's images, one per second, were queried against the other run's database, with
 the default thresholds and the LiDAR check. Success means within 0.25 m and 5°; wrong means more
-than 0.5 m or 10° off.
+than 0.5 m or 10° off. As in the node, a frame that finds nothing doesn't end a request: the next
+image is tried until `query.timeout`. Run 1's 448 images, for example, made 440 single-frame
+requests.
 
 | Queries → database | Request | Success | AMBIGUOUS | NO_MATCH | REJECTED_CONSISTENCY | Wrong poses | Error of published poses (median / p95) |
 |---|---|---|---|---|---|---|---|
-| run 1 → run 2 | 1 frame | 434 / 448 (96.9 %) | 5 | 8 | 0 | 1 | 1.5 cm / 4.1 cm |
+| run 1 → run 2 | 1 frame | 434 / 440 (98.6 %) | 5 | 0 | 0 | 1 | 1.5 cm / 4.1 cm |
 | run 1 → run 2 | 3 frames | 142 / 148 (95.9 %) | 5 | 0 | 1 | 0 | 1.3 cm / 3.5 cm |
-| run 2 → run 1 | 1 frame | 425 / 439 (96.8 %) | 5 | 8 | 0 | 1 | 1.2 cm / 3.6 cm |
+| run 2 → run 1 | 1 frame | 425 / 431 (98.6 %) | 5 | 0 | 0 | 1 | 1.2 cm / 3.6 cm |
 | run 2 → run 1 | 3 frames | 140 / 147 (95.2 %) | 5 | 1 | 1 | 0 | 1.1 cm / 2.5 cm |
-| fixture (non-keyframe images) | 1 frame | 25 / 35 (71.4 %) | 0 | 10 | 0 | 0 | 2.1 cm / 3.3 cm |
+| fixture (non-keyframe images) | 1 frame | 25 / 27 (92.6 %) | 0 | 2 | 0 | 0 | 1.4 cm / 4.3 cm |
 
 The depot looks the same in its two halves when rotated 180° about the world origin. With vision
 alone (M3), 19 to 20 frames per direction were ambiguous, and 1 of 156 three-frame requests
@@ -243,5 +245,5 @@ The LiDAR check alone, at every scan of the two drives and of the fixture:
 | fixture | 143 | 143 (100 %) | 0 of 2,860 |
 
 The fixture's misses are on the short leg of its L, which only three keyframes per direction cover.
-Localization takes 33 ms per frame (median), LiDAR check included, on the development laptop
-(i7-13620H).
+Localization takes 31 to 32 ms per frame (median), LiDAR check included, on the development
+laptop (i7-13620H).

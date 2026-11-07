@@ -49,6 +49,9 @@ training data and provenance: `docs/models.md`.
 | EigenPlaces (gmberton/EigenPlaces) | MIT | MIT (release v1.0) | global descriptor `eigenplaces`; torchvision ResNet-18 backbone (BSD-3-Clause) |
 | MegaLoc (gberton/MegaLoc) | MIT | MIT | global descriptor `megaloc`, upstream's own ONNX file; DINOv2 backbone (Apache-2.0); training data undisclosed |
 
+Their parity files (`*.parity.bin`, published with them for `test_onnx_parity`) hold four images of
+the depot fixture bag (CC-BY-4.0, Open Robotics; see above) and the outputs of the models on them.
+
 ## Used at test or simulation time only (separate processes, not linked)
 
 | Component | License | Notes |

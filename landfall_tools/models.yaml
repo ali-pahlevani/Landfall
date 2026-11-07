@@ -1,20 +1,24 @@
 # Learned models of landfall_core's ONNX backends (docs/models.md). Never committed: they are made
-# by landfall_tools/export/ from the pinned upstream files below, published as assets of the
-# GitHub release `release` (megaloc: upstream's own file at `url`), and downloaded and checked by
-# scripts/fetch_models.sh. Every file has its SHA-256; a database records the SHA-256 of the
-# models it was built with and refuses others.
-release: https://github.com/ali-pahlevani/Landfall/releases/download/models-v1
+# by scripts/export_models.sh (landfall_tools/export/) from the pinned upstream files below,
+# published as assets of the GitHub release `release` (megaloc: upstream's own file at `url`), and
+# downloaded and checked by scripts/fetch_models.sh. Every file has its SHA-256; a database records
+# the SHA-256 of the models it was built with and refuses others.
+#
+# source_sha256: the upstream files an export reads, at source_base + path
+# (scripts/fetch_models.sh --upstream DIR downloads and checks them).
+release: https://github.com/ali-pahlevani/Landfall/releases/download/models-v1  # TODO(T-007): publish
 
 models:
   - file: xfeat.onnx
     backend: xfeat
     role: local features
-    sha256: null  # TODO(T-007): set when the export runs and the release is published
+    sha256: 8087562aa56e268997d4744370f3b59056d622894ff3672179e63396ad1bfe9d
     parity: xfeat.parity.bin
-    parity_sha256: null  # TODO(T-007)
+    parity_sha256: c8d155af27c4b351c2a2591b50579e13cd5dc91ee673d0d661a633b37701a728
     license: Apache-2.0 (code and weights)
     upstream: https://github.com/verlab/accelerated_features
     revision: e92685f57f8318b18725c5c8c0bd28c7fe188d9a
+    source_base: https://raw.githubusercontent.com/verlab/accelerated_features/e92685f57f8318b18725c5c8c0bd28c7fe188d9a/
     source_sha256:
       modules/model.py: d9a665f18fcea5eaf3e278925e1a92103afcba9051e05b2334f3daa29f411964
       modules/xfeat.py: 385ccd31d095b0d4176b04e982088b85321b11ade4324f83b097ee6524f2a6e7
@@ -25,15 +29,15 @@ models:
   - file: eigenplaces_resnet18_512.onnx
     backend: eigenplaces
     role: global descriptor
-    sha256: null  # TODO(T-007)
+    sha256: 74cc5205c93f7c0adf5cfbc3e96eda075a84982decbbcb0f2a2348d01e805d05
     parity: eigenplaces.parity.bin
-    parity_sha256: null  # TODO(T-007)
+    parity_sha256: 228c34e2029bcf9a210431e21d9c52dfcc440883b222bf2c766a9da398b4c3a7
     license: MIT (code and weights); backbone torchvision ResNet-18 (BSD-3-Clause)
     upstream: https://github.com/gmberton/EigenPlaces
     revision: a2969f71d5ea31017443af490b15273ca4c50af1
+    source_base: https://github.com/gmberton/EigenPlaces/releases/download/v1.0/
     source_sha256:
       ResNet18_512_eigenplaces.pth: b47ea1efb51041604e9c135508764175bbaa98dece47b47da664517317d0aff3
-    source_url: https://github.com/gmberton/EigenPlaces/releases/download/v1.0/ResNet18_512_eigenplaces.pth
     export: python3 -I landfall_tools/export/eigenplaces.py --weights WEIGHTS --output OUT --parity-images IMAGES
 
   - file: megaloc.onnx
@@ -42,10 +46,14 @@ models:
     sha256: 9304d7d2473b006d2664736b5c56135c8404ff351d4592cfd9dcb4d7e8f12355
     url: https://huggingface.co/gberton/MegaLoc/resolve/a0f34722c4297ff787e022433799250180860af7/megaloc.onnx
     parity: megaloc.parity.bin
-    parity_sha256: null  # TODO(T-007)
+    parity_sha256: 78d0b1c9ef83a978d957f01f639bc4df4a9c807b85010f49651792e476d88a40
     license: MIT; DINOv2 backbone Apache-2.0; training data undisclosed (docs/models.md)
     upstream: https://huggingface.co/gberton/MegaLoc
     revision: a0f34722c4297ff787e022433799250180860af7
+    # The export uses megaloc.onnx itself; these are for its optional comparison with upstream's
+    # PyTorch model (megaloc.py --pytorch).
+    source_base: https://huggingface.co/gberton/MegaLoc/resolve/a0f34722c4297ff787e022433799250180860af7/
     source_sha256:
+      megaloc_model.py: e3a66ae823abbbbc5e7975c649419a33036400eaa9fa5a955dd97eaa37f46c75
       model.safetensors: d4f9f2bcb60018f91eb6a8e061ed054fd55654e10c2569cf13841ea986ffb4f8
     export: python3 -I landfall_tools/export/megaloc.py --onnx megaloc.onnx --output OUT --parity-images IMAGES

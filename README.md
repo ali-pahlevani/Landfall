@@ -24,10 +24,10 @@ Under development toward **v1.0.0**. Done:
 - M3: the relocalizer node, see [`docs/relocalization.md`](docs/relocalization.md).
 - M4: the safety layer: LiDAR verification of every pose, the automatic trigger, the extrinsics
   monitor and the shadow log.
+- M5: learned features and global descriptors on ONNX Runtime (optional), with their parity with
+  PyTorch and a first comparison in simulation; see [`docs/models.md`](docs/models.md).
 
-In progress: M5, learned features and global descriptors on ONNX Runtime (optional). The
-backends and their tests are in place; the trained models are not published yet, see
-[`docs/models.md`](docs/models.md).
+Next: M6, the Nav2 integration (behavior tree nodes, launch files).
 
 The relocalizer has been tested in simulation only; field validation on a real robot comes last
 (M8). The full plan, including interfaces, algorithms and milestones, is in

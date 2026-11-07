@@ -27,7 +27,9 @@ The graph is XFeat's dense network plus the cheap dense steps of detectAndComput
 normalization of the descriptor map, the keypoint heatmap (softmax, 8x8 pixel shuffle) and the
 5x5 local-maximum mask of non-maximum suppression. The threshold, the scores, the top-k and the
 descriptor sampling run in C++ (landfall_core/src/onnx/xfeat.cpp), which follows
-detectAndCompute step by step.
+detectAndCompute step by step. One function of the network is swapped for the export:
+XFeatModel._unfold2d becomes pixel_unshuffle (space_to_depth below), which torch.onnx can export
+for any image size; the script checks that the network's outputs stay bit for bit the same.
 
     input  image        float32 [1, 1, H, W]    grayscale in [0, 1]; H and W multiples of 32
     output descriptors  float32 [1, 64, H/8, W/8]  L2-normalized over the channels
@@ -45,7 +47,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-import common
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # python3 -I drops it
+import common  # noqa: E402
 
 UPSTREAM_COMMIT = 'e92685f57f8318b18725c5c8c0bd28c7fe188d9a'
 UPSTREAM_FILES = {
@@ -55,6 +58,15 @@ UPSTREAM_FILES = {
     'weights/xfeat.pt': '0f5187fd7bedd26c7fe6acc9685444493a165a35ecc087b33c2db3627f3ea10b',
 }
 OPSET = 17
+
+
+def space_to_depth(x, ws=2):
+    """XFeatModel._unfold2d with pixel_unshuffle: the same tensor (checked in main).
+
+    Upstream slices the 8x8 blocks with Tensor.unfold, which torch.onnx can't export when the
+    image size is dynamic ("input size not accessible").
+    """
+    return F.pixel_unshuffle(x, ws)
 
 
 class Dense(torch.nn.Module):
@@ -93,6 +105,14 @@ def main():
     torch.manual_seed(0)
     net = XFeatModel().eval()
     net.load_state_dict(common.load_state_dict(args.upstream / 'weights/xfeat.pt'))
+    # The network with space_to_depth must give exactly upstream's outputs.
+    probe = torch.rand(1, 1, 96, 128)
+    with torch.no_grad():
+        upstream_outputs = net(probe)
+        net._unfold2d = space_to_depth
+        patched_outputs = net(probe)
+    if not all(torch.equal(a, b) for a, b in zip(upstream_outputs, patched_outputs)):
+        raise SystemExit('space_to_depth changes XFeatModel\'s outputs')
     dense = Dense(net).eval()
 
     args.output.mkdir(parents=True, exist_ok=True)

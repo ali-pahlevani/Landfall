@@ -24,8 +24,8 @@ Copies megaloc.onnx to DIR after checking its SHA-256. With --parity-images, meg
 holds the images (BGR) and the descriptors ONNX Runtime computes on them, preprocessed as
 landfall_core's OnnxGlobalDescriptor does (322 x 322 with cv::INTER_AREA, RGB, ImageNet mean and
 std; see common.py). With --pytorch DIR (upstream's megaloc_model.py and model.safetensors at
-the same revision; this runs upstream's model code), the ONNX descriptors are also compared with
-PyTorch's.
+the same revision, each checked against its SHA-256; this runs upstream's model code), the ONNX
+descriptors are also compared with PyTorch's.
 """
 
 import argparse
@@ -41,7 +41,10 @@ import common  # noqa: E402
 
 REVISION = 'a0f34722c4297ff787e022433799250180860af7'
 ONNX_SHA256 = '9304d7d2473b006d2664736b5c56135c8404ff351d4592cfd9dcb4d7e8f12355'
-SAFETENSORS_SHA256 = 'd4f9f2bcb60018f91eb6a8e061ed054fd55654e10c2569cf13841ea986ffb4f8'
+PYTORCH_FILES = {
+    'megaloc_model.py': 'e3a66ae823abbbbc5e7975c649419a33036400eaa9fa5a955dd97eaa37f46c75',
+    'model.safetensors': 'd4f9f2bcb60018f91eb6a8e061ed054fd55654e10c2569cf13841ea986ffb4f8',
+}
 SIZE = 322
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
@@ -80,7 +83,7 @@ def main():
 
     torch_model = None
     if args.pytorch:
-        common.verify_files(args.pytorch, {'model.safetensors': SAFETENSORS_SHA256})
+        common.verify_files(args.pytorch, PYTORCH_FILES)
         from safetensors.torch import load_file
         sys.path.insert(0, str(args.pytorch))
         from megaloc_model import MegaLoc  # noqa: E402 (upstream, same revision)

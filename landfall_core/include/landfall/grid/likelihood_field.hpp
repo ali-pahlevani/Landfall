@@ -46,6 +46,8 @@ public:
   Cell classify(double x, double y) const;
   /// Distance (m) to the nearest obstacle cell; max_distance outside the grid or when farther.
   double distance(double x, double y) const;
+  /// The distances of every cell, row-major as the grid: for tight loops.
+  const std::vector<float> & distances() const { return distances_; }
   /// True if the segment from `from` to `to` passes through an obstacle cell. Cells outside the
   /// grid end the traversal.
   bool segmentHitsObstacle(const Vec2 & from, const Vec2 & to) const;

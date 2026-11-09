@@ -43,6 +43,9 @@ without ONNX Runtime refuses a database built with learned backends.
 `execution_provider: cuda` or `tensorrt` needs an ONNX Runtime built with them, given as
 `ONNXRUNTIME_ROOT` when building Landfall, and NVIDIA's CUDA, cuDNN or TensorRT libraries (closed
 source). Neither is part of the release guarantees (`docs/PLAN.md` D11).
+`landfall_tools/install_onnxruntime.sh gpu` installs the official GPU build of ONNX Runtime 1.24.3
+(CUDA 12.x, cuDNN 9.x), checked against its SHA-256, and prints the `ONNXRUNTIME_ROOT` to build
+with; `cpu` and `aarch64` install the CPU builds of the same version.
 
 ## Getting the models
 

@@ -14,3 +14,4 @@ opencv-python-headless==4.10.0.84
 safetensors==0.4.5  # megaloc.py --pytorch
 tqdm==4.67.0        # imported by XFeat's modules/xfeat.py
 PyYAML==6.0.2       # fetch_models.py
+matplotlib==3.10.9  # plot_benchmark.py

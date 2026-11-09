@@ -109,6 +109,17 @@ vision: a median error of 2.1 and 1.9 cm in the two directions, against 1.3 and 
 With an IMU on a ramp, beams are projected with the IMU's tilt, and beams that would hit the floor
 are dropped.
 
+**Where else the scan fits.** A building can look alike in two places: the depot's two halves do,
+turned 180° about its centre. When the recording saw the wrong one of them from where the robot
+looks and the right one only from elsewhere, vision finds the wrong place, the right one never
+competes, and the LiDAR check can pass: near the depot's mirror poses, the scan fits well enough
+for a fifth of the scans. So once a pose has passed every check (`scan_check.check_alternatives`,
+on), the node fits the scan everywhere else in the map, at every heading. If it fits another place,
+beyond 1 m or 30°, at least `scan_check.alternative_margin` (0.01) better than the pose (in hit
+ratio less violation ratio), the frame is `AMBIGUOUS`: the message says the scan fits another place
+better. Places that are truly identical for the LiDAR, such as twin aisles, fit alike and stay
+vision's to decide. The search takes about 20 ms per frame on 16 threads.
+
 `scan_check.mode` is `required` by default: no request runs without a scan. `optional` checks a
 pose when a scan is there and accepts it on the vision checks otherwise. `disabled` never checks.
 Use either only on a robot without a LiDAR the map matches: the LiDAR check is what stops a place
@@ -116,7 +127,11 @@ that merely looks right.
 
 The check works on its own data too. `evaluate_scan_check` runs it on a recording with ground truth:
 at every scan's true pose, where it must pass, and at wrong poses 0.5 to 5 m away, where it must
-fail (*Accuracy* below).
+fail (*Accuracy* below). For a building that looks alike turned about a point, `--symmetry CX CY
+ANGLE_DEG` also checks every scan at its true pose turned that way (`--symmetry-search` widens the
+window, as vision's pose can be anywhere near it), `--sweep MIN_HIT MAX_VIOLATION` counts what other
+thresholds would accept, and `--alternatives` measures how much better the scan fits elsewhere, at
+the true poses and at the symmetric poses that pass.
 
 ## Automatic relocalization
 
@@ -129,6 +144,27 @@ seconds before the next one. It never starts while another request runs.
 AMCL publishes `amcl_pose` only after a filter update, so a robot that stands still keeps its last
 estimate. An AMCL that never received a pose publishes nothing, so this trigger stays quiet: that
 case is what startup relocalization is for.
+
+## Kidnap watchdog
+
+After a kidnap, AMCL can stay confident on a wrong pose. Nav2 notices only when the robot can't
+move, so until then the robot drives on blind (docs/nav2_integration.md). With
+`kidnap_watchdog.enabled: true`, the relocalizer checks the localization itself: every
+`kidnap_watchdog.period` seconds (default 10), while the localization has a pose, it runs a full
+request without publishing (trigger `watchdog`). Like the extrinsics monitor's requests, these
+checks give way to any other request and never appear on `~/status`.
+
+A check that passes every test is compared with the localization's pose at the check's stamp. It
+disagrees when the two are further apart than `kidnap_watchdog.max_translation` (1 m) or
+`kidnap_watchdog.max_rotation_deg` (20°). The extrinsics monitor's checks count too; checks that
+find no pose say nothing. After `kidnap_watchdog.confirmations` (2) disagreeing checks in a row,
+with no agreeing one between them, the node runs a normal relocalization (trigger `watchdog`),
+which publishes only if every check passes again, and no other within `kidnap_watchdog.cooldown`
+seconds (30). Any published pose restarts the count, which `/diagnostics` shows.
+
+The cost is one request every 10 s. The risk is a relocalization that a right localization didn't
+need; the kidnap benchmark measures how fast the watchdog notices a kidnap and how often it
+relocalizes a robot whose localization was right (docs/benchmark.md).
 
 ## Startup relocalization
 
@@ -157,7 +193,7 @@ A robot that drives without stopping gives few samples: in the depot drives, onl
 images were taken while the robot was confident and slow.
 
 With `shadow.log_path` set, every request that publishes nothing appends a CSV row. That covers dry
-runs and the monitor's requests. Each row holds the status, the pose, and the localization's own
+runs, the monitor's requests and the watchdog's checks. Each row holds the status, the pose, and the localization's own
 pose and standard deviation at the same stamp. Columns:
 
 ```
@@ -173,7 +209,7 @@ publishing. The field validation (PLAN M8) is built on it.
 ## Diagnostics and debugging
 
 - `/diagnostics`: readiness, database size and hash, the startup extrinsics check, the extrinsics
-  monitor, and the last result.
+  monitor, the kidnap watchdog's count, and the last result.
 - `~/markers`: every solved hypothesis (green valid, orange rejected), the keyframes of the winning
   place, and the published pose (blue).
 - `~/debug_image`: the last frame with the winning hypothesis' inliers (green) and outliers (red).
@@ -211,7 +247,7 @@ evaluate_poses --bag other_session_bag --world-to-map 8.015 0.023 0.105 --querie
 evaluate_scan_check --bag other_session_bag --map site.yaml --world-to-map 8.015 0.023 0.105
 ```
 
-## Accuracy so far (simulation, M4; re-run in M5)
+## Accuracy so far (simulation, M4; re-run in M5 and M7)
 
 These runs used the Gazebo depot drives from M2 (run 1 and run 2, about 9 minutes each, both
 directions). Each run's images, one per second, were queried against the other run's database, with
@@ -222,20 +258,26 @@ requests.
 
 | Queries → database | Request | Success | AMBIGUOUS | NO_MATCH | REJECTED_CONSISTENCY | Wrong poses | Error of published poses (median / p95) |
 |---|---|---|---|---|---|---|---|
-| run 1 → run 2 | 1 frame | 434 / 440 (98.6 %) | 5 | 0 | 0 | 1 | 1.5 cm / 4.1 cm |
-| run 1 → run 2 | 3 frames | 142 / 148 (95.9 %) | 5 | 0 | 1 | 0 | 1.3 cm / 3.5 cm |
-| run 2 → run 1 | 1 frame | 425 / 431 (98.6 %) | 5 | 0 | 0 | 1 | 1.2 cm / 3.6 cm |
-| run 2 → run 1 | 3 frames | 140 / 147 (95.2 %) | 5 | 1 | 1 | 0 | 1.1 cm / 2.5 cm |
+| run 1 → run 2 | 1 frame | 434 / 440 (98.6 %) | 6 | 0 | 0 | 0 | 1.5 cm / 4.1 cm |
+| run 1 → run 2 | 3 frames | 142 / 149 (95.3 %) | 6 | 1 | 0 | 0 | 1.3 cm / 3.5 cm |
+| run 2 → run 1 | 1 frame | 425 / 431 (98.6 %) | 6 | 0 | 0 | 0 | 1.2 cm / 3.5 cm |
+| run 2 → run 1 | 3 frames | 141 / 148 (95.3 %) | 6 | 1 | 0 | 0 | 1.1 cm / 2.4 cm |
 | fixture (non-keyframe images) | 1 frame | 25 / 27 (92.6 %) | 0 | 2 | 0 | 0 | 1.4 cm / 4.3 cm |
+
+(M7, with the scan alternatives check. Before it, in M4 and M5, the same requests succeeded as
+often, but each single-frame direction published one wrong pose, see below.)
 
 The depot looks the same in its two halves when rotated 180° about the world origin. With vision
 alone (M3), 19 to 20 frames per direction were ambiguous, and 1 of 156 three-frame requests
-published the mirror pose, 27.8 m off. The LiDAR check rejects most mirror candidates, so far fewer frames are
-ambiguous. Each direction still had one frame whose mirror pose passed every check of that frame:
-the scan fit the map there, and the right place had failed. That is the single-frame wrong pose in
-the table. In both cases the 3-frame request containing it answered `REJECTED_CONSISTENCY`: the
-frames disagreed with odometry by about 27 m and 178°. That is why requests use 3 frames by
-default.
+published the mirror pose, 27.8 m off. The LiDAR check rejects most mirror candidates, so far fewer
+frames are ambiguous. Each direction still had one frame whose mirror pose passed every check of
+that frame: the scan fit the map there, and the right place had failed. In M4 and M5 that was a
+wrong single-frame pose; the 3-frame request containing it answered `REJECTED_CONSISTENCY`, as the
+frames disagreed with odometry by about 27 m and 178°. Since M7 the scan alternatives check finds
+that the scan fits the right place better, and the frame is `AMBIGUOUS`. A robot that stands still
+gives no such odometry check (every frame finds the mirror place alike): the kidnap benchmark found
+two such wrong poses before the scan alternatives check (`docs/benchmark.md`). Requests still use 3
+frames by default.
 
 The LiDAR check alone, at every scan of the two drives and of the fixture:
 
@@ -246,5 +288,6 @@ The LiDAR check alone, at every scan of the two drives and of the fixture:
 | fixture | 143 | 143 (100 %) | 0 of 2,860 |
 
 The fixture's misses are on the short leg of its L, which only three keyframes per direction cover.
-Localization takes 31 to 32 ms per frame (median), LiDAR check included, on the development
-laptop (i7-13620H).
+Localization takes 49 to 51 ms per frame (median; p95 67 to 71 ms), LiDAR checks included, on the
+development laptop (i7-13620H, 16 threads). The scan alternatives check adds about 18 ms: the same
+requests took 31 to 32 ms before it (M5).

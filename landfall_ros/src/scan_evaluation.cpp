@@ -14,6 +14,7 @@
 
 #include "landfall/ros/scan_evaluation.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -75,6 +76,63 @@ std::string reasonKind(const std::string & reason)
 
 }  // namespace
 
+namespace
+{
+
+/// The best poses of a window around `center` by hit ratio, with their full scores: what
+/// ScanVerifier::verify looks at, searched once for every threshold pair.
+std::vector<std::pair<Pose2, ScanScore>> windowCandidates(
+  const ScanVerifier & verifier, const ProjectedScan & scan, const Pose2 & center, double radius,
+  double angle_deg)
+{
+  constexpr double kStep = 0.05;      // m
+  constexpr double kAngleStep = 1.5;  // deg
+  constexpr std::size_t kCandidates = 5;
+  const int steps = static_cast<int>(std::floor(radius / kStep + 1e-9));
+  const int angle_steps = static_cast<int>(std::floor(angle_deg / kAngleStep + 1e-9));
+  std::vector<std::pair<double, Pose2>> ranked;
+  for (int i = -steps; i <= steps; ++i) {
+    for (int j = -steps; j <= steps; ++j) {
+      for (int k = -angle_steps; k <= angle_steps; ++k) {
+        const Pose2 pose{
+          center.x + i * kStep, center.y + j * kStep,
+          normalizeAngle(center.yaw + k * kAngleStep * M_PI / 180.0)};
+        ranked.emplace_back(verifier.score(scan, pose, false).hit_ratio, pose);
+      }
+    }
+  }
+  const std::size_t n = std::min(kCandidates, ranked.size());
+  std::partial_sort(
+    ranked.begin(), ranked.begin() + static_cast<std::ptrdiff_t>(n), ranked.end(),
+    [](const auto & a, const auto & b) { return a.first > b.first; });
+  std::vector<std::pair<Pose2, ScanScore>> scores;
+  for (std::size_t c = 0; c < n; ++c) {
+    scores.emplace_back(ranked[c].second, verifier.score(scan, ranked[c].second, true));
+  }
+  return scores;
+}
+
+/// Whether one of the candidates passes the check with these thresholds (ScanVerifier's test).
+const std::pair<Pose2, ScanScore> * passing(
+  const std::vector<std::pair<Pose2, ScanScore>> & candidates, const ScanCheckParams & p,
+  std::size_t valid_beams)
+{
+  if (static_cast<int>(valid_beams) < p.min_valid_beams) {
+    return nullptr;
+  }
+  for (const auto & candidate : candidates) {
+    const ScanScore & c = candidate.second;
+    if (
+      c.known_ratio >= p.min_known_ratio && c.hit_ratio >= p.min_hit_ratio &&
+      c.violation_ratio <= p.max_violation_ratio) {
+      return &candidate;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
 ScanEvaluation evaluateScanCheck(
   const std::string & bag, const OccupancyGrid & grid, const ScanEvaluationOptions & options)
 {
@@ -88,13 +146,23 @@ ScanEvaluation evaluateScanCheck(
   }
   const auto field = std::make_shared<const LikelihoodField>(grid);
   const ScanVerifier verifier(field, options.params);
+  std::vector<ScanVerifier> sweep_verifiers;
+  std::vector<ScanCheckParams> sweep_params;
+  ScanEvaluation e;
+  for (const auto & [hit, violation] : options.sweep) {
+    ScanCheckParams params = options.params;
+    params.min_hit_ratio = hit;
+    params.max_violation_ratio = violation;
+    sweep_verifiers.emplace_back(field, params);
+    sweep_params.push_back(params);
+    e.sweep.push_back({hit, violation, 0, 0, 0});
+  }
   std::mt19937_64 rng(options.seed);
   std::uniform_real_distribution<double> distance(options.wrong_min, options.wrong_max);
   std::uniform_real_distribution<double> direction(-M_PI, M_PI);
   std::uniform_real_distribution<double> turn(-options.wrong_yaw_deg, options.wrong_yaw_deg);
   const auto max_gap = static_cast<int64_t>(options.max_gt_gap * 1e9);
 
-  ScanEvaluation e;
   const std::size_t every = std::max<std::size_t>(options.every, 1);
   for (std::size_t i = 0; i < side.scans.size(); i += every) {
     const auto & scan = side.scans[i];
@@ -130,12 +198,51 @@ ScanEvaluation evaluateScanCheck(
     } else {
       ++e.true_rejections[reasonKind(result.reason)];
     }
+    for (std::size_t s = 0; s < sweep_verifiers.size(); ++s) {
+      e.sweep[s].true_accepted += sweep_verifiers[s].verify(projected, pose).passed ? 1U : 0U;
+    }
+    if (options.symmetry) {
+      const Pose2 mirrored = compose(*options.symmetry, pose);
+      if (field->classify(mirrored.x, mirrored.y) == LikelihoodField::Cell::kFree) {
+        ++e.symmetric_checks;
+        const auto candidates = windowCandidates(
+          verifier, projected, mirrored, options.symmetry_search_radius,
+          options.symmetry_search_angle_deg);
+        const std::size_t beams = projected.endpoints.size();
+        if (const auto * at_mirror = passing(candidates, options.params, beams)) {
+          ++e.symmetric_accepted;
+          if (e.symmetric_examples.size() < 10) {
+            e.symmetric_examples.push_back(
+              {translationDistance(mirrored, pose), 180.0, at_mirror->second.hit_ratio,
+               at_mirror->second.violation_ratio});
+          }
+          if (options.alternatives) {
+            const ScanAlternative alternative =
+              verifier.bestAlternative(projected, at_mirror->first);
+            if (alternative.found) {
+              e.symmetric_alternative_gains.push_back(
+                scanFit(alternative.score) - scanFit(at_mirror->second));
+            }
+          }
+        }
+        for (std::size_t s = 0; s < sweep_params.size(); ++s) {
+          e.sweep[s].symmetric_accepted +=
+            passing(candidates, sweep_params[s], beams) != nullptr ? 1U : 0U;
+        }
+      }
+    }
     const ScanScore at_truth = verifier.score(projected, pose, true);
     e.true_hit_ratios.push_back(at_truth.hit_ratio);
     e.true_violation_ratios.push_back(at_truth.violation_ratio);
     e.true_known_ratios.push_back(at_truth.known_ratio);
     e.true_valid_beams.push_back(at_truth.valid_beams);
     e.true_refinements.push_back(translationDistance(result.best_pose, pose));
+    if (options.alternatives && result.passed) {
+      const ScanAlternative alternative = verifier.bestAlternative(projected, result.best_pose);
+      if (alternative.found) {
+        e.true_alternative_gains.push_back(scanFit(alternative.score) - scanFit(result.score));
+      }
+    }
 
     for (int w = 0; w < options.wrong_per_scan; ++w) {
       Pose2 wrong;
@@ -155,6 +262,9 @@ ScanEvaluation evaluateScanCheck(
         continue;
       }
       ++e.wrong_checks;
+      for (std::size_t s = 0; s < sweep_verifiers.size(); ++s) {
+        e.sweep[s].wrong_accepted += sweep_verifiers[s].verify(projected, wrong).passed ? 1U : 0U;
+      }
       const ScanCheckResult wrong_result = verifier.verify(projected, wrong);
       if (wrong_result.passed) {
         ++e.wrong_accepted;
@@ -198,6 +308,8 @@ void setScanCheckParameter(ScanCheckParams * p, const std::string & name, const 
     p->search_radius = v;
   } else if (name == "scan_check.search_angle_deg") {
     p->search_angle_deg = v;
+  } else if (name == "scan_check.alternative_margin") {
+    p->alternative_margin = v;
   } else if (name == "scan_check.floor_clearance") {
     p->floor_clearance = v;
   } else {

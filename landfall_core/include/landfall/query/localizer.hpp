@@ -127,6 +127,9 @@ struct FrameResult
   Stage deepest_stage = Stage::kRetrieved;
   /// Base pose of the best valid cluster (also set when ambiguous, for diagnostics).
   std::optional<Pose2> pose;
+  /// Where the scan fits better than at that pose (scan_check.check_alternatives): the place
+  /// vision found is then one of two that look alike, and the frame is ambiguous.
+  std::optional<ScanAlternative> scan_alternative;
   int best = -1;  ///< index of the winning hypothesis, -1 without a valid one
   FrameTimings timings;
 };

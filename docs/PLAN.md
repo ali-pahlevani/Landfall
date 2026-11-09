@@ -1,6 +1,6 @@
 # Landfall — v1.0 Implementation Plan
 
-Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22; rev 6: V23–V29; rev 7: V30–V37; rev 8: V38–V45; rev 9: V46–V51)
+Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit) · Status: APPROVED (rev 3), revised (rev 4: V1–V13; rev 5: V14–V22; rev 6: V23–V29; rev 7: V30–V37; rev 8: V38–V45; rev 9: V46–V51; rev 10: V52–V55)
 
 **Review decisions folded into this revision (2026-10-29):**
 
@@ -101,6 +101,15 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | V49 | Nav2 overlays: `landfall_bringup/params/nav2_<distro>.yaml` (`plugin_lib_names`) and the example tree (`default_nav_to_pose_bt_xml`) reach Nav2's nodes through `set_parameters_from_file` and `set_parameter` around nav2_bringup's `navigation_launch.py` (`navigation.launch.xml`), beneath the user's `params_file`. On Humble the user's file must list `landfall_nav2_bt_nodes` itself. `localization.launch.xml` replaces nav2_bringup's `localization_launch.py` (map_server, amcl, landfall_relocalizer under one manager). nav2_bringup is not a dependency (§9) | ROS 2 launch gives such parameters to the nodes it starts before their own parameter file (checked on all three distros), and XML `set_parameter` mangles list values. Humble's parameter files list every plugin, which then wins. nav2_bringup depends on the simulators |
 | V50 | `IsLocalized` subscribes to the pose topic when the tree is loaded, transient-local by default (`latched`) | AMCL publishes `amcl_pose` latched and only on filter updates; Nav2's own condition nodes subscribe on their first tick since Jazzy, and would miss a still robot's last pose |
 | V51 | Tests: `landfall_nav2`'s tests run on isolated ROS domains (`ament_add_ros_isolated_gtest`); `landfall_bringup`'s launch tests run their nodes in a namespace. The CI job that fetches the learned models sets `LANDFALL_REQUIRE_MODELS`, so `test_onnx_parity` fails instead of skipping them (§12) | colcon tests packages in parallel, and these serve `landfall_relocalizer/relocalize` or start nodes named like `landfall_ros`'s tests'. Lyrical's isolation (rmw test fixture) has no launch-test form, namespaces work everywhere |
+
+**Revisions in M7** (rev 10, 2026-11-07; sections below updated where marked):
+
+| # | Change | Why |
+|---|---|---|
+| V52 | (2026-11-07, your decision on the M6 report) **Kidnap watchdog** in the relocalizer (§4.5, §7.15, new §7.20): background checks, dry-run requests of its own every `kidnap_watchdog.period` (10 s) plus the extrinsics monitor's, that pass every check are compared with the localization's pose at their stamp; `kidnap_watchdog.confirmations` (2) disagreeing ones in a row (beyond 1 m or 20°) start a normal relocalization that publishes (trigger `watchdog`), at most once per `kidnap_watchdog.cooldown` (30 s). Off by default. The checks are not relocalizations: never on `~/status`, in the shadow log | Nav2 notices a wrong pose only when the robot can't move: after the M6 kidnaps the robot drove on a wrong pose for 1 to 6 minutes, while in run 2 the monitor's dry run had already placed it 9 cm from the truth, with AMCL confidently 8 m and 180° off |
+| V53 | The kidnap benchmark (§11 M7, `docs/benchmark.md`): `kidnap_runner` (landfall_benchmark) moves the robot with Gazebo's `set_pose` (ros_gz_bridge's `SetEntityPose`) and turns it through `cmd_vel`; Nav2 runs idle. Placements: positions uniform over free cells at least 0.4 m from obstacles and within 1 m of a keyframe of the database (the recorded area), uniform headings, at least 2 m from the previous one, from a fixed seed, so that every method meets the same placements. Landfall: requests of 2.5 s from up to 8 headings 45° apart, as the example tree; AMCL: `reinitialize_global_localization` and two turns on the spot, a pose claimed below σxy 0.5 m (the auto trigger's limit). Success: AMCL within 0.25 m / 5° after a turn on the spot (estimate and ground truth compared at the estimate's stamp); wrong: a pose published (or claimed) beyond 0.5 m or 10°; time to localize: from the first request to the published answer, turns included. `summarize_benchmark` writes the tables, with 95 % Clopper-Pearson upper bounds of the wrong-pose rate. Development runs used seeds 2026 and 7; the reported results use seed 2027, which no change was made against | the simulation reaches every placement exactly and repeatably; turning on the spot is what the example tree does; a robot acts on AMCL's pose once AMCL reports itself confident |
+| V54 | Benchmark conditions: world variants of the depot (`landfall_bringup/sim/worlds/`): `lighting` (the hall lights dimmer and warmer, a low sun), `added_objects` (nine stacks of goods off the recorded lanes) and the stress test `crates_removed` (the crate stacks along most lanes gone, which the map and the database still have). "Same session" and "different session" are measured offline on the two recorded drives (`landfall query` of run 1's images that are no keyframes against run 1's database, of run 2's against run 1's: M4's protocol): live in the simulation, every placement is a new session of the same rendering | a simulated building renders the same in every session; light and moved goods are what changes between real sessions |
+| V55 | **Scan alternatives** (§4.5, §7.11, §7.12): once a pose has passed every check, the relocalizer searches where else in the map the LiDAR scan fits (every heading at the free cells of a 0.25 m grid, the best 40 refined). If the scan fits at least `scan_check.alternative_margin` (0.01, in hit ratio less violation ratio) better at another place (beyond 1 m or 30°), the frame is AMBIGUOUS: vision found the wrong one of two places that look alike. `scan_check.check_alternatives` (on). `evaluate_scan_check` gains `--symmetry`, `--sweep` and `--alternatives`; `sample_placements` prints a seed's placements | The benchmark's first development run (seed 2026, before this check) published 2 wrong poses in 100 placements: the mirror images of the robot's pose through the depot's centre (23 m, 180° off), where the recording had seen the mirror place from that direction but not the true one, and the LiDAR check passed them (hit 0.935, violations 0.036). Within 0.5 m and 6° of the exact mirror pose, some pose passes the LiDAR check for 20 % of the scans at 200 kidnap placements, and no threshold separates them: 0.97 / 0.02 still passed 3.3 % while rejecting 7 % of the true poses. Compared with each other they separate: at 1,927 true poses no place fitted better (the best alternative was at least 0.015 worse), at 347 worst-case mirror poses the true pose fitted better (by 0.006 at least, by 0.01 or more for 99 %). With the check, cross-session single-frame requests lost their one mirror pose per direction at the same successes, and the wrong placement that reproduced in the simulation answered AMBIGUOUS. A margin above 0 keeps identical twins (aisles) to vision. Cost: about 20 ms per frame that found a pose (16 threads) |
 
 ---
 
@@ -285,7 +294,7 @@ uint8 NOT_READY=6              # DB/map/TF/camera_info/scan/AMCL not ready, map 
 uint8 BUSY=7                   # proposed addition: a query is already running
 builtin_interfaces/Time stamp
 uint8   status
-string  trigger                # service | startup | auto
+string  trigger                # service | startup | auto | watchdog (V52)
 string  message
 bool    published
 geometry_msgs/PoseWithCovarianceStamped pose     # filled ONLY when status == SUCCESS
@@ -305,7 +314,7 @@ landfall_msgs/Hypothesis[] hypotheses            # diagnostics, best first: pose
 | both | `camera_info` | sensor_msgs/CameraInfo | sub | SensorData (matches reliable publishers too) |
 | relocalizer | `scan` (`scan_check.topic`) | sensor_msgs/LaserScan | sub | SensorData |
 | relocalizer | `map` | nav_msgs/OccupancyGrid | sub | reliable + **transient_local**, depth 1 |
-| relocalizer | `amcl_pose` (`auto_trigger.pose_topic`: auto trigger, extrinsics monitor) | geometry_msgs/PoseWithCovarianceStamped | sub | reliable, volatile (matches AMCL's latched and slam_toolbox's volatile publishers) |
+| relocalizer | `amcl_pose` (`auto_trigger.pose_topic`: auto trigger, extrinsics monitor, kidnap watchdog) | geometry_msgs/PoseWithCovarianceStamped | sub | reliable, volatile (matches AMCL's latched and slam_toolbox's volatile publishers) |
 | recorder | `amcl_pose` (`pose_source.covariance_topic`) | PoseWithCovarianceStamped | sub | reliable, volatile |
 | both | `imu` (optional, `imu.topic`) | sensor_msgs/Imu (orientation only) | sub | SensorData |
 | both | `/tf`, `/tf_static` | tf2_msgs/TFMessage | sub | tf2_ros defaults. `odom→base` is the **only** odometry input; there is no odometry topic |
@@ -379,6 +388,8 @@ by a small dump tool, and CI fails if it is stale.
 | `scan_check.min_known_ratio` / `scan_check.min_valid_beams` | double / int | 0.5 / 60 | [0, 1] / [10, 1e5] | |
 | `scan_check.search_radius` / `scan_check.search_angle_deg` | double | 0.10 / 3.0 | [0, 0.5] m / [0, 10] | local refinement window |
 | `scan_check.refine_pose` | bool | false | — | publish the window's best scan pose instead of vision's (V31) |
+| `scan_check.check_alternatives` | bool | true | — | search where else the scan fits; a clearly better place makes the frame AMBIGUOUS (V55) |
+| `scan_check.alternative_margin` | double | 0.01 | [0, 0.5] | how much better (hit ratio less violation ratio) it must fit elsewhere (V55) |
 | `output.mode` | string | topic | topic, service | |
 | `output.topic` / `output.service` | string | /initialpose / /set_initial_pose | — | |
 | `output.amcl_node` | string | amcl | "" disables the check | require AMCL to be `active` |
@@ -400,7 +411,12 @@ by a small dump tool, and CI fails if it is stale.
 | `extrinsics_monitor.max_linear_speed` / `extrinsics_monitor.max_angular_speed` | double | 0.2 / 0.1 | [0, 5] m/s / [0, 5] rad/s | speed gate for taking a sample (V33) |
 | `extrinsics_monitor.min_samples` | int | 10 | [3, 1000] | median over a sliding window |
 | `extrinsics_monitor.warn_translation` / `extrinsics_monitor.warn_rotation_deg` | double | 0.02 / 1.0 | [0.001, 1] m / [0.1, 10] | WARN on `/diagnostics` (ERROR at 2.5×) |
-| `shadow.log_path` | string | "" | — | if set, every non-publishing query (monitor or `dry_run`) is appended to a CSV with AMCL's pose; field validation (M8) |
+| `kidnap_watchdog.enabled` | bool | **false** | — | background checks of the localization's pose; relocalizes when they keep disagreeing (V52, §7.20) |
+| `kidnap_watchdog.period` | double | 10 | [1, 3600] s | one dry-run check (read-only) |
+| `kidnap_watchdog.max_translation` / `kidnap_watchdog.max_rotation_deg` | double | 1.0 / 20 | [0.1, 10] m / [1, 180] | a check further from the localization disagrees |
+| `kidnap_watchdog.confirmations` | int | 2 | [1, 10] | disagreeing checks in a row (the monitor's count too) |
+| `kidnap_watchdog.cooldown` | double | 30 | [0, 3600] s | between the watchdog's relocalizations |
+| `shadow.log_path` | string | "" | — | if set, every non-publishing query (the monitor's and the watchdog's checks, `dry_run`) is appended to a CSV with AMCL's pose; field validation (M8) |
 
 **Recorder**
 
@@ -650,6 +666,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 - Per frame, cluster place hypotheses in SE(2) (0.5 m / 15°). Score = inliers.
 - Scan verification runs on the top clusters **before** the ambiguity decision, so a visually similar competitor that fails LiDAR is not a competitor.
 - AMBIGUOUS if the second-best *valid* cluster has S2 ≥ `min_inliers` and S2/S1 ≥ `ambiguity.max_score_ratio` (default 0: any such cluster, V32). Then nothing is published.
+- Also AMBIGUOUS if the scan fits another place clearly better than the winner's pose (V55, §7.12): vision found one of two places that look alike, and the right one may never have competed (not retrieved, or recorded from elsewhere).
 - Limitation, documented: in geometrically *and* visually identical aisles both clusters pass. The result is AMBIGUOUS (a miss, never a wrong pose).
 
 **7.12 Scan verification ("vision proposes, LiDAR verifies").**
@@ -661,6 +678,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 - Rationale: dynamic obstacles produce *short* readings (misses, tolerated up to 15 %) but never violations. AMCL's own field (σ = 0.2, 2 m) is looser on purpose; ours is a stricter gate.
 - On a ramp (IMU tilt > 1.5°): beam endpoints are projected with the IMU tilt, and beams that hit the floor or ramp (projected endpoint height < 0.05 m) are dropped. Expect more misses on ramps, which is safe.
 - Limitation, documented: lengthwise error in featureless corridors is weakly constrained by LiDAR. Vision coverage and multi-frame checks carry it.
+- **Scan alternatives** (V55): after a pose passes, the scan is fitted everywhere else: every heading (5° steps) at the free cells of a 0.25 m grid (coarser on large maps, at most 12,000 positions), scored on 40 beams with a slowly falling distance score, the best 40 refined (±0.2 m, ±3°) and fully scored. Fit = hit ratio − violation ratio. A place beyond 1 m or 30° that fits at least `scan_check.alternative_margin` (0.01) better makes the frame AMBIGUOUS. The LiDAR alone cannot reject a building's look-alike places reliably (20 % of near-mirror poses pass in the depot), but the right place fits better than the wrong one; identical twins fit alike and stay vision's to decide.
 
 **7.13 Decision policy.**
 - Readiness failure ⇒ NOT_READY. A running query ⇒ BUSY.
@@ -680,6 +698,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
 - **Service:** `~/relocalize`.
 - **Startup** (off by default): after activation, wait until ready, then up to 3 attempts 5 s apart.
 - **Auto** (off by default): σxy > 0.5 m or σyaw > 15° from `amcl_pose` continuously for 5 s ⇒ trigger, with a 30 s cooldown, skipped while busy. AMCL publishes `amcl_pose` only on filter updates, so this uses last-value semantics.
+- **Watchdog** (off by default, V52): background checks keep disagreeing with a localization that may well be confident ⇒ trigger (§7.20).
 
 **7.16 AMCL interplay** (verified in source, all three distros):
 - AMCL subscribes to `initialpose` once configured. A pose received while **inactive** is stored and applied **on activation**, *unless* `set_initial_pose: true`, whose parameter pose wins.
@@ -712,6 +731,14 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
   - A median over ≥ 10 samples raises WARN past 2 cm / 1° and ERROR past 5 cm / 2.5°.
 - **Why necessary:** a camera rotated left or right (yaw) on its mount passes the height and tilt checks. With an IMU, roll/pitch shifts already show up through the tilt check. The monitor is the only thing that catches yaw and position shifts before success rates silently drop.
 - Recalibration stays a human URDF change. Cost: about one 0.2 s query per minute on x86.
+
+**7.20 Kidnap watchdog (V52; off by default).**
+- AMCL can stay confident on a wrong pose after a kidnap, and Nav2 notices only when the robot can't move: until then it drives blind (M6).
+- Every `kidnap_watchdog.period` (10 s), while the localization has a pose, whatever its reported uncertainty, the relocalizer runs a full request without publishing: a background check, which gives way to any other request, like the extrinsics monitor's (V34).
+- A check that passes every test (SUCCESS) is compared with the localization's pose at the check's stamp (TF map → base). Beyond `max_translation` (1 m) or `max_rotation_deg` (20°) it disagrees; within both it agrees. The extrinsics monitor's checks count too. Checks that find no pose say nothing.
+- After `confirmations` (2) disagreeing checks in a row, with no agreeing one between them, a normal relocalization starts (trigger `watchdog`), and publishes only if every check passes again; at most once per `cooldown` (30 s). A pose published by any request restarts the count.
+- The risk is a needless relocalization of a right localization. It takes two checks and a third request that pass every check and agree with the LiDAR, but not with AMCL; and what it publishes still passed every check. The benchmark measures the time to detect a kidnap and the needless relocalizations while the localization is right (V53).
+- Cost: one query every 10 s, a few percent of one core on x86.
 
 **Timing budget (x86, classical, per frame):** extraction ~15 ms, retrieval < 5 ms, matching 10 places ~100 ms, RANSAC ~30 ms, scan check ~40 ms. About 0.2 s per frame and ~1–1.5 s for N = 3 with spacing. Pi 5 is estimated ~3–4× slower, which is acceptable (robustness over speed).
 
@@ -832,7 +859,7 @@ Working agreement for every milestone:
 | **M4** Safety layer | scan verification in-node, multi-frame consistency, ambiguity with LiDAR-filtered competitors, auto-trigger state machine, ramp-aware LiDAR projection, extrinsics health monitor (diagnostics only) | Injected wrong poses (0.5–5 m) rejected 100 %; true poses accepted ≥ 95 %; synthetic odometry inconsistency ⇒ REJECTED_CONSISTENCY; duplicated-region DB ⇒ AMBIGUOUS, never wrong SUCCESS; auto-trigger fires once and honors cooldown (launch_test); monitor flags an injected 2° yaw / 3 cm camera offset and stays silent on unmodified data; synthetic ramp queries never yield a wrong SUCCESS; M3's criteria on the cross-session depot drives (run 1 ↔ run 2, 3-frame requests): success ≥ 90 % and **0** published poses off by more than 0.5 m (V29) |
 | **M5** Learned (optional build) | FindONNXRuntime, `LANDFALL_WITH_ONNXRUNTIME=AUTO\|ON\|OFF`, XFeat (dense ONNX + C++ post-proc), ALIKED + LightGlue (export check; fallback XFeat + LighterGlue), generic ONNX global (MegaLoc, EigenPlaces), MNN; export scripts, `models.yaml`, `fetch_models.sh`, license audit doc | Parity vs PyTorch: keypoints ≤ 0.5 px for ≥ 95 %, descriptor and global cosine ≥ 0.999; full suite passes with ORT **OFF** and ON (vendor CPU); compiles against Lyrical apt ORT 1.23.2; learned vs classical on fixture reported; CUDA EP verified **only if** cuDNN is available (else marked unverified + TODO) |
 | **M6** Nav2 | `ReLocalize` + `IsLocalized` BT nodes, example BTs (startup: `Fallback[IsLocalized, RetryUntilSuccessful[ReLocalize]]` before navigation; recovery: `RoundRobin[ReLocalize, ClearCostmaps, Spin, Wait, BackUp]`), XML launch files (+ `startup_relocalization:=true`), per-distro Nav2 overlays, `docs/nav2_integration.md` (lifecycle order, AMCL params, server_timeout > query.timeout) | All XMLs load on all distros (gtest); Jazzy sim: unknown start pose ⇒ startup relocalization ⇒ AMCL converges ⇒ NavigateToPose succeeds (logs); kidnap ⇒ recovery runs ReLocalize first ⇒ success; Humble TB4/Fortress demo attempted, outcome reported |
-| **M7** Benchmark + release | kidnap runner (teleport via `ros_gz_interfaces/SetEntityPose`, verified to exist on Jazzy and Lyrical), scenarios: same session / different session / lighting / moved objects (procedural world variants), baselines: AMCL global localization (`reinitialize_global_localization` + spin), Landfall classical and learned; CSV + plots + Markdown report; README results table, all docs (incl. `docs/sensors.md`, `docs/field_validation.md`), CHANGELOG, interface-freeze review, **v1.0.0-rc.1** (tagged by you) | ≥ 100 placements per scenario-condition on depot (+ warehouse locally, NC assets not redistributed); metrics: success (≤ 0.25 m / 5° after AMCL converges), time-to-localize, **FP** (published pose error > 0.5 m or > 10°) with 95 % Clopper-Pearson upper bound, miss rate; target observed FP = 0; docs complete; frozen-interface list (msgs, params, DB schema v1) recorded in CHANGELOG |
+| **M7** Benchmark + release | kidnap runner (teleport via `ros_gz_interfaces/SetEntityPose`, verified to exist on Humble, Jazzy and Lyrical; V53), scenarios: same session / different session / lighting / moved objects (procedural world variants; V54), baselines: AMCL global localization (`reinitialize_global_localization` + spin), Landfall classical and learned; the relocalizer's kidnap watchdog (V52); CSV + plots + Markdown report; README results table, all docs (incl. `docs/sensors.md`, `docs/field_validation.md`), CHANGELOG, interface-freeze review, **v1.0.0-rc.1** (tagged by you) | ≥ 100 placements per scenario-condition on depot (+ warehouse locally, NC assets not redistributed); metrics: success (≤ 0.25 m / 5° after AMCL converges), time-to-localize, **FP** (published pose error > 0.5 m or > 10°) with 95 % Clopper-Pearson upper bound, miss rate; target observed FP = 0; the watchdog's time to detect a kidnap and its needless relocalizations reported; docs complete; frozen-interface list (msgs, params, DB schema v1) recorded in CHANGELOG |
 | **M8** Field validation + v1.0.0 | **Your forklift, CPU-only mini PC** (you run it; I supply procedures in `docs/field_validation.md` and the analysis tooling). (1) Record ≥ 3 sessions (different days/lighting, every aisle both directions) and build the DB. (2) **Shadow mode**: the extrinsics monitor's non-publishing queries, sped up to every 10 s and logged with AMCL's confident pose (`shadow.log_path`), over ≥ 8 operating hours. (3) ≥ 50 active relocalizations at varied spots: `dry_run` first, then live with AMCL reset. (4) Timings on the mini PC. Then fix and tune, and you tag **v1.0.0** | **0** wrong poses (error > 0.5 m or > 10° vs AMCL's confident pose) across shadow (≈ 2,900 queries) + active trials, reported with a 95 % upper bound; success and miss rates reported; median classical query ≤ 3 s on the mini PC; no crashes or leaks over the soak; any threshold changes recorded |
 
 Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M (calendar time depends on forklift access).
@@ -881,7 +908,7 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | Repetitive scenes (identical aisles): vision picks the wrong place | LiDAR-filtered ambiguity test (§7.11), multi-frame consistency, coverage check; misses preferred; warehouse world in benchmark |
+| R1 | Repetitive scenes (identical aisles): vision picks the wrong place | LiDAR-filtered ambiguity test (§7.11), scan alternatives: a place the scan fits better makes the frame ambiguous (V55), multi-frame consistency, coverage check; misses preferred; warehouse world in benchmark |
 | R2 | Lighting changes (day/night, sim lights) | multi-session DBs, learned backends, CLAHE option for ORB; dedicated benchmark condition |
 | R3 | Prior pose quality (AMCL self-reported covariance, time sync) | covariance + speed gating, bounded BA with flagging, `image.time_offset`, tuning guide |
 | R4 | Wrong extrinsics (height or tilt) | sanity checks reject; P3P fallback reveals tilt in diagnostics; calibration guide; optional extrinsics refinement |
@@ -908,6 +935,7 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
 | R19 | IMU orientation quality or mounting misalignment (false tilt rejections) | gravity used only while nearly still; 3° tolerance vs ~0.5–1° typical AHRS error; IMU-vs-vision tilt logged; `auto` falls back to flat floor when the IMU is stale |
 | R20 | Ramps: relocalization on a ramp relies on landmarks mapped from nearby flat areas; ramps themselves are unmapped | documented; long ramps produce misses, not wrong poses; proper 3D mapping is Stage 4 |
 | R21 | Extrinsics monitor false warnings from AMCL's own error | confidence gate (σ ≤ 5 cm), median over ≥ 10 samples, WARN-only; thresholds validated in M4 |
+| R28 | The kidnap watchdog relocalizes a right localization | off by default; two disagreeing checks in a row and a fresh request, each passing every check including the LiDAR; a cooldown; needless relocalizations measured in the benchmark (V52, V53) |
 
 ---
 

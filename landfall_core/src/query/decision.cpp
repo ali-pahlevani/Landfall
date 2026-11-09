@@ -106,7 +106,9 @@ Decision decide(const DecisionInput & input, const ConsistencyParams & consisten
   for (const auto & frame : input.frames) {
     if (frame.ambiguous) {
       decision.status = Status::kAmbiguous;
-      decision.message = "visually similar places pass every check";
+      decision.message = frame.scan_elsewhere
+                           ? "the LiDAR scan fits another place better than the one vision found"
+                           : "visually similar places pass every check";
       return decision;
     }
     if (frame.estimate) {

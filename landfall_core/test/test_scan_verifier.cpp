@@ -186,3 +186,95 @@ TEST_F(ScanVerifierTest, RampTiltDropsFloorHits)
     static_cast<int>(tilted.endpoints.size()) + tilted.dropped_floor,
     static_cast<int>(flat.endpoints.size()));
 }
+
+namespace
+{
+
+// A 12 m x 8 m room that looks the same turned 180 degrees about its centre: two boxes mirrored
+// about (6, 4), and, if `post`, a 20 cm post that only one half has.
+OccupancyGrid makeTwinRoom(bool post)
+{
+  OccupancyGrid grid;
+  grid.resolution = 0.05;
+  grid.width = 240;
+  grid.height = 160;
+  grid.origin = {0.0, 0.0, 0.0};
+  grid.data.assign(static_cast<std::size_t>(grid.width) * grid.height, landfall::kCellFree);
+  const auto set = [&](int c0, int r0, int c1, int r1) {
+    for (int r = r0; r <= r1; ++r) {
+      for (int c = c0; c <= c1; ++c) {
+        grid.data[static_cast<std::size_t>(r) * grid.width + c] = 100;
+      }
+    }
+  };
+  set(0, 0, 239, 1);
+  set(0, 158, 239, 159);
+  set(0, 0, 1, 159);
+  set(238, 0, 239, 159);
+  set(40, 100, 60, 120);  // box, x in [2, 3] m, y in [5, 6] m
+  set(179, 39, 199, 59);  // its mirror image about (6, 4): cell c -> 239 - c, r -> 159 - r
+  if (post) {
+    set(80, 20, 83, 23);  // x in [4, 4.2] m, y in [1, 1.2] m
+  }
+  return grid;
+}
+
+// The pose turned 180 degrees about the room's centre.
+Pose2 mirrored(const Pose2 & p)
+{
+  return {12.0 - p.x, 8.0 - p.y, landfall::normalizeAngle(p.yaw + M_PI)};
+}
+
+}  // namespace
+
+TEST_F(ScanVerifierTest, NoPlaceFitsBetterThanTheTruePose)
+{
+  landfall::ThreadPool pool(2);
+  for (const Pose2 & truth : {Pose2{3.0, 3.0, 0.3}, Pose2{9.0, 2.0, 2.5}, Pose2{4.5, 7.0, -1.2}}) {
+    const auto scan = verifier_.project(simulateScan(*field_, truth), flat_);
+    const auto at_truth = verifier_.verify(scan, truth);
+    ASSERT_TRUE(at_truth.passed) << at_truth.reason;
+    const auto alternative = verifier_.bestAlternative(scan, at_truth.best_pose, &pool);
+    ASSERT_TRUE(alternative.found);
+    EXPECT_LT(landfall::scanFit(alternative.score), landfall::scanFit(at_truth.score));
+    // Away from the pose: beyond 1 m or 30 degrees.
+    EXPECT_TRUE(
+      landfall::translationDistance(alternative.pose, at_truth.best_pose) > 1.0 ||
+      landfall::rotationDistance(alternative.pose, at_truth.best_pose) > 30.0 * M_PI / 180.0);
+  }
+}
+
+TEST(ScanAlternatives, TheTruePoseFitsBetterThanItsLookAlike)
+{
+  // Vision put the robot in the wrong half; the post it sees is only in the right one.
+  const auto field = std::make_shared<LikelihoodField>(makeTwinRoom(true));
+  const landfall::ScanVerifier verifier(field, landfall::ScanCheckParams());
+  const Pose2 truth{3.0, 2.0, 0.3};
+  const auto scan = verifier.project(simulateScan(*field, truth), Vec3(0, 0, -1));
+  const auto at_wrong = verifier.verify(scan, mirrored(truth));
+  const auto alternative = verifier.bestAlternative(scan, at_wrong.best_pose);
+  ASSERT_TRUE(alternative.found);
+  EXPECT_LT(landfall::translationDistance(alternative.pose, truth), 0.15);
+  EXPECT_LT(landfall::rotationDistance(alternative.pose, truth), 3.0 * M_PI / 180.0);
+  EXPECT_GE(
+    landfall::scanFit(alternative.score) - landfall::scanFit(at_wrong.score),
+    landfall::ScanCheckParams().alternative_margin);
+}
+
+TEST(ScanAlternatives, ExactTwinsFitAlike)
+{
+  // A building that is truly the same in both halves: the scan can't tell, and doesn't overrule
+  // vision (identical aisles: vision decides).
+  const auto field = std::make_shared<LikelihoodField>(makeTwinRoom(false));
+  const landfall::ScanVerifier verifier(field, landfall::ScanCheckParams());
+  const Pose2 truth{3.0, 2.0, 0.3};
+  const auto scan = verifier.project(simulateScan(*field, truth), Vec3(0, 0, -1));
+  const auto at_truth = verifier.verify(scan, truth);
+  ASSERT_TRUE(at_truth.passed) << at_truth.reason;
+  const auto alternative = verifier.bestAlternative(scan, at_truth.best_pose);
+  ASSERT_TRUE(alternative.found);
+  EXPECT_LT(landfall::translationDistance(alternative.pose, mirrored(truth)), 0.15);
+  EXPECT_LT(
+    landfall::scanFit(alternative.score) - landfall::scanFit(at_truth.score),
+    landfall::ScanCheckParams().alternative_margin);
+}

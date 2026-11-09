@@ -35,6 +35,7 @@
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "landfall/query/auto_trigger.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
+#include "landfall/query/kidnap_watchdog.hpp"
 #include "landfall/query/localizer.hpp"
 #include "landfall/ros/imu_gravity_source.hpp"
 #include "landfall_msgs/msg/relocalization_result.hpp"
@@ -64,6 +65,8 @@ namespace landfall::ros
 /// sensor callbacks keep flowing in a single-threaded container. While the localization is
 /// confident, an optional health monitor compares the camera pose vision finds with the one TF
 /// predicts, and warns on `/diagnostics` when the camera moved on its mount (it never corrects).
+/// An optional kidnap watchdog runs such background checks often and relocalizes when they keep
+/// disagreeing with the localization's pose.
 ///
 /// Configure opens the database read-only and checks it; a missing or unusable database doesn't
 /// fail the transition (it must not block AMCL's lifecycle manager), every request answers
@@ -124,6 +127,8 @@ private:
     bool bond_enabled = true;
     bool auto_trigger_enabled = false;
     bool monitor_enabled = true;
+    bool watchdog_enabled = false;
+    double watchdog_period = 10.0;
   };
 
   /// Read at the start of every request, so they can change at runtime.
@@ -134,6 +139,7 @@ private:
     GravityParams gravity;
     AutoTriggerParams auto_trigger;
     ExtrinsicsMonitorParams monitor;
+    KidnapWatchdogParams watchdog;
     double monitor_max_amcl_std_xy = 0.05;
     double monitor_max_linear_speed = 0.2;
     double monitor_max_angular_speed = 0.1;
@@ -152,10 +158,13 @@ private:
 
   struct Request
   {
-    std::string trigger;   ///< service, startup, auto or monitor
+    std::string trigger;   ///< service, startup, auto, watchdog or monitor
     int num_frames = 0;    ///< 0: parameter
     double timeout = 0.0;  ///< 0: parameter
     bool dry_run = false;
+    /// A check of the node's own (the monitor's, the watchdog's): a dry run that gives way to any
+    /// other request and is not a relocalization (no ~/status).
+    bool background = false;
     std::shared_ptr<rmw_request_id_t> header;  ///< service requests: where the answer goes
   };
 
@@ -193,6 +202,10 @@ private:
   void onLocalizationPose(const geometry_msgs::msg::PoseWithCovarianceStamped & pose);
   void autoTriggerTick();
   void monitorTick();
+  void watchdogTick();
+  /// After a request: feeds a background check that passed to the kidnap watchdog. Returns the
+  /// relocalization to run next when the watchdog fires.
+  std::optional<Request> watch(const Request & request, const Result & result);
 
   void submit(Request request);
   void answer(const Request & request, Result result);
@@ -221,6 +234,8 @@ private:
     const Thresholds & t, int64_t stamp_ns, const cv::Mat & image, const FrameResult & frame);
   /// One line of `shadow.log_path` for a request that published nothing.
   void logShadow(const Request & request, const Result & result);
+  /// The localization's base pose at `stamp_ns`, through TF (map -> odom -> base).
+  std::optional<Pose2> localizationAt(int64_t stamp_ns) const;
   /// For a valid frame of a monitor request: the camera pose from vision and the one the
   /// localization and TF predict. nullopt while the robot moves too fast or TF lacks a transform.
   std::optional<std::pair<Pose3, Pose3>> extrinsicsSample(
@@ -256,14 +271,16 @@ private:
   std::optional<rclcpp::Time> last_scan_;
   std::optional<LocalizationEstimate> estimate_;
   ExtrinsicsMonitor monitor_;
+  KidnapWatchdog watchdog_;
 
   // Requests: one runs at a time on the worker; another one meanwhile answers BUSY, except that a
-  // monitor sample gives way to a service request.
+  // background check gives way to any other request.
   std::thread worker_;
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
   std::optional<Request> queued_;
-  std::string running_trigger_;  ///< of the request on the worker; empty when idle
+  std::string running_trigger_;      ///< of the request on the worker; empty when idle
+  bool running_background_ = false;  ///< the request on the worker is a background check
   bool stop_worker_ = false;
   std::atomic<bool> busy_{false};
   std::atomic<bool> cancel_{false};
@@ -293,6 +310,7 @@ private:
   rclcpp::TimerBase::SharedPtr startup_timer_;
   rclcpp::TimerBase::SharedPtr auto_trigger_timer_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
+  rclcpp::TimerBase::SharedPtr watchdog_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameters_handle_;
   std::unique_ptr<diagnostic_updater::Updater> diagnostics_;
   std::shared_ptr<bond::Bond> bond_;

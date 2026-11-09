@@ -1,6 +1,9 @@
-# Simulation image: Gazebo Harmonic, Nav2 and the TurtleBot 4 simulation on top of the
-# dependency image of docker/Dockerfile (same ROS distro), for recording fixtures and, later, the
-# kidnap benchmark. Built and run by scripts/sim.sh; not used by CI.
+# Simulation image: Gazebo, Nav2 and the TurtleBot 4 simulation on top of the dependency image of
+# docker/Dockerfile (same ROS distro), for the recordings, the Nav2 runs and the kidnap benchmark.
+# Built and run by scripts/sim.sh; not used by CI.
+#  - Jazzy (the reference, PLAN A8): nav2_minimal_tb4_sim on Gazebo Harmonic.
+#  - Humble: the TurtleBot 4's own simulator on Gazebo Fortress, for the Humble demo
+#    (docs/nav2_integration.md); nav2_minimal_tb4_sim isn't released for Humble.
 #
 #   docker build -f docker/Dockerfile.sim --build-arg BASE=landfall-deps:jazzy -t landfall-sim:jazzy .
 ARG BASE=landfall-deps:jazzy
@@ -10,17 +13,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # ROS_DISTRO comes from the ros base image.
-RUN apt-get update \
+RUN if [ "${ROS_DISTRO}" = humble ]; then \
+      robot="ros-humble-turtlebot4-simulator ros-humble-turtlebot4-navigation"; \
+    else \
+      robot="ros-${ROS_DISTRO}-nav2-minimal-tb4-sim"; \
+    fi \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       "ros-${ROS_DISTRO}-image-transport-plugins" \
       "ros-${ROS_DISTRO}-nav2-bringup" \
-      "ros-${ROS_DISTRO}-nav2-minimal-tb4-sim" \
       "ros-${ROS_DISTRO}-navigation2" \
       "ros-${ROS_DISTRO}-ros-gz-bridge" \
       "ros-${ROS_DISTRO}-ros-gz-image" \
       "ros-${ROS_DISTRO}-ros-gz-sim" \
       "ros-${ROS_DISTRO}-xacro" \
+      ${robot} \
  && rm -rf /var/lib/apt/lists/*
 
-# Gazebo downloads Fuel models (the depot) into this cache; scripts/sim.sh mounts it.
-ENV GZ_FUEL_CACHE_PATH=/fuel
+# Gazebo downloads Fuel models (the depot) into this cache; scripts/sim.sh mounts it. Fortress
+# (Humble) reads the IGN_ name.
+ENV GZ_FUEL_CACHE_PATH=/fuel IGN_FUEL_CACHE_PATH=/fuel
+
+# Humble's simulation runs on Cyclone DDS (scripts/sim.sh): with Fast DDS, the lifecycle managers
+# lost service responses under the simulation's load ("failed to send response ... client will not
+# receive response") and waited for them forever.
+RUN if [ "${ROS_DISTRO}" = humble ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends ros-humble-rmw-cyclonedds-cpp \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi

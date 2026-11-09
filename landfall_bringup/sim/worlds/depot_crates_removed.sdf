@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<!--
+  The depot without its crate stacks, the kidnap benchmark's stress test (docs/benchmark.md): the
+  crates along most of its lanes are gone, while the map and the map database still have them.
+  A variant of nav2_minimal_tb4_sim's depot.sdf: the depot model from Gazebo Fuel (CC-BY-4.0,
+  downloaded at run time), without its fans and roof as there. Started by
+  sim/scripts/start_depot_sim.sh (WORLD=...).
+-->
+<sdf version="1.6" xmlns:xacro="http://www.ros.org/wiki/xacro"
+  xmlns:experimental="http://sdformat.org/schemas/experimental">
+  <xacro:arg name="headless" default="true"/>
+  <world name="depot">
+    <scene>
+      <grid>false</grid>
+    </scene>
+    <physics name="1ms" type="ode">
+      <max_step_size>0.003</max_step_size>
+      <real_time_update_rate>1000.0</real_time_update_rate>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+  <xacro:unless value="$(arg headless)">
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster"/>
+  </xacro:unless>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Depot
+      </uri>
+      <experimental:params>
+        <visual element_id="Fan1::visual" action="remove"/>
+        <visual element_id="Fan2::visual" action="remove"/>
+        <visual element_id="main::ROOF_visual" action="remove"/>
+        <visual element_id="main::FANS_visual" action="remove"/>
+        <!-- The crate stacks are gone: camera and LiDAR no longer see them, the map has them. -->
+        <visual element_id="main::crates" action="remove"/>
+      </experimental:params>
+    </include>
+
+  </world>
+</sdf>

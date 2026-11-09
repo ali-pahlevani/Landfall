@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<!--
+  The depot in other light, for Landfall's kidnap benchmark (docs/benchmark.md): its two hall
+  lights dimmer and warmer, and a low sun casting shadows.
+  A variant of nav2_minimal_tb4_sim's depot.sdf: the depot model from Gazebo Fuel (CC-BY-4.0,
+  downloaded at run time), without its fans and roof as there. The map and the map database stay
+  those of the unchanged depot. Started by sim/scripts/start_depot_sim.sh (WORLD=...).
+-->
+<sdf version="1.6" xmlns:xacro="http://www.ros.org/wiki/xacro"
+  xmlns:experimental="http://sdformat.org/schemas/experimental">
+  <xacro:arg name="headless" default="true"/>
+  <world name="depot">
+    <scene>
+      <grid>false</grid>
+    </scene>
+    <physics name="1ms" type="ode">
+      <max_step_size>0.003</max_step_size>
+      <real_time_update_rate>1000.0</real_time_update_rate>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+  <xacro:unless value="$(arg headless)">
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster"/>
+  </xacro:unless>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Depot
+      </uri>
+      <experimental:params>
+        <visual element_id="Fan1::visual" action="remove"/>
+        <visual element_id="Fan2::visual" action="remove"/>
+        <visual element_id="main::ROOF_visual" action="remove"/>
+        <visual element_id="main::FANS_visual" action="remove"/>
+        <!-- Another time of day: the hall lights dimmer and warmer, one of them half as bright. -->
+        <light element_id="Fan1::fan_light" action="modify">
+          <diffuse>1.0 0.82 0.62 1</diffuse>
+          <intensity>0.65</intensity>
+        </light>
+        <light element_id="Fan2::fan_light" action="modify">
+          <diffuse>1.0 0.82 0.62 1</diffuse>
+          <intensity>0.35</intensity>
+        </light>
+      </experimental:params>
+    </include>
+
+    <!-- Low sunlight through the east windows: a directional light that casts shadows. -->
+    <light type="directional" name="evening_sun">
+      <pose>0 0 10 0 0 0</pose>
+      <direction>-0.8 0.3 -0.5</direction>
+      <diffuse>0.55 0.45 0.35 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+      <cast_shadows>true</cast_shadows>
+      <intensity>0.6</intensity>
+    </light>
+
+  </world>
+</sdf>

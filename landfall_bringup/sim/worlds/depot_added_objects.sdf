@@ -1,0 +1,203 @@
+<?xml version="1.0"?>
+<!--
+  The depot with new goods, for Landfall's kidnap benchmark (docs/benchmark.md): nine stacks of
+  goods on the open floor, off the recorded lanes (at least 2.2 m from every keyframe of the M2
+  recording, so that no placement of the robot lands in one).
+  A variant of nav2_minimal_tb4_sim's depot.sdf: the depot model from Gazebo Fuel (CC-BY-4.0,
+  downloaded at run time), without its fans and roof as there. The map and the map database stay
+  those of the unchanged depot. Started by sim/scripts/start_depot_sim.sh (WORLD=...).
+-->
+<sdf version="1.6" xmlns:xacro="http://www.ros.org/wiki/xacro"
+  xmlns:experimental="http://sdformat.org/schemas/experimental">
+  <xacro:arg name="headless" default="true"/>
+  <world name="depot">
+    <scene>
+      <grid>false</grid>
+    </scene>
+    <physics name="1ms" type="ode">
+      <max_step_size>0.003</max_step_size>
+      <real_time_update_rate>1000.0</real_time_update_rate>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+  <xacro:unless value="$(arg headless)">
+    <plugin filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster"/>
+  </xacro:unless>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+
+    <include>
+      <uri>
+        https://fuel.gazebosim.org/1.0/OpenRobotics/models/Depot
+      </uri>
+      <experimental:params>
+        <visual element_id="Fan1::visual" action="remove"/>
+        <visual element_id="Fan2::visual" action="remove"/>
+        <visual element_id="main::ROOF_visual" action="remove"/>
+        <visual element_id="main::FANS_visual" action="remove"/>
+      </experimental:params>
+    </include>
+
+    <!-- New goods in the open floor, off the recorded lanes: the camera and the LiDAR see them,
+         the map doesn't. -->
+    <model name="moved_goods_1">
+      <static>true</static>
+      <pose>-9.60 3.00 0.50 0 0 -0.23</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.8 0.8 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.8 0.8 1.0</size></box></geometry>
+          <material>
+            <ambient>0.55 0.38 0.2 1</ambient>
+            <diffuse>0.55 0.38 0.2 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_2">
+      <static>true</static>
+      <pose>-10.10 -2.00 0.30 0 0 0.14</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.0 0.8 0.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.0 0.8 0.6</size></box></geometry>
+          <material>
+            <ambient>0.2 0.35 0.6 1</ambient>
+            <diffuse>0.2 0.35 0.6 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_3">
+      <static>true</static>
+      <pose>-1.60 -3.50 0.70 0 0 0.51</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.8 1.2 1.4</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.8 1.2 1.4</size></box></geometry>
+          <material>
+            <ambient>0.6 0.6 0.55 1</ambient>
+            <diffuse>0.6 0.6 0.55 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_4">
+      <static>true</static>
+      <pose>13.90 1.00 0.45 0 0 -0.32</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.6 0.6 0.9</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.6 0.6 0.9</size></box></geometry>
+          <material>
+            <ambient>0.45 0.5 0.25 1</ambient>
+            <diffuse>0.45 0.5 0.25 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_5">
+      <static>true</static>
+      <pose>13.90 5.50 0.40 0 0 0.05</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.2 0.8 0.8</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.2 0.8 0.8</size></box></geometry>
+          <material>
+            <ambient>0.7 0.3 0.25 1</ambient>
+            <diffuse>0.7 0.3 0.25 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_6">
+      <static>true</static>
+      <pose>-4.60 -3.00 0.80 0 0 0.42</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.8 0.8 1.6</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.8 0.8 1.6</size></box></geometry>
+          <material>
+            <ambient>0.3 0.3 0.32 1</ambient>
+            <diffuse>0.3 0.3 0.32 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_7">
+      <static>true</static>
+      <pose>3.40 4.00 0.25 0 0 -0.41</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>1.0 1.0 0.5</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>1.0 1.0 0.5</size></box></geometry>
+          <material>
+            <ambient>0.65 0.55 0.3 1</ambient>
+            <diffuse>0.65 0.55 0.3 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_8">
+      <static>true</static>
+      <pose>-4.10 4.00 0.60 0 0 -0.04</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.7 0.9 1.2</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.7 0.9 1.2</size></box></geometry>
+          <material>
+            <ambient>0.25 0.45 0.45 1</ambient>
+            <diffuse>0.25 0.45 0.45 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="moved_goods_9">
+      <static>true</static>
+      <pose>8.90 4.00 0.50 0 0 0.33</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.9 0.9 1.0</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.9 0.9 1.0</size></box></geometry>
+          <material>
+            <ambient>0.5 0.4 0.5 1</ambient>
+            <diffuse>0.5 0.4 0.5 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

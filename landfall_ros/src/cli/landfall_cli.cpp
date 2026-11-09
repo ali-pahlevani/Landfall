@@ -599,6 +599,13 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
       throw UsageError("--set scan_check.refine_pose: true or false");
     }
     l.refine_with_scan = value == "true";
+  } else if (name == "scan_check.check_alternatives") {
+    if (value != "true" && value != "false") {
+      throw UsageError("--set scan_check.check_alternatives: true or false");
+    }
+    l.scan.check_alternatives = value == "true";
+  } else if (name == "scan_check.alternative_margin") {
+    l.scan.alternative_margin = number();
   } else if (name == "imu.max_age") {
     q.gravity.max_age = number();
   } else if (name == "imu.max_angular_rate") {
@@ -770,6 +777,7 @@ int query(const std::vector<std::string> & argv)
       landfall::FrameOutcome outcome;
       outcome.deepest_stage = result.deepest_stage;
       outcome.ambiguous = result.ambiguity.ambiguous;
+      outcome.scan_elsewhere = result.scan_alternative.has_value();
       if (result.pose && !outcome.ambiguous) {
         outcome.estimate = landfall::FrameEstimate{*result.pose, odom_T_base};
         current->valid_stamps.push_back(stamp);

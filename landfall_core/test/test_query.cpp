@@ -261,6 +261,11 @@ TEST(Decision, CoversEveryStatus)
   input.frames.push_back(failedFrame(Stage::kSanityPassed));
   input.frames.back().ambiguous = true;
   EXPECT_EQ(decide(input).status, Status::kAmbiguous);
+  EXPECT_NE(decide(input).message.find("visually similar"), std::string::npos);
+  // Ambiguous because the scan fits another place better: the message says so.
+  input.frames.back().scan_elsewhere = true;
+  EXPECT_EQ(decide(input).status, Status::kAmbiguous);
+  EXPECT_NE(decide(input).message.find("LiDAR scan fits another place"), std::string::npos);
 
   input.frames = {agreeing(0), agreeing(1), agreeing(2)};
   input.frames[2].estimate->map_T_base.y += 0.5;

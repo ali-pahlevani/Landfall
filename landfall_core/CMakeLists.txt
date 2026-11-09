@@ -48,6 +48,7 @@ add_library(landfall_core SHARED
   src/query/clustering.cpp
   src/query/decision.cpp
   src/query/extrinsics_monitor.cpp
+  src/query/kidnap_watchdog.cpp
   src/query/localization_map.cpp
   src/query/localizer.cpp
   src/query/sanity.cpp
@@ -185,6 +186,7 @@ if(BUILD_TESTING)
   landfall_core_test(test_trajectory)
   landfall_core_test(test_localizer TIMEOUT 300 LIBRARIES landfall_core_build)
   landfall_core_test(test_auto_trigger)
+  landfall_core_test(test_kidnap_watchdog)
   if(TARGET landfall_core_onnx)
     # The learned backends on synthetic models (test/data, landfall_tools/export/synthetic.py).
     landfall_core_test(test_onnx LIBRARIES landfall_core_onnx opencv_imgproc)

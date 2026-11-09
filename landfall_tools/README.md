@@ -14,7 +14,6 @@ rosdep away from it, so nothing at runtime can depend on it.
 | `export/xfeat.py`, `export/eigenplaces.py`, `export/megaloc.py` | make the ONNX models and their parity references from the pinned upstream files (`scripts/export_models.sh` runs them all) |
 | `export/parity_images.py` | the images of the parity files, from the depot fixture bag |
 | `export/synthetic.py` | the synthetic models and parity files of `landfall_core/test/data/` |
+| `install_onnxruntime.sh` | installs an official ONNX Runtime 1.24.3 build (CPU, GPU with CUDA 12, aarch64), checked against its SHA-256, for `-DONNXRUNTIME_ROOT` (M7, `docs/models.md`) |
+| `plot_benchmark.py` | the kidnap benchmark's figures from `kidnap_runner`'s result files, for light and dark pages (M7, `docs/benchmark.md`) |
 | `requirements.txt` | pinned Python packages for all of the above |
-
-The ONNX Runtime install script (for custom GPU builds) and benchmark plotting come in M7
-(`docs/TODO.md` T-003).

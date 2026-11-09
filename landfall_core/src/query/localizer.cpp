@@ -366,6 +366,24 @@ FrameResult Localizer::localize(const QueryFrame & frame)
     result.best = result.clusters.front().members.front();
     result.pose = result.clusters.front().pose;
   }
+  // Vision may find the wrong one of two places that look alike, e.g. a building's halves, when
+  // the right one was recorded from elsewhere. The scan then fits the right place better: if it
+  // fits another place clearly better than this one, the frame is ambiguous.
+  if (
+    !result.ambiguity.ambiguous && result.best >= 0 && check_scan && projected &&
+    params_.scan.check_alternatives) {
+    const Hypothesis & winner = result.hypotheses[static_cast<std::size_t>(result.best)];
+    if (winner.scan_checked && winner.scan.passed) {
+      const ScanAlternative alternative =
+        verifier_->bestAlternative(*projected, winner.scan.best_pose, &pool_);
+      if (
+        alternative.found && scanFit(alternative.score) - scanFit(winner.scan.score) >=
+                               params_.scan.alternative_margin) {
+        result.ambiguity.ambiguous = true;
+        result.scan_alternative = alternative;
+      }
+    }
+  }
   result.timings.solve_s = watch.lap();
   result.timings.total_s = total.lap();
   return result;

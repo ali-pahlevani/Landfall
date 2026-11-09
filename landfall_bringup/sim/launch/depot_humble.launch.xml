@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<!--
+  Landfall with Nav2 in the Humble depot simulation (the TurtleBot 4 simulator on Gazebo Fortress;
+  docs/nav2_integration.md), started by sim/scripts/start_depot_sim_humble.sh (SIM_LAUNCH):
+  - Landfall's localization.launch.xml: map_server and AMCL with the simulator tuning of the Jazzy
+    runs (sim/params/localization_depot_humble.yaml), and the relocalizer;
+  - Landfall's navigation.launch.xml with the TurtleBot 4's Nav2 parameters. Humble's parameter
+    files list every behavior tree plugin, and the file's list wins, so nav2_params_file is the
+    TurtleBot 4's nav2.yaml with landfall_nav2_bt_nodes added (the scripts write it).
+  Without a database (recording), the relocalizer answers NOT_READY and AMCL gets its pose from
+  the script.
+-->
+<launch>
+  <arg name="database" default="" description="Map database of the depot (*.landfall.db)"/>
+  <arg name="map" default="$(find-pkg-share turtlebot4_navigation)/maps/depot.yaml"
+    description="The map the database was built for"/>
+  <arg name="nav2_params_file" description="Nav2 parameters listing landfall_nav2_bt_nodes"/>
+  <arg name="startup_relocalization" default="true"/>
+
+  <group>
+    <include file="$(find-pkg-share landfall_bringup)/launch/localization.launch.xml">
+      <arg name="map" value="$(var map)"/>
+      <arg name="database" value="$(var database)"/>
+      <arg name="params_file"
+        value="$(find-pkg-share landfall_bringup)/sim/params/localization_depot_humble.yaml"/>
+      <arg name="relocalizer_params_file"
+        value="$(find-pkg-share landfall_bringup)/sim/params/relocalizer_depot_humble.yaml"/>
+      <arg name="startup_relocalization" value="$(var startup_relocalization)"/>
+      <arg name="use_sim_time" value="true"/>
+    </include>
+  </group>
+
+  <group>
+    <include file="$(find-pkg-share landfall_bringup)/launch/navigation.launch.xml">
+      <arg name="params_file" value="$(var nav2_params_file)"/>
+      <arg name="use_sim_time" value="true"/>
+    </include>
+  </group>
+</launch>

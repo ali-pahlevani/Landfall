@@ -14,7 +14,8 @@
 
 // The relocalizer node in-process, fed with the depot fixture: readiness (NOT_READY reasons), BUSY,
 // publishing to AMCL's topic, dry runs, the scan check modes, odometry consistency, the startup and
-// automatic triggers, the extrinsics monitor, lifecycle transitions and parameter validation.
+// automatic triggers, the extrinsics monitor, the kidnap watchdog, lifecycle transitions and
+// parameter validation.
 
 #include <gtest/gtest.h>
 
@@ -205,6 +206,10 @@ protected:
             break;
           }
           for (auto & t : message.transforms) {
+            // A localization that is wrong by map_offset_x (a kidnapped robot's AMCL).
+            if (t.header.frame_id == "map") {
+              t.transform.translation.x += map_offset_x;
+            }
             // Injected odometry error: past each step, the robot seems odom_step further ahead.
             if (t.header.frame_id == "odom") {
               const int64_t at = landfall::ros::toNanoseconds(t.header.stamp);
@@ -336,6 +341,7 @@ protected:
     double scan_rotation = 0.0;  ///< rad added to every scan's angles (a scan that doesn't fit)
     std::vector<int64_t> odom_steps;  ///< stamps where the odometry jumps ahead by odom_step
     double odom_step = 0.0;           ///< m
+    double map_offset_x = 0.0;        ///< m added to the recorded map -> odom
   };
 
   // Error of a published map pose against the ground truth at its stamp.
@@ -722,6 +728,62 @@ TEST_F(RelocalizerNodeTest, ServiceRequestsPreemptTheMonitor)
   const Result r = h.call(2, true, 11);
   EXPECT_EQ(r.status, Result::SUCCESS) << r.message;
   EXPECT_EQ(r.trigger, "service");
+}
+
+namespace
+{
+
+// The watchdog checks once a second, with requests of one frame. The localization is the
+// recording's own AMCL (its map -> odom), confident throughout.
+rclcpp::NodeOptions watchdogOptions(rclcpp::NodeOptions o)
+{
+  o.append_parameter_override("consistency.num_frames", 1);
+  o.append_parameter_override("kidnap_watchdog.enabled", true);
+  o.append_parameter_override("kidnap_watchdog.period", 1.0);
+  o.append_parameter_override("kidnap_watchdog.confirmations", 2);
+  o.append_parameter_override("kidnap_watchdog.cooldown", 600.0);
+  return o;
+}
+
+}  // namespace
+
+TEST_F(RelocalizerNodeTest, KidnapWatchdogRelocalizesAWrongLocalization)
+{
+  Harness h(watchdogOptions(options(*db_path_)));
+  // The localization is confident and 3 m off, as after a kidnap: two checks in a row disagree,
+  // and the watchdog's relocalization publishes vision's pose. The recorded localization doesn't
+  // take it, so the checks keep disagreeing, but the cooldown holds.
+  h.map_offset_x = 3.0;
+  h.subscribeInitialPose();
+  h.up();
+  h.playFor(4, std::chrono::milliseconds(9000), 0.02);
+  h.spinFor(std::chrono::milliseconds(1200));  // one more diagnostics period
+  ASSERT_EQ(h.countTrigger("watchdog"), 1U);
+  const auto it = std::find_if(
+    h.statuses.begin(), h.statuses.end(), [](const Result & r) { return r.trigger == "watchdog"; });
+  ASSERT_NE(it, h.statuses.end());
+  EXPECT_EQ(it->status, Result::SUCCESS) << it->message;
+  EXPECT_TRUE(it->published);
+  ASSERT_EQ(h.poses.size(), 1U);
+  expectNearTruth(h.poses.front(), 0.25, 5.0);
+  // The checks themselves are no relocalizations.
+  EXPECT_EQ(h.statuses.size(), 1U);
+  const std::string watchdog = h.diagnosticValue("kidnap_watchdog");
+  EXPECT_NE(watchdog.find("relocalizes at 2"), std::string::npos) << watchdog;
+}
+
+TEST_F(RelocalizerNodeTest, KidnapWatchdogIsSilentWhileTheLocalizationIsRight)
+{
+  Harness h(watchdogOptions(options(*db_path_)));
+  h.subscribeInitialPose();
+  h.up();
+  h.playFor(4, std::chrono::milliseconds(7000), 0.02);
+  h.spinFor(std::chrono::milliseconds(1200));
+  EXPECT_EQ(h.countTrigger("watchdog"), 0U);
+  EXPECT_TRUE(h.poses.empty());
+  EXPECT_TRUE(h.statuses.empty());
+  const std::string watchdog = h.diagnosticValue("kidnap_watchdog");
+  EXPECT_EQ(watchdog.rfind("0 disagreeing", 0), 0U) << watchdog;
 }
 
 TEST_F(RelocalizerNodeTest, ValidatesParameters)

@@ -4,8 +4,8 @@
   <name>landfall_benchmark</name>
   <version>0.0.0</version>
   <description>
-    Evaluation against simulator ground truth, and (from M7) the kidnap benchmark runner and
-    scenarios for Landfall.
+    Evaluation of Landfall against a simulator's ground truth: recorded poses, scan checks and the
+    kidnap benchmark (runner, scenarios, results tables).
   </description>
   <maintainer email="a.pahlevani1998@gmail.com">Ali Pahlevani</maintainer>
   <license>Apache-2.0</license>
@@ -16,10 +16,16 @@
   <depend>landfall_core</depend>
   <depend>landfall_ros</depend>
   <depend>geometry_msgs</depend>
+  <depend>landfall_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>ros_gz_interfaces</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
+  <depend>std_srvs</depend>
+  <depend>tf2_msgs</depend>
 
+  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

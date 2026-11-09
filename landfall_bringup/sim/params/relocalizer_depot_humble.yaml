@@ -1,0 +1,20 @@
+# The relocalizer in the Humble depot simulation (sim/launch/depot_humble.launch.xml): the
+# TurtleBot 4 simulator's raw OAK-D preview camera (320 x 240) and LiDAR, and its base_link (the
+# Create 3's base frame) as the robot's base. The floor is flat: no IMU gravity.
+/**:
+  ros__parameters:
+    image:
+      topic: /oakd/rgb/preview/image_raw
+      transport: raw
+    camera_info:
+      topic: /oakd/rgb/preview/camera_info
+    frames:
+      base: base_link
+    gravity:
+      source: flat_floor
+    scan_check:
+      topic: /scan
+    startup:
+      delay: 2.0
+      max_attempts: 5
+      retry_interval: 5.0

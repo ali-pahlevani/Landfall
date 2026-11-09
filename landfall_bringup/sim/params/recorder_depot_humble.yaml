@@ -1,0 +1,14 @@
+# Recorder parameters of the Humble depot recording (sim/scripts/record_depot_humble.sh): the
+# TurtleBot 4 simulator's topics and frames, and the simulation's localization gates of
+# params/recorder_depot_sim.yaml (AMCL reports several times its actual error there).
+landfall_recorder:
+  ros__parameters:
+    use_sim_time: true
+    bond.enabled: false
+    image.topic: /oakd/rgb/preview/image_raw
+    camera_info.topic: /oakd/rgb/preview/camera_info
+    frames.base: base_link
+    gravity.source: flat_floor
+    gating.max_std_xy: 0.08
+    gating.max_std_yaw_deg: 3.0
+    gating.max_angular_speed: 0.25

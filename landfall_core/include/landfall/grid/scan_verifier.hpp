@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "landfall/grid/likelihood_field.hpp"
+#include "landfall/util/thread_pool.hpp"
 
 namespace landfall
 {
@@ -38,6 +39,10 @@ struct ScanCheckParams
   double search_angle_deg = 3.0;
   double search_angle_step_deg = 1.0;
   double floor_clearance = 0.05;  ///< m; leveled endpoints lower than this are floor hits
+  /// After a pose passes: search where else in the map the scan fits (bestAlternative). If it fits
+  /// at least alternative_margin better (scanFit) at another place, the pose is ambiguous.
+  bool check_alternatives = true;
+  double alternative_margin = 0.01;
 };
 
 /// A sensor_msgs/LaserScan with the laser pose in the base frame.
@@ -78,6 +83,17 @@ struct ScanCheckResult
   Pose2 best_pose;  ///< pose of the reported score (refined within the search window)
 };
 
+/// How well a scan fits at a pose, to compare poses: the hit ratio less the violation ratio.
+double scanFit(const ScanScore & score);
+
+/// The scan's best fit away from a pose (ScanVerifier::bestAlternative).
+struct ScanAlternative
+{
+  bool found = false;
+  Pose2 pose;
+  ScanScore score;
+};
+
 /// "Vision proposes, LiDAR verifies": scores a base pose hypothesis against the map with a scan.
 class ScanVerifier
 {
@@ -90,12 +106,22 @@ public:
   ScanScore score(const ProjectedScan & scan, const Pose2 & map_T_base, bool with_violations) const;
   /// Searches the local window around the hypothesis and accepts the best pose that passes.
   ScanCheckResult verify(const ProjectedScan & scan, const Pose2 & hypothesis) const;
+  /// Where else in the map the scan fits best (plan §7.12): every heading at the free cells of a
+  /// coarse grid, then the best of them refined as a hypothesis is. Poses within 1 m and 30
+  /// degrees of `pose` are the same place and left out. In a building that looks alike elsewhere,
+  /// vision can pick the wrong place while the scan fits the right one better.
+  /// With a pool, the search runs on its threads (results don't depend on it).
+  ScanAlternative bestAlternative(
+    const ProjectedScan & scan, const Pose2 & pose, ThreadPool * pool = nullptr) const;
+  const ScanCheckParams & params() const { return params_; }
 
 private:
   std::string failure(const ScanScore & score) const;
 
   std::shared_ptr<const LikelihoodField> field_;
   ScanCheckParams params_;
+  std::vector<Vec2> positions_;     ///< candidate base positions of bestAlternative
+  double alternative_step_ = 0.25;  ///< m between them
 };
 
 }  // namespace landfall

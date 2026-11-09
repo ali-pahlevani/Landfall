@@ -14,7 +14,8 @@
 
 // `evaluate_poses`: accuracy of recorded poses against a simulator's ground truth in a bag.
 //
-//   evaluate_poses --bag BAG [--gt-topic /ground_truth/pose] [--world-to-map X Y YAW_DEG]
+//   evaluate_poses --bag BAG [--gt-topic /ground_truth/pose] [--gt-child FRAME]
+//                  [--world-to-map X Y YAW_DEG]
 //                  [--max-gap SECONDS] [--staging DIR]... [--db DB]... [--amcl-topic /amcl_pose]
 //                  [--queries RESULTS.csv]...
 //
@@ -44,10 +45,12 @@
 #include "landfall/record/keyframe_selector.hpp"
 #include "landfall/record/staging.hpp"
 #include "landfall/ros/conversions.hpp"
+#include "nav_msgs/msg/odometry.hpp"
 #include "rclcpp/serialization.hpp"
 #include "rclcpp/serialized_message.hpp"
 #include "rosbag2_cpp/reader.hpp"
 #include "rosbag2_storage/storage_filter.hpp"
+#include "tf2_msgs/msg/tf_message.hpp"
 
 namespace
 {
@@ -231,6 +234,9 @@ int main(int argc, char ** argv)
 {
   std::string bag;
   std::string gt_topic = "/ground_truth/pose";
+  // A TFMessage ground truth (the TurtleBot 4 simulator on Humble: a model's links and the model):
+  // the transform to this child frame; default the first one that names no link (no '/').
+  std::string gt_child;
   std::string amcl_topic;
   std::vector<std::string> staging;
   std::vector<std::string> databases;
@@ -251,6 +257,8 @@ int main(int argc, char ** argv)
         bag = next();
       } else if (a == "--gt-topic") {
         gt_topic = next();
+      } else if (a == "--gt-child") {
+        gt_child = next();
       } else if (a == "--amcl-topic") {
         amcl_topic = next();
       } else if (a == "--staging") {
@@ -275,8 +283,9 @@ int main(int argc, char ** argv)
   } catch (const std::exception & e) {
     std::cerr
       << "evaluate_poses: " << e.what()
-      << "\nusage: evaluate_poses --bag BAG [--gt-topic T] [--world-to-map X Y YAW_DEG] "
-         "[--max-gap S] [--staging DIR]... [--db DB]... [--amcl-topic T] [--queries CSV]...\n";
+      << "\nusage: evaluate_poses --bag BAG [--gt-topic T] [--gt-child F]\n"
+         "         [--world-to-map X Y YAW_DEG] [--max-gap S] [--staging DIR]... [--db DB]...\n"
+         "         [--amcl-topic T] [--queries CSV]...\n";
     return 2;
   }
 
@@ -285,6 +294,22 @@ int main(int argc, char ** argv)
     std::vector<Estimate> amcl;
     rosbag2_cpp::Reader reader;
     reader.open(bag);
+    // Gazebo's pose bridge gives PoseStamped; the TurtleBot 4 simulator (Humble) a TFMessage of
+    // the model's poses, and Odometry.
+    std::string gt_type;
+    for (const auto & topic : reader.get_all_topics_and_types()) {
+      if (topic.name == gt_topic) {
+        gt_type = topic.type;
+      }
+    }
+    if (
+      gt_type != "geometry_msgs/msg/PoseStamped" && gt_type != "nav_msgs/msg/Odometry" &&
+      gt_type != "tf2_msgs/msg/TFMessage") {
+      throw std::runtime_error(
+        gt_type.empty()
+          ? "the bag has no topic " + gt_topic
+          : gt_topic + " is a " + gt_type + ", not a PoseStamped, Odometry or TFMessage");
+    }
     rosbag2_storage::StorageFilter filter;
     filter.topics = {gt_topic};
     if (!amcl_topic.empty()) {
@@ -293,11 +318,28 @@ int main(int argc, char ** argv)
     reader.set_filter(filter);
     while (reader.has_next()) {
       const auto message = reader.read_next();
-      if (message->topic_name == gt_topic) {
+      if (message->topic_name == gt_topic && gt_type == "geometry_msgs/msg/PoseStamped") {
         const auto pose = deserialize<geometry_msgs::msg::PoseStamped>(*message);
         truth.add(
           landfall::ros::toNanoseconds(pose.header.stamp),
           landfall::toPose2(landfall::ros::toPose3(pose.pose)));
+      } else if (message->topic_name == gt_topic && gt_type == "nav_msgs/msg/Odometry") {
+        const auto odometry = deserialize<nav_msgs::msg::Odometry>(*message);
+        truth.add(
+          landfall::ros::toNanoseconds(odometry.header.stamp),
+          landfall::toPose2(landfall::ros::toPose3(odometry.pose.pose)));
+      } else if (message->topic_name == gt_topic) {
+        const auto tf = deserialize<tf2_msgs::msg::TFMessage>(*message);
+        for (const auto & t : tf.transforms) {
+          const bool wanted = gt_child.empty() ? t.child_frame_id.find('/') == std::string::npos
+                                               : t.child_frame_id == gt_child;
+          if (wanted) {
+            truth.add(
+              landfall::ros::toNanoseconds(t.header.stamp),
+              landfall::toPose2(landfall::ros::toPose3(t.transform)));
+            break;
+          }
+        }
       } else {
         const auto pose = deserialize<geometry_msgs::msg::PoseWithCovarianceStamped>(*message);
         const landfall::Mat3 cov = landfall::ros::planarCovariance(pose.pose.covariance);

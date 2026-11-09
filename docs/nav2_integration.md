@@ -221,4 +221,41 @@ found no match where the robot had stopped, as in run 10.
 drives on blind, and it can stop where the database holds no views of the place: the recovery can
 only relocalize where the recording went, in some direction. Record every lane, in both directions
 (docs/recording.md). A robot whose AMCL grows uncertain relocalizes sooner, through the
-relocalizer's auto trigger.
+relocalizer's auto trigger; one whose AMCL stays confident on the wrong pose, through its kidnap
+watchdog (`kidnap_watchdog.enabled`, docs/relocalization.md). In run 2, the relocalizer's
+background check placed the robot 9 cm from the truth while AMCL was confidently 8 m off.
+
+### On Humble
+
+The same run on Humble uses the TurtleBot 4's own simulator on Gazebo Fortress (with its
+320 x 240 camera preview) and turtlebot4_navigation's depot map, which is the Jazzy map shifted by
+-8 m in x. In the Humble simulation image (`LANDFALL_SIM_DISTRO=humble scripts/sim.sh`, which runs
+Cyclone DDS: with Fast DDS, the lifecycle managers lost service responses under the simulation's
+load):
+
+```bash
+export LANDFALL_SIM_DISTRO=humble
+scripts/sim.sh 'bash /ws/install/landfall_bringup/share/landfall_bringup/sim/scripts/record_depot_humble.sh /data/humble'
+scripts/sim.sh 'ros2 run landfall_ros landfall build --map /opt/ros/humble/share/turtlebot4_navigation/maps/depot.yaml \
+  --output /data/depot_humble.landfall.db --staging /data/humble/sessions/depot \
+  --config /ws/install/landfall_bringup/share/landfall_bringup/sim/params/build_depot_sim.yaml'
+scripts/sim.sh 'bash /ws/install/landfall_bringup/share/landfall_bringup/sim/scripts/navigate_depot_humble.sh /data/humble_nav /data/depot_humble.landfall.db'
+```
+
+The scripts start Gazebo's server themselves (the TurtleBot 4's launch starts its GUI), with an
+explicit transport partition (`IGN_PARTITION`: the container's user has no name, and without one
+the server and its clients never find each other), OGRE 2 rendering (the Create 3's description
+asks for OGRE 1, which needs a display), and the robot's dock removed (the TurtleBot 4 starts on
+it, in the way of every route). AMCL runs with the Jazzy simulation's tuning
+(`sim/params/localization_depot_humble.yaml`): with the TurtleBot 4's own parameters it reported a
+standard deviation of about 0.3 m, and the recorder took no keyframe.
+
+One run (M7): the recording drove the route both ways and kept 439 keyframes; the database has
+13,150 landmarks (reprojection RMS 0.52 px, bundle adjustment shifts below 1.1 cm). The startup
+relocalization published 17 s after launch, 4.3 cm and 0.1° from the truth, and the first goal
+succeeded. After the kidnap the robot drove on from the wrong pose and stopped against the south
+wall, at (10.00, -7.42), where the recording never drove: the recovery's five requests, from
+headings -71° to 73°, found no match (one `REJECTED_SCAN_CHECK`), and the goal aborted, as in
+the Jazzy run 10 above. The recording's bag held no ground truth (rosbag2 skips hidden topics such
+as `/_internal/...`; the scripts now record `/sim_ground_truth_pose`), so its keyframe poses weren't
+compared with the truth.

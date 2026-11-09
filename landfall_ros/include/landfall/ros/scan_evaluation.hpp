@@ -18,7 +18,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "landfall/grid/occupancy_grid.hpp"
@@ -41,6 +43,30 @@ struct ScanEvaluationOptions
   uint64_t seed = 1;
   double max_gt_gap = 0.25;  ///< s; longest ground-truth gap to interpolate across
   ScanCheckParams params;
+  /// A symmetry of the map, as the map transform S (a pose S (+) p for every pose p): every scan is
+  /// also checked at its true pose moved by S, where it must fail. E.g. a building that looks the
+  /// same rotated 180 degrees about a point c: S = (c - R(180) c, 180 degrees).
+  std::optional<Pose2> symmetry;
+  /// The search window of the symmetric check (m, deg): vision's pose at a look-alike place can be
+  /// anywhere near the exact symmetric pose, so its best fit there is what could pass.
+  double symmetry_search_radius = 0.1;
+  double symmetry_search_angle_deg = 3.0;
+  /// Thresholds (min_hit_ratio, max_violation_ratio) to evaluate besides `params`: how many true,
+  /// wrong and symmetric poses each pair would accept.
+  std::vector<std::pair<double, double>> sweep;
+  /// Also search the scan's best fit elsewhere (ScanVerifier::bestAlternative), at the true pose
+  /// and at every symmetric pose that passes: how much better it fits than each.
+  bool alternatives = false;
+};
+
+/// What one threshold pair of a sweep accepts.
+struct SweepPoint
+{
+  double min_hit_ratio = 0.0;
+  double max_violation_ratio = 0.0;
+  std::size_t true_accepted = 0;
+  std::size_t wrong_accepted = 0;
+  std::size_t symmetric_accepted = 0;
 };
 
 struct WrongAcceptance
@@ -65,6 +91,14 @@ struct ScanEvaluation
   std::size_t wrong_checks = 0;
   std::size_t wrong_accepted = 0;
   std::vector<WrongAcceptance> wrong_examples;  ///< the first accepted wrong poses
+  std::size_t symmetric_checks = 0;             ///< symmetric poses on a free cell
+  std::size_t symmetric_accepted = 0;
+  std::vector<WrongAcceptance> symmetric_examples;  ///< the first accepted symmetric poses
+  std::vector<SweepPoint> sweep;
+  /// scanFit of the best alternative less scanFit at the true pose, per scan; and the same at each
+  /// accepted symmetric pose (there the true pose is an alternative).
+  std::vector<double> true_alternative_gains;
+  std::vector<double> symmetric_alternative_gains;
 };
 
 /// The LiDAR scan check of every scan in a recording with ground truth (plan §11, M4): at the true

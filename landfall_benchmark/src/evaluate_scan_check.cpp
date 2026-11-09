@@ -14,11 +14,15 @@
 
 // `evaluate_scan_check`: the LiDAR scan check (plan §7.12) on a recording with ground truth. Every
 // scan is checked at its true pose (it must pass) and at wrong poses 0.5 to 5 m away (they must
-// fail), the M4 acceptance test.
+// fail), the M4 acceptance test. With --symmetry, also at its true pose turned by ANGLE about the
+// map point (CX, CY), for a building that looks alike that way (the depot: 180 degrees about its
+// centre; M7); --sweep tells what other min_hit_ratio / max_violation_ratio pairs would accept.
 //
 //   evaluate_scan_check --bag BAG --map MAP.yaml [--world-to-map X Y YAW_DEG] [--every N]
 //                       [--wrong N] [--seed S] [--scan-topic /scan] [--gt-topic T]
 //                       [--base base_footprint] [--set scan_check.NAME=VALUE]...
+//                       [--symmetry CX CY ANGLE_DEG [--symmetry-search RADIUS ANGLE_DEG]]
+//                       [--sweep MIN_HIT MAX_VIOLATION]... [--alternatives]
 
 #include <algorithm>
 #include <cmath>
@@ -87,6 +91,22 @@ int main(int argc, char ** argv)
         options.gt_topic = next();
       } else if (a == "--base") {
         options.base_frame = next();
+      } else if (a == "--symmetry") {
+        const double cx = std::stod(next());
+        const double cy = std::stod(next());
+        const double angle = std::stod(next()) * M_PI / 180.0;
+        // The rotation about (cx, cy): S (+) p = R (p - c) + c.
+        options.symmetry = landfall::Pose2{
+          cx - (std::cos(angle) * cx - std::sin(angle) * cy),
+          cy - (std::sin(angle) * cx + std::cos(angle) * cy), angle};
+      } else if (a == "--symmetry-search") {
+        options.symmetry_search_radius = std::stod(next());
+        options.symmetry_search_angle_deg = std::stod(next());
+      } else if (a == "--alternatives") {
+        options.alternatives = true;
+      } else if (a == "--sweep") {
+        const double hit = std::stod(next());
+        options.sweep.emplace_back(hit, std::stod(next()));
       } else if (a == "--set") {
         const std::string assignment = next();
         const auto eq = assignment.find('=');
@@ -107,7 +127,8 @@ int main(int argc, char ** argv)
       << "evaluate_scan_check: " << e.what()
       << "\nusage: evaluate_scan_check --bag BAG --map MAP.yaml [--world-to-map X Y YAW_DEG] "
          "[--every N] [--wrong N] [--seed S] [--scan-topic T] [--gt-topic T] [--base F] "
-         "[--set scan_check.NAME=VALUE]...\n";
+         "[--set scan_check.NAME=VALUE]... [--symmetry CX CY ANGLE_DEG] "
+         "[--symmetry-search RADIUS ANGLE_DEG] [--sweep MIN_HIT MAX_VIOLATION]...\n";
     return 2;
   }
 
@@ -138,6 +159,42 @@ int main(int argc, char ** argv)
       std::printf(
         "    accepted at %.2f m / %.1f deg off (hit %.3f, violations %.3f)\n", w.offset,
         w.yaw_offset_deg, w.hit_ratio, w.violation_ratio);
+    }
+    if (options.symmetry) {
+      std::printf(
+        "  symmetric poses accepted: %zu of %zu\n", e.symmetric_accepted, e.symmetric_checks);
+      for (const auto & w : e.symmetric_examples) {
+        std::printf(
+          "    accepted %.2f m away (hit %.3f, violations %.3f)\n", w.offset, w.hit_ratio,
+          w.violation_ratio);
+      }
+    }
+    const auto gains = [](const char * what, std::vector<double> g) {
+      if (g.empty()) {
+        return;
+      }
+      std::sort(g.begin(), g.end());
+      std::printf(
+        "  best alternative's fit less the fit at %s, %zu poses: min %.3f p5 %.3f median %.3f "
+        "p95 %.3f max %.3f\n",
+        what, g.size(), g.front(), percentile(g, 0.05), percentile(g, 0.5), percentile(g, 0.95),
+        g.back());
+      for (const double margin : {0.0, 0.02, 0.03, 0.05, 0.08}) {
+        const auto above =
+          std::count_if(g.begin(), g.end(), [margin](double x) { return x >= margin; });
+        std::printf("    >= %.2f: %ld\n", margin, static_cast<long>(above));
+      }
+    };
+    gains("the true pose", e.true_alternative_gains);
+    gains("accepted symmetric poses", e.symmetric_alternative_gains);
+    if (!e.sweep.empty()) {
+      std::printf("  min_hit_ratio max_violation_ratio: true / wrong / symmetric accepted\n");
+      for (const auto & p : e.sweep) {
+        std::printf(
+          "    %.3f %.3f: %zu of %zu / %zu of %zu / %zu of %zu\n", p.min_hit_ratio,
+          p.max_violation_ratio, p.true_accepted, e.true_checks, p.wrong_accepted, e.wrong_checks,
+          p.symmetric_accepted, e.symmetric_checks);
+      }
     }
   } catch (const std::exception & ex) {
     std::cerr << "evaluate_scan_check: error: " << ex.what() << "\n";

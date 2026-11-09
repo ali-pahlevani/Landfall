@@ -1,0 +1,51 @@
+# The kidnap benchmark in the TurtleBot 4 depot simulation (docs/benchmark.md): kidnap_runner's
+# parameters. landfall_bringup/sim/scripts/benchmark_depot.sh adds the method, the label, the
+# output file, the map and the database the placements are drawn near.
+kidnap_runner:
+  ros__parameters:
+    placements: 100
+    # The M7 results use seed 2027; seed 2026 (and 7) were the development runs (docs/benchmark.md).
+    seed: 2027
+    sampling:
+      max_keyframe_distance: 1.0  # m: the area the recording drove through
+      clearance: 0.4              # m from obstacles: room to turn on the spot
+      min_separation: 2.0         # m between consecutive placements
+    # The depot map is Gazebo's world shifted by about (+8, 0): this is the transform that fits the
+    # M2 recording best (x, y in metres, yaw in degrees; docs/recording.md), as in M4 and M5.
+    world_to_map: [8.015, 0.023, 0.105]
+    entity: nav2_turtlebot4
+    set_pose_service: /world/depot/set_pose
+    ground_truth_topic: /ground_truth/pose
+    amcl_pose_topic: /amcl_pose
+    reinitialize_service: /reinitialize_global_localization
+    relocalize_service: /landfall_relocalizer/relocalize
+    status_topic: /landfall_relocalizer/status
+    cmd_vel_topic: /cmd_vel
+    settle_time: 1.5
+    # s for the relocalizer's startup relocalization to give AMCL its first pose; then the runner
+    # gives AMCL the true pose (added_objects: unmapped goods near the spawn pose).
+    startup_wait: 90.0
+    angular_speed: 0.5
+    landfall:
+      attempts: 8         # headings, as the example behavior tree's look-around
+      turn_deg: 45.0
+      num_frames: 0       # the relocalizer's consistency.num_frames
+      request_timeout: 2.5
+    convergence:
+      turn_deg: 360.0     # after a published pose, for AMCL to converge on it
+    amcl:
+      turn_deg: 720.0     # global localization: AMCL updates while the robot turns
+      max_std_xy: 0.5     # AMCL claims a pose below this (the auto trigger's limit)
+    watchdog:
+      wait: 90.0          # s for the watchdog to notice and relocalize
+      angular_speed: 0.1  # rad/s: the robot turns slowly meanwhile
+      observe: 30.0       # s of right localization afterwards, counting needless relocalizations
+      # After a placement the watchdog didn't undo, the robot goes back here (the spawn pose, where
+      # vision localizes), AMCL gets the true pose, and the watchdog's checks get time to agree.
+      home: [0.0, 0.0, 0.0]
+      reset_wait: 25.0
+    limits:
+      success_translation: 0.25
+      success_rotation_deg: 5.0
+      wrong_translation: 0.5
+      wrong_rotation_deg: 10.0

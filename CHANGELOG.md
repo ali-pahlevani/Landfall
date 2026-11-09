@@ -116,6 +116,53 @@ All notable changes to this project are documented here. The format follows
   `params/nav2_<distro>.yaml`. `docs/nav2_integration.md`.
 - Simulation: the M6 navigation run (`sim/scripts/navigate_depot.sh`,
   `sim/launch/depot_navigation.launch.xml`): startup relocalization, navigation, a kidnap.
+- Kidnap watchdog in the relocalizer (M7, off by default, `kidnap_watchdog.*`): dry-run checks of
+  the localization's pose, every 10 s; after two in a row that pass every check but disagree with
+  the localization by more than 1 m or 20°, a relocalization (trigger `watchdog`). The extrinsics
+  monitor's checks count too.
+- Scan alternatives (M7): once a pose has passed every check, the relocalizer fits the LiDAR scan
+  everywhere else in the map; a place it fits better by `scan_check.alternative_margin` (0.01)
+  makes the frame AMBIGUOUS (`scan_check.check_alternatives`, on). It stops a building's look-alike
+  place that vision found and the LiDAR check alone let through: the benchmark's first development
+  run published two such wrong poses in the depot.
+- `summarize_shadow` (landfall_benchmark): the relocalizer's shadow log against the localization,
+  per trigger, with the 95 % upper bound of the disagreement rate (field validation).
+- `landfall_tools/install_onnxruntime.sh`: official ONNX Runtime 1.24.3 builds (CPU, GPU with
+  CUDA 12, aarch64), checked against their SHA-256, for `-DONNXRUNTIME_ROOT`.
+- `landfall_bringup/rviz/landfall.rviz`: map, scan, AMCL's particles and pose, the robot, the
+  relocalizer's markers and debug image.
+- Documentation: `docs/architecture.md`, `docs/sensors.md` (camera, odometry fusion, IMU, LiDAR,
+  frames), `docs/tuning.md`, `docs/troubleshooting.md`, `docs/field_validation.md` (the
+  procedure on a real robot), `docs/benchmark.md`.
+- Humble simulation: the depot on the TurtleBot 4's own simulator (Gazebo Fortress):
+  `sim/scripts/start_depot_sim_humble.sh`, `record_depot_humble.sh`, `navigate_depot_humble.sh`,
+  `sim/launch/depot_humble.launch.xml`, `sim/params/localization_depot_humble.yaml`. The M7 run:
+  the recording, a database, the startup relocalization 4.3 cm from the truth and the first goal;
+  after the kidnap the robot stopped where the recording never drove, and the goal aborted
+  (`docs/nav2_integration.md`).
+- `evaluate_poses` reads the ground truth as `nav_msgs/Odometry` or `tf2_msgs/TFMessage` too
+  (`--gt-child`), as the TurtleBot 4 simulator publishes it.
+- `evaluate_scan_check --symmetry`, `--symmetry-search`, `--sweep` and `--alternatives`: the LiDAR
+  check at a building's look-alike poses, other thresholds, and how much better the scan fits
+  elsewhere. `sample_placements` prints the benchmark's placements of a seed.
+- The kidnap benchmark (M7, `docs/benchmark.md`): `kidnap_runner` moves the simulated robot to
+  random places and measures how Landfall (looking around from up to eight headings), AMCL's
+  global localization or the kidnap watchdog give it its pose back; `summarize_benchmark` writes
+  the results tables with 95 % Clopper-Pearson bounds. Scenarios: `landfall_benchmark/scenarios/`;
+  depot world variants (other light, added goods, crates removed): `landfall_bringup/sim/worlds/`;
+  `sim/scripts/benchmark_depot.sh` runs it; `landfall_tools/plot_benchmark.py` draws the figures.
+- M7 benchmark results (seed 2027, 100 placements per row; `docs/benchmark.md`, README): no wrong
+  pose from Landfall in 800 placements. Success with `classical` / `learned_cpu`: 93 / 78 % in the
+  depot as mapped, 91 / 77 % in other light, 46 / 44 % with nine stacks of goods the map doesn't
+  have (the LiDAR check refuses near them), 68 % (`classical`) with crate stacks gone that the map
+  still has. AMCL's global localization: 6 to 8 % success and 82 or 83 wrong poses per 100. The
+  kidnap watchdog undid 85 % of the kidnaps (median 39 s) without a needless relocalization. Result
+  files in `landfall_benchmark/results/seed2027/`, figures in `docs/images/`.
+- `CONTRIBUTING.md`, and `.pre-commit-config.yaml` with CI's formatting, flake8 and policy checks
+  at the same versions.
+- Docker workflow: the runtime image of each distro, built and started on every push to main and
+  on version tags; pushed to the GitHub Container Registry when the repository variable
+  `LANDFALL_PUBLISH_IMAGES` is `true`.
 
 ### Changed
 - License changed from MIT to Apache-2.0.
@@ -144,7 +191,12 @@ All notable changes to this project are documented here. The format follows
 - `landfall_nav2`'s tests run on isolated ROS domains, `landfall_bringup`'s launch tests in a
   namespace: colcon tests packages in parallel.
 - `sim/scripts/start_depot_sim.sh` runs another launch with `SIM_LAUNCH`.
+- The relocalizer's accuracy table (`docs/relocalization.md`) is re-run with the scan alternatives
+  check: the same successes, no wrong single-frame pose.
+- The simulation image builds for Humble too (the TurtleBot 4 simulator on Gazebo Fortress, with
+  Cyclone DDS); `scripts/sim.sh` takes `LANDFALL_SIM_DISTRO`.
 - The M0 compile probe `test_compat_bt` gave way to the behavior tree nodes' tests.
+- README: the benchmark results, how it works, a quick start and the documentation index.
 
 ### Fixed
 - The auto-trigger node test expected no third automatic request after shortening the cooldown,

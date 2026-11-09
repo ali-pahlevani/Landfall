@@ -12,7 +12,7 @@ uint8 BUSY=7                   # another request is already running
 
 builtin_interfaces/Time stamp
 uint8 status
-string trigger                 # "service", "startup" or "auto"
+string trigger                 # "service", "startup", "auto" or "watchdog" (kidnap watchdog)
 string message                 # human-readable reason
 bool published                 # true if the pose was actually sent to AMCL
 

@@ -1,0 +1,22 @@
+# The relocalizer in the depot simulation with its kidnap watchdog on (the kidnap benchmark's
+# watchdog runs, docs/benchmark.md): relocalizer_depot_sim.yaml plus the watchdog, at its
+# defaults (a check every 10 s, two disagreeing checks before relocalizing).
+/**:
+  ros__parameters:
+    image:
+      topic: /rgbd_camera/image
+      transport: compressed
+    camera_info:
+      topic: /rgbd_camera/camera_info
+    imu:
+      topic: /imu
+      # Gazebo stamps the IMU with its scoped sensor name, which is not a TF frame.
+      frame: imu_link
+    scan_check:
+      topic: /scan
+    startup:
+      delay: 2.0
+      max_attempts: 5
+      retry_interval: 5.0
+    kidnap_watchdog:
+      enabled: true

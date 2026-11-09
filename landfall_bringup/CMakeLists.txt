@@ -9,7 +9,7 @@ find_package(ament_cmake REQUIRED)
 # (docs/recording.md: a TurtleBot 4 description with a 640 x 480 camera and ground-truth pose).
 # The simulation needs the simulation image (docker/Dockerfile.sim), and navigation.launch.xml
 # needs nav2_bringup, which pulls in the simulators: neither is a dependency of this package.
-install(DIRECTORY launch params sim DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY launch params rviz sim DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

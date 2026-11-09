@@ -52,6 +52,7 @@ struct FrameOutcome
 {
   Stage deepest_stage = Stage::kRetrieved;  ///< deepest stage any of its hypotheses reached
   bool ambiguous = false;
+  bool scan_elsewhere = false;            ///< ambiguous because the scan fits another place better
   std::optional<FrameEstimate> estimate;  ///< set when the frame has an accepted hypothesis
 };
 

@@ -18,7 +18,7 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `auto_trigger.enabled` | bool | `false` |  | at startup | Relocalize on its own while the localization stays uncertain |
 | `auto_trigger.max_std_xy` | double | `0.5` | [0.05, 10] | at runtime | The localization is uncertain above this std in x or y, metres |
 | `auto_trigger.max_std_yaw_deg` | double | `15` | [1, 180] | at runtime | The localization is uncertain above this std in yaw, degrees |
-| `auto_trigger.pose_topic` | string | `"amcl_pose"` |  | at startup | PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor) |
+| `auto_trigger.pose_topic` | string | `"amcl_pose"` |  | at startup | PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor, kidnap watchdog) |
 | `autostart` | bool | `false` |  | at startup | relocalizer_node executable: configure and activate on start |
 | `backend.execution_provider` | string | `"cpu"` |  | at startup | Where learned backends run: cpu, cuda or tensorrt (the last two need an ONNX Runtime built with them) |
 | `backend.models_dir` | string | `""` |  | at startup | Models of learned backends (docs/models.md); empty: $LANDFALL_MODELS_DIR, else ~/.local/share/landfall/models |
@@ -56,6 +56,12 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `imu.max_age` | double | `0.1` | [0.01, 1] | at runtime | Oldest usable IMU sample, seconds |
 | `imu.max_angular_rate` | double | `0.1` | [0, 2] | at runtime | IMU gravity is used only below this turn rate, rad/s |
 | `imu.topic` | string | `"imu"` |  | at startup | sensor_msgs/Imu with orientation |
+| `kidnap_watchdog.confirmations` | integer | `2` | [1, 10] | at runtime | Disagreeing checks in a row (any check: the monitor's too) before relocalizing |
+| `kidnap_watchdog.cooldown` | double | `30` | [0, 3600] | at runtime | Seconds after a watchdog relocalization before the next one |
+| `kidnap_watchdog.enabled` | bool | `false` |  | at startup | Check the localization's pose with dry-run requests, and relocalize when they keep disagreeing with it |
+| `kidnap_watchdog.max_rotation_deg` | double | `20` | [1, 180] | at runtime | A check disagrees with the localization when their headings differ by more degrees |
+| `kidnap_watchdog.max_translation` | double | `1` | [0.1, 10] | at runtime | A check disagrees with the localization when their poses differ by more metres |
+| `kidnap_watchdog.period` | double | `10` | [1, 3600] | at startup | Seconds between the watchdog's dry-run requests |
 | `map_yaml` | string | `""` |  | at startup | Optional map_server YAML; its file hashes must equal the database's |
 | `matching.min_cosine` | double | `0.82` | [0, 1] | at runtime | Smallest cosine for float descriptors (mutual nearest) |
 | `matching.ratio` | double | `0.8` | [0.5, 1] | at runtime | Lowe ratio for binary descriptors (with a mutual check) |
@@ -81,6 +87,8 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `sanity.min_inlier_ratio` | double | `0.25` | [0, 1] | at runtime | Smallest inlier ratio |
 | `sanity.min_inliers` | integer | `40` | [6, 10000] | at runtime | Fewest PnP inliers |
 | `sanity.require_free_space` | bool | `true` |  | at runtime | The base must stand on a known-free map cell |
+| `scan_check.alternative_margin` | double | `0.01` | [0, 0.5] | at runtime | How much better (hit ratio less violation ratio) the scan must fit elsewhere to make a pose ambiguous |
+| `scan_check.check_alternatives` | bool | `true` |  | at runtime | Search where else in the map the scan fits; a place it fits clearly better makes the pose ambiguous |
 | `scan_check.hit_tolerance` | double | `0.1` | [0.01, 1] | at runtime | A beam ending this close to an obstacle is a hit, metres |
 | `scan_check.max_range` | double | `10` | [0.5, 100] | at runtime | Longer readings are ignored, metres |
 | `scan_check.max_time_offset` | double | `0.5` | [0, 5] | at runtime | Largest time between an image and the scan that checks it, seconds |
@@ -93,7 +101,7 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `scan_check.search_angle_deg` | double | `3` | [0, 10] | at runtime | Local search window around a pose, degrees |
 | `scan_check.search_radius` | double | `0.1` | [0, 0.5] | at runtime | Local search window around a pose, metres |
 | `scan_check.topic` | string | `"scan"` |  | at startup | sensor_msgs/LaserScan topic |
-| `shadow.log_path` | string | `""` |  | at startup | If set, every request that publishes nothing (dry runs, the monitor) is appended there as CSV with the localization's pose |
+| `shadow.log_path` | string | `""` |  | at startup | If set, every request that publishes nothing (dry runs, the monitor's and the watchdog's checks) is appended there as CSV with the localization's pose |
 | `startup.delay` | double | `2` | [0, 60] | at startup | Seconds after activation before the first attempt |
 | `startup.enabled` | bool | `false` |  | at startup | Relocalize once after activation, when ready |
 | `startup.max_attempts` | integer | `3` | [1, 100] | at startup | Attempts that ran (not counting NOT_READY) before giving up |

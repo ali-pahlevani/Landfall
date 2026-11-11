@@ -18,6 +18,8 @@ poses before what it does to successes. All parameters are listed in `docs/param
 ## Recording
 
 - **Localization uncertainty gate** (`gating.max_std_xy`, `gating.max_std_yaw_deg`, 5 cm and 2°).
+  By default it applies only to frames without a scan (`gating.covariance: without_scan`): record
+  the scan (`scan.topic`) and the build checks each keyframe against the map instead.
   AMCL's covariance is its own estimate, not its error: in the depot simulation it reported about
   five times its actual error (PLAN V16), so the default rejects many good poses there (the
   simulation's build uses 8 cm / 3°). It can also be confident and wrong in a corridor. Look at the

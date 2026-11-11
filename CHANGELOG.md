@@ -178,6 +178,14 @@ All notable changes to this project are documented here. The format follows
   aisles where one scan fits two positions equally and AMCL sat on the wrong one (T-011).
 
 ### Changed
+- The recorder and `landfall build --bag` no longer gate frames that come with a LiDAR scan on the
+  localization's covariance (PLAN V57; `gating.covariance`, `without_scan` by default, `always`
+  for the old behaviour): the build matches those frames to the map. A keyframe whose scan doesn't
+  match the map now counts its recorded pose only loosely (`poses.disagreement_std_*`), so its
+  odometry carries it, and where the scan agrees the recorded pose counts less the less precise
+  the scan is in a direction (std scan std² / `poses.recorded_std_xy`). On the URDF Maker warehouse
+  route: 594 keyframes instead of 372, 8,698 landmarks instead of 5,376, relocalization success
+  4.1 % -> 6.4 % of the 904 sweep frames (6.1 % with true poses), no wrong pose (live settings).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.
   Format 1 folders still build.
 - The bundle adjustment's bounds around a scan-matched keyframe widen to 3 standard deviations of

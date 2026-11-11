@@ -19,7 +19,10 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "landfall/ros/conversions.hpp"
@@ -105,6 +108,11 @@ void RecorderNode::declareParameters()
   declare_parameter(
     "gating.max_std_yaw_deg", 2.0, describe("Largest localization std in yaw, degrees", 0.1, 45.0));
   declare_parameter(
+    "gating.covariance", "without_scan",
+    describe(
+      "Frames gated on the localization covariance: without_scan (frames without a LiDAR scan; "
+      "the build checks the others against the map), always or never"));
+  declare_parameter(
     "gating.min_translation", 0.5,
     describe(
       "A keyframe needs this many metres since the last one, or gating.min_rotation_deg", 0.0,
@@ -178,7 +186,12 @@ RecorderNode::Settings RecorderNode::readSettings()
   s.imu_frame = get_parameter("imu.frame").as_string();
   s.imu_max_age = get_parameter("imu.max_age").as_double();
   KeyframeGating & g = s.gating;
-  g.require_covariance = s.pose_source == "tf_with_covariance";
+  const std::string covariance_gate = get_parameter("gating.covariance").as_string();
+  requireOneOf("gating.covariance", covariance_gate, {"always", "without_scan", "never"});
+  // tf_only has no covariance to gate on.
+  g.covariance = s.pose_source == "tf_with_covariance"
+                   ? parseCovarianceGate(covariance_gate).value_or(CovarianceGate::kWithoutScan)
+                   : CovarianceGate::kNever;
   g.max_covariance_age = get_parameter("pose_source.max_covariance_age").as_double();
   g.max_std_xy = get_parameter("gating.max_std_xy").as_double();
   g.max_std_yaw_deg = get_parameter("gating.max_std_yaw_deg").as_double();
@@ -453,8 +466,25 @@ void RecorderNode::handle(const PendingImage & image)
   } else if (settings_.gravity_source == GravitySource::kImu) {
     tilt.imu = &imu_;  // no samples: every frame fails the ramp gate, as configured
   }
+  // The scan nearest the image, its laser pose moved to the image's stamp with odometry.
+  std::string scan_error;
+  std::function<std::optional<PlanarScan>()> scan_lookup;
+  if (!settings_.scan_topic.empty()) {
+    scan_lookup = [&]() -> std::optional<PlanarScan> {
+      scan_error = "no scan on '" + settings_.scan_topic + "' within " +
+                   std::to_string(settings_.scan_max_time_offset) + " s of the image";
+      const auto * nearest = nearestScan(
+        scans_, image.stamp_ns, static_cast<int64_t>(settings_.scan_max_time_offset * 1e9));
+      if (nearest == nullptr) {
+        return std::nullopt;
+      }
+      return scanAtImage(
+        *nearest, *tf_buffer_, settings_.frames.odom, settings_.frames.base, image.stamp_ns,
+        &scan_error);
+    };
+  }
   const FrameDecision decision =
-    gateFrame(*selector_, *poses_, tilt, image.stamp_ns, camera_frame, image.decode);
+    gateFrame(*selector_, *poses_, tilt, image.stamp_ns, camera_frame, image.decode, scan_lookup);
   switch (decision.result) {
     case GateResult::kNoPose:
       last_tf_error_ = decision.error;
@@ -481,24 +511,10 @@ void RecorderNode::handle(const PendingImage & image)
   keyframe.quality = decision.quality;
   keyframe.tilt_deg = decision.tilt_deg;
   keyframe.odom_base = decision.pose.odom_base;
-  if (!settings_.scan_topic.empty()) {
-    // The scan nearest the image, its laser pose moved to the image's stamp with odometry.
-    std::string error = "no scan on '" + settings_.scan_topic + "' within " +
-                        std::to_string(settings_.scan_max_time_offset) + " s of the image";
-    if (
-      const auto * nearest = nearestScan(
-        scans_, image.stamp_ns, static_cast<int64_t>(settings_.scan_max_time_offset * 1e9))) {
-      if (
-        auto scan = scanAtImage(
-          *nearest, *tf_buffer_, settings_.frames.odom, settings_.frames.base, image.stamp_ns,
-          &error)) {
-        keyframe.scan = std::move(*scan);
-      }
-    }
-    if (!keyframe.scan) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 10000, "keyframe without a scan: %s", error.c_str());
-    }
+  keyframe.scan = decision.scan;
+  if (!settings_.scan_topic.empty() && !keyframe.scan) {
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 10000, "keyframe without a scan: %s", scan_error.c_str());
   }
   try {
     writer_->add(keyframe, decision.image);

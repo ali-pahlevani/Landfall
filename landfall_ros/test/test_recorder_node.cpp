@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -30,6 +31,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "tf2_msgs/msg/tf_message.hpp"
 
@@ -216,6 +218,110 @@ TEST_F(RecorderNodeTest, RecordsAndClosesASession)
   EXPECT_EQ(recorder->shutdown().id(), State::PRIMARY_STATE_FINALIZED);
 }
 
+TEST_F(RecorderNodeTest, GatesOnTheCovarianceOnlyFramesWithoutAScan)
+{
+  TempDir dir;
+  rclcpp::NodeOptions options = recorderOptions(dir.path);
+  options.append_parameter_override("scan.topic", "/rec_test/scan");
+  auto recorder = std::make_shared<landfall::ros::RecorderNode>(options);
+  auto driver = std::make_shared<rclcpp::Node>("rec_test_scan_driver");
+  auto tf_pub = driver->create_publisher<tf2_msgs::msg::TFMessage>("/tf", rclcpp::QoS(100));
+  auto tf_static_pub = driver->create_publisher<tf2_msgs::msg::TFMessage>(
+    "/tf_static", rclcpp::QoS(1).transient_local());
+  auto info_pub =
+    driver->create_publisher<sensor_msgs::msg::CameraInfo>("/rec_test/camera_info", 10);
+  auto image_pub = driver->create_publisher<sensor_msgs::msg::Image>("/rec_test/image", 10);
+  auto pose_pub = driver->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "/rec_test/amcl_pose", 10);
+  auto scan_pub = driver->create_publisher<sensor_msgs::msg::LaserScan>(
+    "/rec_test/scan", rclcpp::SensorDataQoS());
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(recorder->get_node_base_interface());
+  executor.add_node(driver);
+  ASSERT_EQ(recorder->configure().id(), State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(recorder->activate().id(), State::PRIMARY_STATE_ACTIVE);
+
+  tf2_msgs::msg::TFMessage statics;
+  geometry_msgs::msg::TransformStamped camera =
+    transform(driver->now(), "base_footprint", "cam", 0.1);
+  camera.transform.translation.z = 0.5;
+  camera.transform.rotation.x = -0.5;
+  camera.transform.rotation.y = 0.5;
+  camera.transform.rotation.z = -0.5;
+  camera.transform.rotation.w = 0.5;
+  statics.transforms.push_back(camera);
+  geometry_msgs::msg::TransformStamped laser =
+    transform(driver->now(), "base_footprint", "laser", 0.05);
+  laser.transform.translation.z = 0.3;
+  statics.transforms.push_back(laser);
+  tf_static_pub->publish(statics);
+
+  // A localization unsure of itself all along (0.3 m); scans only for the first 2 s.
+  cv::RNG rng(5);
+  for (int k = 0; k < 40; ++k) {  // 4 s at 10 Hz, 0.4 m/s
+    const rclcpp::Time stamp = driver->now();
+    tf2_msgs::msg::TFMessage tf;
+    tf.transforms.push_back(transform(stamp, "map", "odom", 0.0));
+    tf.transforms.push_back(transform(stamp, "odom", "base_footprint", 0.04 * k));
+    tf_pub->publish(tf);
+    if (k % 3 == 0) {
+      geometry_msgs::msg::PoseWithCovarianceStamped pose;
+      pose.header.stamp = stamp;
+      pose.header.frame_id = "map";
+      pose.pose.covariance[0] = pose.pose.covariance[7] = 0.3 * 0.3;
+      pose.pose.covariance[35] = 0.0001;
+      pose_pub->publish(pose);
+    }
+    if (k < 20) {
+      sensor_msgs::msg::LaserScan scan;
+      scan.header.stamp = stamp;
+      scan.header.frame_id = "laser";
+      scan.angle_min = -static_cast<float>(M_PI);
+      scan.angle_increment = static_cast<float>(2.0 * M_PI / 360.0);
+      scan.angle_max = scan.angle_min + 359.0F * scan.angle_increment;
+      scan.range_min = 0.1F;
+      scan.range_max = 10.0F;
+      scan.ranges.assign(360, 3.0F);
+      scan_pub->publish(scan);
+    }
+    sensor_msgs::msg::CameraInfo info;
+    info.header.stamp = stamp;
+    info.header.frame_id = "cam";
+    info.width = 160;
+    info.height = 120;
+    info.distortion_model = "plumb_bob";
+    info.d = {0.0, 0.0, 0.0, 0.0, 0.0};
+    info.k = {120.0, 0.0, 79.5, 0.0, 120.0, 59.5, 0.0, 0.0, 1.0};
+    info_pub->publish(info);
+    sensor_msgs::msg::Image image;
+    image.header = info.header;
+    image.width = 160;
+    image.height = 120;
+    image.encoding = "mono8";
+    image.step = 160;
+    cv::Mat pixels(120, 160, CV_8UC1);
+    rng.fill(pixels, cv::RNG::UNIFORM, 30, 220);
+    image.data.assign(pixels.data, pixels.data + pixels.total());
+    image_pub->publish(image);
+    spinFor(executor, std::chrono::milliseconds(100));
+  }
+  spinFor(executor, std::chrono::milliseconds(500));
+  ASSERT_EQ(recorder->deactivate().id(), State::PRIMARY_STATE_INACTIVE);
+
+  // With a scan the build checks the pose against the map, so the covariance doesn't stop the
+  // frame; without one it does.
+  const auto folder = landfall::readStaging(dir.path + "/test_session");
+  EXPECT_GE(folder.keyframes.size(), 3U);
+  for (const auto & keyframe : folder.keyframes) {
+    ASSERT_TRUE(keyframe.scan.has_value());
+    EXPECT_EQ(keyframe.scan->ranges.size(), 360U);
+    EXPECT_LT(keyframe.stamp_ns - folder.keyframes.front().stamp_ns, 2'100'000'000);
+  }
+  EXPECT_GE(folder.session.counts.pose_uncertain, 3U);
+  EXPECT_EQ(recorder->cleanup().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_EQ(recorder->shutdown().id(), State::PRIMARY_STATE_FINALIZED);
+}
+
 TEST_F(RecorderNodeTest, RejectsInvalidParameters)
 {
   TempDir dir;
@@ -224,6 +330,12 @@ TEST_F(RecorderNodeTest, RejectsInvalidParameters)
   auto node = std::make_shared<landfall::ros::RecorderNode>(bad_enum);
   EXPECT_EQ(node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
   EXPECT_EQ(node->shutdown().id(), State::PRIMARY_STATE_FINALIZED);
+
+  rclcpp::NodeOptions bad_gate = recorderOptions(dir.path);
+  bad_gate.append_parameter_override("gating.covariance", "sometimes");
+  auto gate_node = std::make_shared<landfall::ros::RecorderNode>(bad_gate);
+  EXPECT_EQ(gate_node->configure().id(), State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_EQ(gate_node->shutdown().id(), State::PRIMARY_STATE_FINALIZED);
 
   rclcpp::NodeOptions out_of_range = recorderOptions(dir.path);
   out_of_range.append_parameter_override("image.jpeg_quality", 10);

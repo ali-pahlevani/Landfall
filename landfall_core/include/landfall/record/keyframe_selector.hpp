@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 
 #include "landfall/record/image_quality.hpp"
 #include "landfall/types.hpp"
@@ -25,11 +26,22 @@
 namespace landfall
 {
 
+/// Which frames the localization's covariance gates (`gating.covariance`).
+enum class CovarianceGate : uint8_t {
+  kAlways,       ///< every frame
+  kWithoutScan,  ///< only frames without a LiDAR scan: the build checks the others against the map
+  kNever,        ///< none (also for pose sources without a covariance, tf_only)
+};
+
+const char * toString(CovarianceGate gate);
+/// "always", "without_scan" or "never"; nullopt otherwise.
+std::optional<CovarianceGate> parseCovarianceGate(const std::string & name);
+
 /// Keyframe gates (recorder parameters `gating.*`, `quality.*`, `max_keyframes`).
 struct KeyframeGating
 {
-  bool require_covariance = true;  ///< false for pose sources without one (tf_only)
-  double max_std_xy = 0.05;        ///< m, worst direction of the x/y covariance
+  CovarianceGate covariance = CovarianceGate::kWithoutScan;
+  double max_std_xy = 0.05;  ///< m, worst direction of the x/y covariance
   double max_std_yaw_deg = 2.0;
   double max_covariance_age = 5.0;  ///< s between the covariance estimate and the image
   double min_translation = 0.5;     ///< m since the last keyframe ...
@@ -49,7 +61,7 @@ enum class GateResult : uint8_t {
   kAccepted,
   kNoPose,         ///< no pose at the image stamp (TF lookup failed)
   kNoMotion,       ///< too close to the last keyframe
-  kPoseUncertain,  ///< localization covariance too large, too old or missing
+  kPoseUncertain,  ///< localization covariance too large, too old or missing (when gated)
   kSpeed,          ///< driving or turning too fast
   kTilt,           ///< on a ramp (IMU)
   kBlur,
@@ -68,6 +80,7 @@ struct FrameCandidate
   double linear_speed = 0.0;       ///< m/s
   double angular_speed = 0.0;      ///< rad/s
   std::optional<double> tilt_deg;  ///< nullopt without an IMU
+  bool has_scan = false;           ///< a LiDAR scan goes with the frame (CovarianceGate)
 };
 
 struct GateCounts

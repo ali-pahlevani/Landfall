@@ -51,6 +51,30 @@ const char * toString(GateResult result)
   return "unknown";
 }
 
+const char * toString(CovarianceGate gate)
+{
+  switch (gate) {
+    case CovarianceGate::kAlways:
+      return "always";
+    case CovarianceGate::kWithoutScan:
+      return "without_scan";
+    case CovarianceGate::kNever:
+      return "never";
+  }
+  return "unknown";
+}
+
+std::optional<CovarianceGate> parseCovarianceGate(const std::string & name)
+{
+  for (const CovarianceGate gate :
+       {CovarianceGate::kAlways, CovarianceGate::kWithoutScan, CovarianceGate::kNever}) {
+    if (name == toString(gate)) {
+      return gate;
+    }
+  }
+  return std::nullopt;
+}
+
 double worstStdXy(const Mat3 & covariance)
 {
   const Eigen::Matrix2d xy = covariance.topLeftCorner<2, 2>();
@@ -71,7 +95,10 @@ GateResult KeyframeSelector::checkPose(const FrameCandidate & frame) const
     rotationDistance(*last_keyframe_, frame.map_base) < toRad(gating_.min_rotation_deg)) {
     return GateResult::kNoMotion;
   }
-  if (gating_.require_covariance) {
+  const bool gate_covariance =
+    gating_.covariance == CovarianceGate::kAlways ||
+    (gating_.covariance == CovarianceGate::kWithoutScan && !frame.has_scan);
+  if (gate_covariance) {
     if (!frame.covariance || !frame.covariance->allFinite()) {
       return GateResult::kPoseUncertain;
     }

@@ -278,6 +278,8 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   bag_section.finish();
 
   Section gating = top.child("gating");
+  std::string covariance_gate = toString(g.covariance);
+  gating.read("covariance", &covariance_gate);
   gating.read("max_std_xy", &g.max_std_xy);
   gating.read("max_std_yaw_deg", &g.max_std_yaw_deg);
   gating.read("max_covariance_age", &g.max_covariance_age);
@@ -303,7 +305,12 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
     parseGravitySource(bag.gravity_source).has_value(),
     "'bag.gravity_source' must be auto, imu or flat_floor");
   require(bag.imu_max_age > 0.0, "'bag.imu_max_age' must be positive");
-  g.require_covariance = bag.pose_source == "tf_with_covariance";
+  const auto parsed_gate = parseCovarianceGate(covariance_gate);
+  require(parsed_gate.has_value(), "'gating.covariance' must be always, without_scan or never");
+  // tf_only has no covariance to gate on.
+  g.covariance = bag.pose_source == "tf_with_covariance"
+                   ? parsed_gate.value_or(CovarianceGate::kWithoutScan)  // validated above
+                   : CovarianceGate::kNever;
   require(!b.global_backend.empty(), "'backend.global' must name a backend");
   require(
     b.global_backend != "bow" || b.global_options.empty(),
@@ -449,6 +456,7 @@ std::string canonicalYaml(const BuildConfigFile & config)
     {"scan_topic", text(bag.scan_topic)},
     {"speed_window", number(bag.speed_window)}};
   sections["gating"] = {
+    {"covariance", text(toString(g.covariance))},
     {"max_angular_speed", number(g.max_angular_speed)},
     {"max_covariance_age", number(g.max_covariance_age)},
     {"max_linear_speed", number(g.max_linear_speed)},

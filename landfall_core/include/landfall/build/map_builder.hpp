@@ -104,7 +104,7 @@ struct BuildStats
   Vec2 ba_mean_shift_vector = Vec2::Zero();  ///< a large one means a biased recording
   int ba_keyframes_at_bound = 0;
   int poses_scan_matched = 0;       ///< keyframes whose scan was matched to the map
-  int poses_scan_unmatched = 0;     ///< keyframes whose scan didn't match (recorded pose kept)
+  int poses_scan_unmatched = 0;     ///< keyframes whose scan didn't match (odometry carries them)
   int poses_scan_contradicted = 0;  ///< matched keyframes whose scan contradicted the recording
   int poses_odometry_links = 0;     ///< odometry constraints between consecutive keyframes
   /// How far the scan matching and odometry moved the recorded poses (before the adjustment).

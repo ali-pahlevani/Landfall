@@ -21,7 +21,8 @@ namespace landfall::ros
 
 FrameDecision gateFrame(
   KeyframeSelector & selector, TfPoseSource & poses, const TiltInput & tilt, int64_t stamp_ns,
-  const std::string & camera_frame, const std::function<cv::Mat()> & decode)
+  const std::string & camera_frame, const std::function<cv::Mat()> & decode,
+  const std::function<std::optional<PlanarScan>()> & scan)
 {
   FrameDecision decision;
   const auto pose = poses.poseAt(stamp_ns, camera_frame, &decision.error);
@@ -37,6 +38,10 @@ FrameDecision gateFrame(
   candidate.covariance_age = pose->covariance_age;
   candidate.linear_speed = pose->linear_speed;
   candidate.angular_speed = pose->angular_speed;
+  if (scan) {
+    decision.scan = scan();
+    candidate.has_scan = decision.scan.has_value();
+  }
   if (tilt.imu != nullptr && tilt.source != GravitySource::kFlatFloor) {
     // The ramp gate only needs the floor's slope; turning doesn't change it, so the stillness
     // requirement of the query-time gravity is not applied here.

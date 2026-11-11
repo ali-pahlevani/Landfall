@@ -8,7 +8,7 @@ status and lists the `NOT_READY` reasons with their fixes.
 
 | Symptom | Look at | Usual cause |
 |---|---|---|
-| Few keyframes | the recorder's `~/status`: rejections per reason | `rejected_pose_uncertain`: the localization reports a std above `gating.max_std_xy`, often while it is right (AMCL overestimates; `docs/tuning.md`). `rejected_speed`: driving or turning faster than the gates. `rejected_blur`, `rejected_exposure`: blurred, dark or overexposed images. `rejected_tf`: no transform at the image |
+| Few keyframes | the recorder's `~/status`: rejections per reason | `rejected_pose_uncertain`: a frame without a scan whose localization reports a std above `gating.max_std_xy`, often while it is right (AMCL overestimates; `docs/tuning.md`); record the scan (`scan.topic`) so the build checks poses against the map instead. `rejected_speed`: driving or turning faster than the gates. `rejected_blur`, `rejected_exposure`: blurred, dark or overexposed images. `rejected_tf`: no transform at the image |
 | Keyframes in some directions only | the build report's heading rose | the lanes were driven one way; drive them both ways |
 | `no transform … at the image` in the recorder's log | TF | `image.time_offset`, TF too late (`tf_timeout`), the camera frame missing |
 

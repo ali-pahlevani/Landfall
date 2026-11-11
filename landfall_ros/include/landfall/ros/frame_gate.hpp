@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 
+#include "landfall/grid/scan_verifier.hpp"
 #include "landfall/record/keyframe_selector.hpp"
 #include "landfall/ros/imu_gravity_source.hpp"
 #include "landfall/ros/tf_pose_source.hpp"
@@ -43,17 +44,21 @@ struct FrameDecision
   PoseSample pose;
   std::optional<double> tilt_deg;
   ImageQuality quality;
-  cv::Mat image;      ///< decoded image, when the image gates ran
-  std::string error;  ///< why there is no pose
+  cv::Mat image;                   ///< decoded image, when the image gates ran
+  std::optional<PlanarScan> scan;  ///< the frame's LiDAR scan, when `scan` found one
+  std::string error;               ///< why there is no pose
 };
 
-/// Runs the keyframe gates on one image: the pose at its stamp, the IMU tilt (`auto`: from a fresh
+/// Runs the keyframe gates on one image: the pose at its stamp, the frame's LiDAR scan (`scan`,
+/// called once the pose is known; may be empty: no scans), the IMU tilt (`auto`: from a fresh
 /// sample, no tilt gate without one; `imu`: no fresh sample means no keyframe), then the image
-/// quality on the image `decode` returns (only called when the pose gates pass). Shared by the
-/// recorder and `landfall build --bag`, so both select the same keyframes from the same data.
+/// quality on the image `decode` returns (only called when the pose gates pass). A frame with a
+/// scan skips the covariance gate in CovarianceGate::kWithoutScan. Shared by the recorder and
+/// `landfall build --bag`, so both select the same keyframes from the same data.
 FrameDecision gateFrame(
   KeyframeSelector & selector, TfPoseSource & poses, const TiltInput & tilt, int64_t stamp_ns,
-  const std::string & camera_frame, const std::function<cv::Mat()> & decode);
+  const std::string & camera_frame, const std::function<cv::Mat()> & decode,
+  const std::function<std::optional<PlanarScan>()> & scan = {});
 
 }  // namespace landfall::ros
 

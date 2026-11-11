@@ -29,6 +29,7 @@
 #include "landfall/record/staging.hpp"
 #include "test_utils.hpp"
 
+using landfall::CovarianceGate;
 using landfall::FrameCandidate;
 using landfall::GateResult;
 using landfall::ImageQuality;
@@ -171,11 +172,54 @@ TEST(KeyframeSelector, CovarianceTiltAndImageGates)
   EXPECT_EQ(c.frames_seen, 11U);
 
   // tf_only sources have no covariance.
-  gating.require_covariance = false;
+  gating.covariance = CovarianceGate::kNever;
   KeyframeSelector tf_only(gating);
   f = frameAt(0, 0, 0);
   f.covariance.reset();
   EXPECT_EQ(tf_only.evaluate(f, good), GateResult::kAccepted);
+}
+
+TEST(KeyframeSelector, CovarianceGatesOnlyFramesWithoutAScanByDefault)
+{
+  const auto good = [] { return goodQuality(); };
+  // A localization unsure of itself (0.3 m), or silent: the build matches a frame's scan to the
+  // map, so only frames without one are held to the covariance.
+  const auto uncertain = [](bool has_scan, bool silent) {
+    FrameCandidate f = frameAt(0, 0, 0);
+    (*f.covariance)(0, 0) = (*f.covariance)(1, 1) = 0.3 * 0.3;
+    if (silent) {
+      f.covariance.reset();
+    }
+    f.has_scan = has_scan;
+    return f;
+  };
+  KeyframeGating gating;
+  EXPECT_EQ(gating.covariance, CovarianceGate::kWithoutScan);
+  EXPECT_EQ(
+    KeyframeSelector(gating).evaluate(uncertain(false, false), good), GateResult::kPoseUncertain);
+  EXPECT_EQ(
+    KeyframeSelector(gating).evaluate(uncertain(false, true), good), GateResult::kPoseUncertain);
+  EXPECT_EQ(KeyframeSelector(gating).evaluate(uncertain(true, false), good), GateResult::kAccepted);
+  EXPECT_EQ(KeyframeSelector(gating).evaluate(uncertain(true, true), good), GateResult::kAccepted);
+
+  gating.covariance = CovarianceGate::kAlways;
+  EXPECT_EQ(
+    KeyframeSelector(gating).evaluate(uncertain(true, false), good), GateResult::kPoseUncertain);
+  gating.covariance = CovarianceGate::kNever;
+  EXPECT_EQ(
+    KeyframeSelector(gating).evaluate(uncertain(false, false), good), GateResult::kAccepted);
+
+  // The other pose gates still apply to frames with a scan.
+  gating.covariance = CovarianceGate::kWithoutScan;
+  FrameCandidate fast = uncertain(true, false);
+  fast.linear_speed = 0.8;
+  EXPECT_EQ(KeyframeSelector(gating).evaluate(fast, good), GateResult::kSpeed);
+
+  for (const CovarianceGate gate :
+       {CovarianceGate::kAlways, CovarianceGate::kWithoutScan, CovarianceGate::kNever}) {
+    EXPECT_EQ(landfall::parseCovarianceGate(landfall::toString(gate)), gate);
+  }
+  EXPECT_FALSE(landfall::parseCovarianceGate("sometimes").has_value());
 }
 
 TEST(KeyframeSelector, LimitStopsRecordingWithoutCounting)

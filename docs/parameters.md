@@ -121,6 +121,7 @@ Keyframe recorder (`recorder_node`, component `landfall::ros::RecorderNode`); se
 | `frames.camera` | string | `""` |  | at startup | Camera optical frame; empty: camera_info's frame_id |
 | `frames.global` | string | `"map"` |  | at startup | Global (map) frame of the keyframe poses |
 | `frames.odom` | string | `"odom"` |  | at startup | Odometry frame (speed gate) |
+| `gating.covariance` | string | `"without_scan"` |  | at startup | Frames gated on the localization covariance: without_scan (frames without a LiDAR scan; the build checks the others against the map), always or never |
 | `gating.max_angular_speed` | double | `0.5` | [0, 5] | at startup | Fastest turn for a keyframe, rad/s |
 | `gating.max_linear_speed` | double | `0.6` | [0, 5] | at startup | Fastest speed for a keyframe, m/s |
 | `gating.max_std_xy` | double | `0.05` | [0.001, 1] | at startup | Largest localization std in x/y, metres |

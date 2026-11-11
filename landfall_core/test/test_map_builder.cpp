@@ -331,6 +331,12 @@ TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
     with_scans.keyframes[k].scan = landfall::test::simulateScan(
       surfaces, landfall::toPose3(s.truth[k]), T_base_laser, static_cast<int>(k), 360, 10.0, 0.01);
   }
+  // One keyframe's scan sees nothing of the map (people all around the robot) and its recorded pose
+  // is 40 cm further off: nothing confirms that pose, so the odometry carries the keyframe.
+  constexpr std::size_t kBlocked = 20;
+  auto & blocked_scan = *with_scans.keyframes[kBlocked].scan;
+  blocked_scan.ranges.assign(blocked_scan.ranges.size(), 0.3F);
+  with_scans.keyframes[kBlocked].prior.x += 0.4;
   for (auto & keyframe : drifting.keyframes) {
     keyframe.odom.reset();  // the recorded poses alone, as before scans and odometry
   }
@@ -339,8 +345,8 @@ TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
   const auto plain = landfall::buildMap(drifting, config(0), dir.file("plain.landfall.db"));
   const auto fixed = landfall::buildMap(with_scans, config(0), dir.file("fixed.landfall.db"));
   EXPECT_EQ(plain.poses_scan_matched, 0);
-  EXPECT_EQ(fixed.poses_scan_matched, static_cast<int>(s.truth.size()));
-  EXPECT_EQ(fixed.poses_scan_unmatched, 0);
+  EXPECT_EQ(fixed.poses_scan_matched, static_cast<int>(s.truth.size()) - 1);
+  EXPECT_EQ(fixed.poses_scan_unmatched, 1);
   // Every step is linked but the jump from the end of the first loop to the start of the second.
   EXPECT_EQ(fixed.poses_odometry_links, static_cast<int>(s.truth.size()) - 2);
 
@@ -356,6 +362,9 @@ TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
     double sum_x = 0.0;
     double sum_y = 0.0;
     for (std::size_t k = 0; k < s.truth.size(); ++k) {
+      if (k == kBlocked) {
+        continue;
+      }
       auto scan = *with_scans.keyframes[k].scan;
       scan.range_max -= 1e-3;
       const auto projected = projector.project(scan, Vec3(0.0, 0.0, -1.0));
@@ -367,7 +376,7 @@ TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
       sum_x += match.pose.x - s.truth[k].x;
       sum_y += match.pose.y - s.truth[k].y;
     }
-    const auto count = static_cast<double>(s.truth.size());
+    const auto count = static_cast<double>(s.truth.size() - 1);
     RecordProperty("scan_mean_error_mm", std::to_string(1000.0 * sum / count));
     RecordProperty("scan_worst_error_mm", std::to_string(1000.0 * worst));
     RecordProperty(
@@ -417,7 +426,18 @@ TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
   const auto db = landfall::db::Database::open(
     dir.file("fixed.landfall.db"), landfall::db::Database::Access::kReadOnly);
   for (const auto & k : db.keyframes()) {
-    EXPECT_NE(k.flags & landfall::db::KeyframeRecord::kFlagScanMatched, 0U) << k.id;
+    const auto index = static_cast<std::size_t>(k.id - 1);
+    EXPECT_NE(
+      k.flags & (index == kBlocked ? landfall::db::KeyframeRecord::kFlagScanUnmatched
+                                   : landfall::db::KeyframeRecord::kFlagScanMatched),
+      0U)
+      << k.id;
+    if (index == kBlocked) {
+      RecordProperty(
+        "blocked_error_mm",
+        std::to_string(1000.0 * landfall::translationDistance(k.refined, s.truth[index])));
+      EXPECT_LT(landfall::translationDistance(k.refined, s.truth[index]), 0.05);
+    }
   }
   const auto report = landfall::makeReport(db);
   EXPECT_NE(report.markdown.find("| Matched to the map with their scan | "), std::string::npos);

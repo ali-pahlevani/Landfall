@@ -28,7 +28,7 @@ A frame becomes a keyframe when it passes every gate, in this order:
 | Gate | Default | Counter in `RecorderStatus` |
 |---|---|---|
 | Moved at least `gating.min_translation` (0.5 m) or turned `gating.min_rotation_deg` (15°) since the last keyframe | | `rejected_no_motion` |
-| Localization std below `gating.max_std_xy` (0.05 m, worst direction) and `gating.max_std_yaw_deg` (2°); estimate at most `pose_source.max_covariance_age` (5 s) old | | `rejected_pose_uncertain` |
+| Localization std below `gating.max_std_xy` (0.05 m, worst direction) and `gating.max_std_yaw_deg` (2°); estimate at most `pose_source.max_covariance_age` (5 s) old. By default only frames without a scan (`gating.covariance: without_scan`): the build matches the others to the map | | `rejected_pose_uncertain` |
 | Speed from `odom → base` over the last `gating.speed_window` (0.2 s) below `gating.max_linear_speed` (0.6 m/s) and `gating.max_angular_speed` (0.5 rad/s) | | `rejected_speed` |
 | IMU tilt below `gating.max_tilt_deg` (1.5°); with `gravity.source: imu`, no fresh IMU sample also rejects | | `rejected_tilt` |
 | Sharpness (variance of the Laplacian, image scaled to at most 640 px wide) above `quality.min_sharpness` (60) | | `rejected_blur` |
@@ -37,7 +37,9 @@ A frame becomes a keyframe when it passes every gate, in this order:
 Frames without a pose at their stamp (TF missing) count as `rejected_tf`. The motion gate runs
 first, so the other counters tell how many *due* keyframes each gate cost.
 
-**AMCL's covariance.** AMCL's covariance is the spread of its particles, which is not its error. In
+**AMCL's covariance.** With the scan recorded (`scan.topic`) this gate only holds back frames
+without a scan; the build checks the others against the map. AMCL's covariance is the spread of its
+particles, which is not its error. In
 the M2 simulation, AMCL reported a std of 5.3 cm / 1.9° (median) while it was actually 1.1 cm /
 0.13° off. On the same 9-minute drive, the default 0.05 m / 2° gates took 134 keyframes, and
 0.08 m / 3° took 411.
@@ -70,12 +72,16 @@ they are:
 2. **The match is fused with the recorded pose.** Where they agree (the difference within the
    99 % chi-square of both uncertainties, `poses.agreement_chi2`), both count, the recorded pose
    at `poses.recorded_std_xy` (2 cm) and `poses.recorded_std_yaw_deg` (0.5°) in the directions
-   the scan confirms: a good localization keeps its accuracy. In a direction the scan can't check
-   (along a corridor) the recorded pose counts only as much as the scan's own uncertainty there,
-   at most `poses.disagreement_std_*` (0.3 m, 3°). Where the scan contradicts it (a localization
+   the scan confirms: a good localization keeps its accuracy. In a direction the scan checks less
+   well (along a corridor) the recorded pose counts less, its std growing with the square of the
+   scan's there (scan std² / `poses.recorded_std_xy`, at most `poses.disagreement_std_xy`, 0.3 m),
+   so a localization drifting along an aisle doesn't pull the pose its way. Where the scan
+   contradicts it (a localization
    that drifted), the recorded pose counts only with `poses.disagreement_std_*`, which fills in
    what the scan can't see. A scan that doesn't fit (`poses.min_hit_ratio`, 60 % of its beams
-   within 10 cm of an obstacle) leaves the recorded pose; the keyframe is flagged.
+   within 10 cm of an obstacle, or its best fit on the edge of the search window) confirms nothing:
+   the recorded pose then counts only as loosely as a contradicted one, the odometry carries the
+   keyframe, and it is flagged.
 3. **Odometry ties consecutive keyframes** of a session (`odom → base` at their stamps, std
    `poses.odom_std_xy` 2 cm + 3 % of the distance and `poses.odom_std_yaw_deg` 0.5° + 10 % of the
    turn, robust to a wheel slip). A pose graph of these priors and links gives the poses that pair
@@ -98,8 +104,8 @@ positions fit the scan within 0.6 nats of each other. Relocalizing there against
 gives poses off by as much (0.3-0.5 m in that warehouse), and the LiDAR check can't refuse them,
 since the scan fits there too. Only odometry from a place where the position is clear can tell
 the two apart, and the pose graph doesn't yet choose between them: the keyframes whose scan and
-recorded pose agree on the wrong one outweigh the odometry (T-011). A gap in the recording (the
-localization's covariance gate rejecting frames) also breaks the odometry chain.
+recorded pose agree on the wrong one outweigh the odometry (T-011). A gap in the recording also
+breaks the odometry chain; the covariance gate no longer makes such gaps for frames with a scan.
 
 ## Live recording: the recorder node
 
@@ -133,6 +139,7 @@ them with their ranges. Besides the gates above:
 | `image.time_offset` | 0 s | added to image stamps |
 | `image.format`, `image.jpeg_quality` | `png`, 95 | keyframe image files |
 | `pose_source.type`, `pose_source.covariance_topic` | `tf_with_covariance`, `amcl_pose` | `tf_only` for stacks without a covariance (no covariance gate) |
+| `gating.covariance` | `without_scan` | which frames the covariance gate applies to: `without_scan` (frames with a scan are checked against the map by the build), `always`, `never` |
 | `tf_timeout` | 0.2 s | how long an image waits for TF at its stamp |
 | `scan.topic`, `scan.max_time_offset` | `scan`, 0.2 s | the scan stored with each keyframe: the one nearest its image, moved to the image's stamp with odometry; "" stores none |
 | `gravity.source`, `imu.topic`, `imu.frame`, `imu.max_age` | `auto`, `imu`, "", 0.1 s | `imu.frame` overrides the messages' `frame_id` when it isn't a TF frame |
@@ -221,7 +228,7 @@ poses:                                    # keyframe poses (see "Keyframe poses"
   beam_sigma: 0.05                        #   likelihood field spread, m
   hit_tolerance: 0.10
   min_beams: 60
-  min_hit_ratio: 0.6                      #   below: the scan doesn't match, the recorded pose stays
+  min_hit_ratio: 0.6                      #   below: the scan doesn't match (the pose follows odometry)
   effective_beams: 40                     #   beams counted as independent in the covariance
   recorded_std_xy: 0.02                   # the recorded pose where the scan agrees with it (in
   recorded_std_yaw_deg: 0.5               #   the directions the scan confirms)

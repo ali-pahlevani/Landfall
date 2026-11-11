@@ -273,17 +273,23 @@ BuildStats buildMap(
       information(config.poses.recorded_std_xy, config.poses.recorded_std_yaw_deg);
     const Mat3 doubted =
       information(config.poses.disagreement_std_xy, config.poses.disagreement_std_yaw_deg);
-    // A recorded pose the scan agrees with is trusted only as far as the scan could check it: in
-    // each of the scan's principal directions, at the scan's own std, between recorded_std_* and
-    // disagreement_std_* (along an aisle the scan can't see, the recording barely counts).
+    // A recorded pose the scan agrees with is trusted only as far as the scan could check it. In
+    // each of the scan's principal directions: at recorded_std_xy where the scan is that precise,
+    // and less the less precise the scan is there, the std growing with the square of the scan's
+    // (scan_std^2 / recorded_std_xy, at most disagreement_std_xy). Along an aisle a localization
+    // drifts where the scan can't see it: in the URDF Maker warehouse AMCL was 18 cm off (median)
+    // along the scan's weak direction where the scan itself was 3 cm off, and counting it as much
+    // as the scan (std = scan_std) pulled the poses halfway to it. The heading is AMCL's strength
+    // (0.2 deg there), so it keeps the scan's own std, between the recorded and disagreement ones.
     const auto confirmed = [&](const Mat3 & scan_covariance) -> Mat3 {
       const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> xy(
         0.5 * (scan_covariance.topLeftCorner<2, 2>() +
                scan_covariance.topLeftCorner<2, 2>().transpose()));
       Eigen::Vector2d inverse_variance;
       for (int d = 0; d < 2; ++d) {
+        const double scan_std = std::sqrt(std::max(xy.eigenvalues()(d), 0.0));
         const double std_xy = std::clamp(
-          std::sqrt(std::max(xy.eigenvalues()(d), 0.0)), config.poses.recorded_std_xy,
+          scan_std * scan_std / config.poses.recorded_std_xy, config.poses.recorded_std_xy,
           config.poses.disagreement_std_xy);
         inverse_variance(d) = 1.0 / (std_xy * std_xy);
       }
@@ -307,8 +313,14 @@ BuildStats buildMap(
       }
       const ScanMatch & m = *matches[i];
       if (!m.valid) {
+        // Nothing confirms the recorded pose (with gating.covariance: without_scan nothing gated
+        // it either, and a localization far off is one reason a scan doesn't match): it counts
+        // as one the scan contradicts, so the odometry from its neighbours carries it.
         flags[i] |= db::KeyframeRecord::kFlagScanUnmatched;
         ++stats.poses_scan_unmatched;
+        Mat3 covariance = doubted.inverse();
+        covariance.diagonal() += floors;
+        ba_keyframes[i].prior_sqrt_information = Eigen::LLT<Mat3>(covariance.inverse()).matrixU();
         continue;
       }
       const Pose2 & recorded = input.keyframes[i].prior;
@@ -334,7 +346,8 @@ BuildStats buildMap(
     if (stats.poses_scan_unmatched > 0) {
       stats.warnings.push_back(
         std::to_string(stats.poses_scan_unmatched) +
-        " keyframe(s) had a scan that didn't match the map; their recorded pose was used");
+        " keyframe(s) had a scan that didn't match the map; their recorded pose counted only "
+        "loosely (poses.disagreement_std_*)");
     }
   }
   std::vector<Pose2> start(n);

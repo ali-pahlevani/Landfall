@@ -17,8 +17,11 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
@@ -252,8 +255,22 @@ BagKeyframes readBagKeyframes(
   forEachBagImage(
     uri, bag.image_topic, bag.image_time_offset,
     [&](int64_t stamp_ns, const std::function<cv::Mat()> & decode) {
+      // The scan nearest the image, its laser pose moved to the image's stamp with odometry.
+      std::function<std::optional<PlanarScan>()> scan_lookup;
+      if (!side.scans.empty()) {
+        scan_lookup = [&]() -> std::optional<PlanarScan> {
+          const auto * nearest =
+            nearestScan(side.scans, stamp_ns, static_cast<int64_t>(bag.scan_max_time_offset * 1e9));
+          if (nearest == nullptr) {
+            return std::nullopt;
+          }
+          std::string error;
+          return scanAtImage(
+            *nearest, *side.buffer, bag.frames.odom, bag.frames.base, stamp_ns, &error);
+        };
+      }
       const FrameDecision decision =
-        gateFrame(selector, poses, tilt, stamp_ns, camera_frame, decode);
+        gateFrame(selector, poses, tilt, stamp_ns, camera_frame, decode, scan_lookup);
       ++result.images;
       if (progress && (result.images % 50 == 0 || result.images == image_count)) {
         progress(result.images, image_count);
@@ -271,16 +288,9 @@ BagKeyframes readBagKeyframes(
       keyframe.T_base_cam = decision.pose.T_base_cam;
       keyframe.quality_json = toJson(decision.quality);
       keyframe.odom = decision.pose.odom_base;
-      if (
-        const auto * nearest =
-          nearestScan(side.scans, stamp_ns, static_cast<int64_t>(bag.scan_max_time_offset * 1e9))) {
-        std::string error;
-        if (
-          auto scan = scanAtImage(
-            *nearest, *side.buffer, bag.frames.odom, bag.frames.base, stamp_ns, &error)) {
-          keyframe.scan = std::move(*scan);
-          ++result.with_scan;
-        }
+      if (decision.scan) {
+        keyframe.scan = decision.scan;
+        ++result.with_scan;
       }
       keyframe.load_image = [image = decision.image] { return image; };
       result.keyframes.push_back(std::move(keyframe));

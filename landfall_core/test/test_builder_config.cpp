@@ -63,7 +63,7 @@ TEST(BuilderConfig, DefaultsMatchThePlan)
   EXPECT_EQ(c.gating.max_std_xy, 0.05);
   EXPECT_EQ(c.gating.min_translation, 0.5);
   EXPECT_EQ(c.gating.min_rotation_deg, 15.0);
-  EXPECT_TRUE(c.gating.require_covariance);
+  EXPECT_EQ(c.gating.covariance, landfall::CovarianceGate::kWithoutScan);
   EXPECT_EQ(c.bag.pose_topic, "/amcl_pose");
   EXPECT_EQ(c.bag.frames.base, "base_footprint");
 }
@@ -112,7 +112,7 @@ max_keyframes: 500
   EXPECT_EQ(c.bag.image_topic, "/oakd/rgb/image_raw/compressed");
   EXPECT_EQ(c.bag.frames.base, "base_link");
   EXPECT_EQ(c.bag.frames.global, "map");
-  EXPECT_FALSE(c.gating.require_covariance);
+  EXPECT_EQ(c.gating.covariance, landfall::CovarianceGate::kNever);  // tf_only
   EXPECT_EQ(c.gating.max_std_xy, 0.08);
   EXPECT_EQ(c.gating.min_sharpness, 40.0);
   EXPECT_EQ(c.gating.max_keyframes, 500);
@@ -121,6 +121,21 @@ max_keyframes: 500
   const std::string canonical = landfall::canonicalYaml(c);
   EXPECT_EQ(landfall::canonicalYaml(landfall::parseBuildConfig(canonical)), canonical);
   EXPECT_NE(canonical.find("  max_keypoints: \"1500\"\n"), std::string::npos);
+}
+
+TEST(BuilderConfig, CovarianceGateFollowsThePoseSource)
+{
+  EXPECT_EQ(
+    landfall::parseBuildConfig("gating: {covariance: always}").gating.covariance,
+    landfall::CovarianceGate::kAlways);
+  EXPECT_EQ(
+    landfall::parseBuildConfig("gating: {covariance: never}").gating.covariance,
+    landfall::CovarianceGate::kNever);
+  // Without a covariance (tf_only) nothing can be gated on it.
+  EXPECT_EQ(
+    landfall::parseBuildConfig("bag: {pose_source: tf_only}\ngating: {covariance: always}")
+      .gating.covariance,
+    landfall::CovarianceGate::kNever);
 }
 
 TEST(BuilderConfig, RejectsTyposAndInvalidValues)
@@ -136,6 +151,8 @@ TEST(BuilderConfig, RejectsTyposAndInvalidValues)
   EXPECT_NE(
     errorOf("backend: {execution_provider: gpu}").find("execution_provider"), std::string::npos);
   EXPECT_NE(errorOf("bag: {pose_source: vio}").find("pose_source"), std::string::npos);
+  EXPECT_NE(
+    errorOf("gating: {covariance: sometimes}").find("'gating.covariance'"), std::string::npos);
   EXPECT_NE(errorOf("triangulation: {depth_range: [1]}").find("depth_range"), std::string::npos);
   EXPECT_NE(errorOf("pairs: 3").find("mapping"), std::string::npos);
   EXPECT_NE(errorOf("pairs: {min_inliers: 2}").find("min_inliers"), std::string::npos);

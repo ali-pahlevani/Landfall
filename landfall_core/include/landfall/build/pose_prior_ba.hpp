@@ -24,7 +24,17 @@
 namespace landfall
 {
 
-/// Builder keys `ba.*`.
+/// Builder keys `poses.odom_*`: how much the odometry between consecutive keyframes is trusted.
+struct OdometryParams
+{
+  double std_xy = 0.02;          ///< m per step, plus ...
+  double std_xy_per_m = 0.03;    ///< ... this fraction of the distance travelled
+  double std_yaw_deg = 0.5;      ///< deg per step, plus ...
+  double std_yaw_per_rad = 0.1;  ///< ... this fraction of the rotation
+  double max_step = 2.0;         ///< m: farther steps (a gap in the recording) aren't linked
+};
+
+/// Builder keys `ba.*` (and `poses.odom_*` for the odometry).
 struct PosePriorBaParams
 {
   bool enabled = true;
@@ -38,6 +48,10 @@ struct PosePriorBaParams
   double prior_std_xy = 0.0;
   double prior_std_yaw_deg = 0.0;
   int max_iterations = 50;
+  /// Huber scale (in standard deviations) of priors given as `prior_sqrt_information`: a wrong
+  /// scan match costs linearly beyond it instead of dragging the solution.
+  double prior_loss_scale = 3.0;
+  OdometryParams odometry;
 };
 
 struct BaKeyframe
@@ -46,6 +60,15 @@ struct BaKeyframe
   std::optional<Mat3> covariance;  ///< recorded x, y, yaw covariance (floors only if absent)
   Pose3 T_base_cam = Pose3::Identity();
   double focal_px = 500.0;  ///< reprojection residuals are in pixels
+  /// The prior's square-root information (U with U^T U = covariance^-1, e.g. from scan matching),
+  /// replacing `covariance`, the floors and `prior_std_*`. Such a prior gets the robust loss, and
+  /// its bounds widen to 3 standard deviations where it is uncertain (along a corridor).
+  std::optional<Mat3> prior_sqrt_information;
+  /// Odometry pose (odom -> base) at the keyframe: consecutive keyframes of a session that both
+  /// have one are tied by their relative motion.
+  std::optional<Pose2> odom;
+  int session = 0;
+  std::optional<Pose2> initial;  ///< where the optimization starts; default: the prior
 };
 
 struct BaObservation
@@ -60,6 +83,7 @@ struct BaResult
   std::vector<Pose2> poses;  ///< refined base poses
   std::vector<Vec3> landmarks;
   std::vector<char> at_bound;  ///< the keyframe's shift reached a hard bound
+  int odometry_links = 0;      ///< relative-motion constraints used
   double initial_cost = 0.0;
   double final_cost = 0.0;
   int iterations = 0;
@@ -69,8 +93,11 @@ struct BaResult
 
 /// Pose-prior bundle adjustment for a ground robot: one SE(2) base pose per keyframe (extrinsics
 /// fixed) with whitened prior residuals and hard bounds, free landmarks, Cauchy-robust reprojection
-/// residuals. The priors anchor the gauge, so the map frame is kept; the bounds make "never move a
-/// pose far from its prior" hold by construction. Single-threaded, hence deterministic.
+/// residuals, and (where keyframes have odometry) Cauchy-robust relative-motion residuals between
+/// consecutive keyframes of a session. The priors anchor the gauge, so the map frame is kept; the
+/// bounds make "never move a pose far from its prior" hold by construction (3 standard deviations
+/// of a `prior_sqrt_information` prior, at least the configured shift). With no landmarks it is a
+/// pose graph: priors and odometry only. Single-threaded, hence deterministic.
 BaResult adjustPosePriors(
   const std::vector<BaKeyframe> & keyframes, const std::vector<Vec3> & landmarks,
   const std::vector<BaObservation> & observations, const PosePriorBaParams & params);

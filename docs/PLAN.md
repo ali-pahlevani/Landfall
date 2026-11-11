@@ -110,6 +110,7 @@ Date: 2026-10-29 · Repo: `github.com/ali-pahlevani/Landfall` (public, 1 commit)
 | V53 | The kidnap benchmark (§11 M7, `docs/benchmark.md`): `kidnap_runner` (landfall_benchmark) moves the robot with Gazebo's `set_pose` (ros_gz_bridge's `SetEntityPose`) and turns it through `cmd_vel`; Nav2 runs idle. Placements: positions uniform over free cells at least 0.4 m from obstacles and within 1 m of a keyframe of the database (the recorded area), uniform headings, at least 2 m from the previous one, from a fixed seed, so that every method meets the same placements. Landfall: requests of 2.5 s from up to 8 headings 45° apart, as the example tree; AMCL: `reinitialize_global_localization` and two turns on the spot, a pose claimed below σxy 0.5 m (the auto trigger's limit). Success: AMCL within 0.25 m / 5° after a turn on the spot (estimate and ground truth compared at the estimate's stamp); wrong: a pose published (or claimed) beyond 0.5 m or 10°; time to localize: from the first request to the published answer, turns included. `summarize_benchmark` writes the tables, with 95 % Clopper-Pearson upper bounds of the wrong-pose rate. Development runs used seeds 2026 and 7; the reported results use seed 2027, which no change was made against | the simulation reaches every placement exactly and repeatably; turning on the spot is what the example tree does; a robot acts on AMCL's pose once AMCL reports itself confident |
 | V54 | Benchmark conditions: world variants of the depot (`landfall_bringup/sim/worlds/`): `lighting` (the hall lights dimmer and warmer, a low sun), `added_objects` (nine stacks of goods off the recorded lanes) and the stress test `crates_removed` (the crate stacks along most lanes gone, which the map and the database still have). "Same session" and "different session" are measured offline on the two recorded drives (`landfall query` of run 1's images that are no keyframes against run 1's database, of run 2's against run 1's: M4's protocol): live in the simulation, every placement is a new session of the same rendering | a simulated building renders the same in every session; light and moved goods are what changes between real sessions |
 | V55 | **Scan alternatives** (§4.5, §7.11, §7.12): once a pose has passed every check, the relocalizer searches where else in the map the LiDAR scan fits (every heading at the free cells of a 0.25 m grid, the best 40 refined). If the scan fits at least `scan_check.alternative_margin` (0.01, in hit ratio less violation ratio) better at another place (beyond 1 m or 30°), the frame is AMBIGUOUS: vision found the wrong one of two places that look alike. `scan_check.check_alternatives` (on). `evaluate_scan_check` gains `--symmetry`, `--sweep` and `--alternatives`; `sample_placements` prints a seed's placements | The benchmark's first development run (seed 2026, before this check) published 2 wrong poses in 100 placements: the mirror images of the robot's pose through the depot's centre (23 m, 180° off), where the recording had seen the mirror place from that direction but not the true one, and the LiDAR check passed them (hit 0.935, violations 0.036). Within 0.5 m and 6° of the exact mirror pose, some pose passes the LiDAR check for 20 % of the scans at 200 kidnap placements, and no threshold separates them: 0.97 / 0.02 still passed 3.3 % while rejecting 7 % of the true poses. Compared with each other they separate: at 1,927 true poses no place fitted better (the best alternative was at least 0.015 worse), at 347 worst-case mirror poses the true pose fitted better (by 0.006 at least, by 0.01 or more for 99 %). With the check, cross-session single-frame requests lost their one mirror pose per direction at the same successes, and the wrong placement that reproduced in the simulation answered AMBIGUOUS. A margin above 0 keeps identical twins (aisles) to vision. Cost: about 20 ms per frame that found a pose (16 threads) |
+| V56 | (2026-11-11, your decision on the warehouse test report) **Keyframe poses from scan matching and odometry** (§1 A3, §4.5, §5, §7.1, §7.6): the recorder stores each keyframe's LiDAR scan (the one nearest its image, moved to the image's stamp with odometry; `scan.topic`, `scan.max_time_offset`) and its odometry pose; staging format 2 (`scans.csv`, odometry columns; format 1 still reads); `landfall build --bag` takes both from the bag. The builder first matches every scan to the map near the recorded pose (correlative search, ±1 m / ±6°, refined to 2.5 mm; covariance from the hit beams' surface normals plus the likelihood-weighted spread over the search window, so a near-equal second fit makes the match uncertain that way), fuses it with the recorded pose (where both agree within the 99 % chi-square, trusted at 2 cm / 0.5° in the directions the scan confirms and at most 0.3 m / 3° where it can't check; at 0.3 m / 3° where the scan contradicts it), and solves a pose graph with odometry links between consecutive keyframes (2 cm + 3 % of the distance, 0.5° + 10 % of the turn, Cauchy); pair selection, triangulation and the BA start from it, the BA keeps the same priors and links, a scan prior's bounds widen to 3 standard deviations. Keyframe flags `kFlagScanMatched`, `kFlagScanUnmatched`; report section "Keyframe poses"; builder keys `poses.*`, `bag.scan_max_time_offset` | In the URDF Maker warehouse AMCL was 14 cm (median) and 44 cm (90th percentile) off, up to 80 cm along the aisles, while reporting 7.5 cm, and its covariance gate passed frames 40 cm off (p90); 71 % of the tracks failed triangulation. The same drive's keyframes with true poses relocalized 59 % more often with three times the accuracy (2.8 vs 8.6 cm median). A3 ("prior poses carry cm-level error") and the 10 cm / 2° bounds assumed a localization this robot doesn't have; a good localization (the depot simulation, 1.4 cm) keeps its accuracy through the agreement test |
 
 ---
 
@@ -135,7 +136,7 @@ odometry**, and publishes `/initialpose` only when every check passes. Misses ar
 |---|---|
 | A1 | Ground robot (reference field robot: a forklift). `base_footprint` lies on the floor (map z = 0). The camera should sit on the fixed chassis or overhead guard. If it rides on a moving part (mast/carriage), that joint must be in TF: base→camera is looked up **at each image stamp**, never assumed static. Camera height and tilt come from TF (URDF). Flat floor by default. **With an IMU**, the robot can relocalize while standing on a ramp (gravity from the IMU), but ramps are **not mapped**: a 2D map has no elevation, so the recorder skips tilted keyframes. Multi-level buildings are out of scope. |
 | A2 | Intrinsics are calibrated and published in `CameraInfo` (plumb_bob, rational_polynomial, or equidistant). Rolling shutter is ignored. Image stamps are near exposure time; a configurable offset is provided. |
-| A3 | Recording happens while AMCL (or slam_toolbox localization) is well localized. Prior poses carry cm-level error and are gated by reported covariance. |
+| A3 | Recording happens while a localization (AMCL, slam_toolbox) runs. Its poses are not trusted as they are (V56): each keyframe's LiDAR scan is matched to the map, consecutive keyframes are tied by odometry, and the recorded pose counts fully only where its scan agrees with it. |
 | A4 | A `LaserScan` is available. Scan verification is **required** by default; camera-only mode is an explicit opt-in. |
 | A5 | One database is bound to one occupancy map (verified by hash). One camera per database in v1.0; the schema allows several. |
 | A6 | Default base frame is **`base_footprint`** (Nav2 AMCL default on all three distros, verified). The spec says `base_link`; a floor-plane frame is needed for the camera-height check. The frame is configurable. |
@@ -316,6 +317,7 @@ landfall_msgs/Hypothesis[] hypotheses            # diagnostics, best first: pose
 | relocalizer | `map` | nav_msgs/OccupancyGrid | sub | reliable + **transient_local**, depth 1 |
 | relocalizer | `amcl_pose` (`auto_trigger.pose_topic`: auto trigger, extrinsics monitor, kidnap watchdog) | geometry_msgs/PoseWithCovarianceStamped | sub | reliable, volatile (matches AMCL's latched and slam_toolbox's volatile publishers) |
 | recorder | `amcl_pose` (`pose_source.covariance_topic`) | PoseWithCovarianceStamped | sub | reliable, volatile |
+| recorder | `scan` (`scan.topic`, V56) | sensor_msgs/LaserScan | sub | SensorData |
 | both | `imu` (optional, `imu.topic`) | sensor_msgs/Imu (orientation only) | sub | SensorData |
 | both | `/tf`, `/tf_static` | tf2_msgs/TFMessage | sub | tf2_ros defaults. `odom→base` is the **only** odometry input; there is no odometry topic |
 | relocalizer | `/initialpose` (`output.topic`) | PoseWithCovarianceStamped | pub | reliable, volatile, depth 1 (compatible with AMCL on all 3 distros and slam_toolbox, verified) |
@@ -438,6 +440,7 @@ by a small dump tool, and CI fails if it is stale.
 | `quality.min_sharpness` | double | 60 | [0, 1e5] (Laplacian variance at 640-px width) |
 | `quality.min_mean_intensity` / `quality.max_mean_intensity` / `quality.max_saturated_fraction` | int / int / double | 30 / 225 / 0.20 | [0, 255] / [0, 255] / [0, 1] |
 | `max_keyframes` | int | 0 (unlimited) | [0, 1e7] |
+| `scan.topic` / `scan.max_time_offset` (V56) | string / double | scan / 0.2 s | "" = none / [0, 1] |
 | `bond.enabled` / `autostart` | bool | true / false | autostart: the `recorder_node` executable configures and activates itself |
 
 All recorder parameters are read-only: set at startup (V17).
@@ -459,6 +462,10 @@ All recorder parameters are read-only: set at startup (V17).
 | `pairs.max_epipolar_error_px` | 4.0 | `db.global_dtype` | f16 |
 | `pairs.min_baseline` | 0.05 m (below: rotation-only model) | `db.covisibility_min_shared` | 5 |
 | `ba.prior_std_xy` / `ba.prior_std_yaw_deg` | 0 / 0 (0 = recorded covariance + floors) | `ba.max_iterations` | 50 |
+| `poses.scan_matching` / `poses.search_xy` / `poses.search_yaw_deg` (V56) | true / 1.0 m / 6° | `poses.recorded_std_xy` / `poses.recorded_std_yaw_deg` | 0.02 m / 0.5° (scan agrees; in the directions it confirms) |
+| `poses.beam_sigma` / `poses.hit_tolerance` / `poses.min_hit_ratio` | 0.05 m / 0.10 m / 0.6 | `poses.disagreement_std_xy` / `_yaw_deg` / `poses.agreement_chi2` | 0.3 m / 3° / 11.34 |
+| `poses.min_beams` / `poses.effective_beams` / `poses.max_range` | 60 / 40 / 0 (scanner's) | `poses.odom_std_xy` (+ `_per_m`) / `poses.odom_std_yaw_deg` (+ `_per_rad`) | 0.02 m (+3 %) / 0.5° (+10 %) |
+| `poses.odometry` / `poses.odom_max_step` | true / 2.0 m | `poses.prior_loss_scale` / `bag.scan_max_time_offset` | 3σ / 0.2 s |
 | `ba.max_reprojection_px` | 0 = 0.75 × triangulation threshold (post-BA re-filter) | `threads` / `seed` | 0 (all cores) / 42 |
 | `bag.*` | topics, frames, pose source, IMU, time offset of `--bag` inputs (`docs/recording.md`) | `retrieval.pca_dim` | (M5, learned globals) |
 
@@ -487,10 +494,11 @@ flowchart LR
     LOC -->|TF map to odom| TF[(TF buffer)]
     OD[Fused odometry: wheel + IMU EKF] -->|TF odom to base| TF
     IMU[IMU, optional] -->|orientation: ramp tilt gate| REC
+    LIDAR[2D LiDAR] -->|LaserScan: stored with each keyframe| REC
     RSP[robot_state_publisher] -->|tf_static base to camera| TF
     TF --> REC
   end
-  REC["landfall_recorder (lifecycle)<br/>TfPoseSource + KeyframeSelector<br/>covariance / motion / speed / tilt / blur / exposure gates"] --> STG[("Staging folder<br/>session.yaml, keyframes.csv, images/")]
+  REC["landfall_recorder (lifecycle)<br/>TfPoseSource + KeyframeSelector<br/>covariance / motion / speed / tilt / blur / exposure gates"] --> STG[("Staging folder<br/>session.yaml, keyframes.csv, scans.csv, images/")]
   BAG[("rosbag2: images, camera_info, tf, tf_static, pose topic, odom")] --> OFF["landfall build --bag<br/>BagTfPoseSource + same KeyframeSelector"]
 ```
 
@@ -502,12 +510,14 @@ flowchart TB
   LF --> VOC["Vocabulary tree training (classical only)"]
   KF --> GD[Global descriptors]
   VOC --> GD
-  KF --> PS["Pair selection: pose proximity + retrieval top-k"]
+  KF --> POSES["Keyframe poses: scan matched to the map, fused with the recorded pose, odometry pose graph"]
+  MAP --> POSES
+  POSES --> PS["Pair selection: pose proximity + retrieval top-k"]
   GD --> PS
   PS --> MV["Matching + two-view verification + prior-rotation check"]
   MV --> TRK["Tracks (union-find, conflict split)"]
   TRK --> TRI["Triangulation, poses fixed: multi-view DLT + Ceres point refine + filters"]
-  TRI --> BA["Optional pose-prior BA: SE2 per keyframe, hard-bounded"]
+  TRI --> BA["Optional pose-prior BA: SE2 per keyframe, same priors + odometry, hard-bounded"]
   BA --> REF[Re-filter landmarks]
   REF --> DB[("SQLite DB")]
   HASH --> DB
@@ -598,7 +608,7 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
   - Sharpness: variance of Laplacian ≥ 60 on grayscale rescaled to 640 px width.
   - Exposure: mean intensity in [30, 225], saturated fraction ≤ 0.2.
 - Rejections are counted per reason and published.
-- Caveat: AMCL's particle covariance is a self-estimate. It is often > 0.05 m even when accurate (too strict) and can be overconfident in corridors. The rejection statistics and the BA consistency check (7.6) expose this; the tuning guide covers it.
+- Caveat: AMCL's particle covariance is a self-estimate. It is often > 0.05 m even when accurate (too strict) and can be overconfident in corridors. The rejection statistics and the BA consistency check (7.6) expose this; the tuning guide covers it. In the URDF Maker warehouse AMCL drifted up to 80 cm along aisles while reporting under 10 cm, so the build no longer takes the recorded poses as they are (V56, §7.6).
 
 **7.2 Local features.**
 - **ORB** (OpenCV): detect 2× budget, then 8×6 grid bucketing to 2000 keypoints (uniform coverage helps PnP conditioning). scale 1.2, 8 levels, FAST 20 with per-cell retry at 7, 256-bit descriptors.
@@ -625,10 +635,14 @@ Deviations from "most common" are license-driven. SuperPoint weights are non-com
   - Track length ≥ 3, positive depth in every view, depth in [0.2, 30] m.
   - z ≥ −0.05 m. Shiny-floor reflections triangulate below the floor.
 
-**7.6 Pose-prior BA (optional, default on).**
-- Parameters: per-keyframe **SE(2)** base pose (x, y, θ), with extrinsics fixed (ground-robot model: 3 DoF, no manifold needed) and free landmarks.
-- Residuals: reprojection (Cauchy, 2 px) plus whitened prior residuals (recorded covariance, floors 2 cm / 0.5°; or `ba.prior_std_*` when the localization misreports its covariance, V16).
-- Ceres `SetParameterLower/UpperBound` hard bounds (available in 2.0 and 2.2) enforce |Δx|, |Δy| ≤ 0.10 m and |Δθ| ≤ 2°: "never move poses far from their priors" holds by construction.
+**7.6 Keyframe poses and pose-prior BA (BA optional, default on; V56).**
+- Keyframe poses first. A keyframe with a scan: the scan is matched to the map near the recorded pose (correlative search ±1 m / ±6° on the likelihood field, every beam up to the scanner's range, refined to 2.5 mm / 0.025°). Its covariance is the hit beams' geometry (each constrains the pose along the surface normal it hit: tight across a corridor, loose along it) plus the fit's spread over the whole search window: every pose weighted by its likelihood (beams with Cauchy errors, counted as 40 independent ones; the best fit's own neighbourhood is left to the normals). A second fit nearly as good tens of centimetres away (shelf legs repeating along an aisle, a wall the map has twice) thus makes the match uncertain in that direction. A match with under 60 % of its beams within 10 cm of an obstacle is refused (flag `kFlagScanUnmatched`; the recorded pose stays).
+- Fusion with the recorded pose: where they agree within the 99 % chi-square (3 DoF) of both uncertainties, the recorded pose counts at 2 cm / 0.5° in the directions the scan confirms: along each principal direction of the scan's covariance at the scan's own standard deviation, between 2 cm and 0.3 m (0.5° and 3° in heading), so a localization's error along a corridor isn't taken as 2 cm. Where the scan contradicts it, at 0.3 m / 3°, which fills in only what the scan can't tell.
+- Limit (T-011): where one scan fits two positions equally well and the localization sits on the wrong one (it uses the same map and scans), the build keeps that position; the odometry from where the position is clear doesn't yet outweigh those priors.
+- Pose graph: these priors (whitened, Huber at 3σ) and odometry links between consecutive keyframes of a session (`odom → base` at both stamps; 2 cm + 3 %/m, 0.5° + 10 % of the turn; Cauchy; steps over 2 m unlinked). Pair selection, the prior-rotation check, triangulation and the BA start from its poses.
+- BA parameters: per-keyframe **SE(2)** base pose (x, y, θ), with extrinsics fixed (ground-robot model: 3 DoF, no manifold needed) and free landmarks.
+- Residuals: reprojection (Cauchy, 2 px), the same priors (a keyframe without a scan: recorded covariance, floors 2 cm / 0.5°, or `ba.prior_std_*` when the localization misreports its covariance, V16) and the same odometry links.
+- Ceres `SetParameterLower/UpperBound` hard bounds (available in 2.0 and 2.2) enforce |Δx|, |Δy| ≤ 0.10 m and |Δθ| ≤ 2° around a recorded prior, and at least 3 standard deviations around a scan prior: "never move poses far from their priors" holds by construction.
 - Keyframes that hit a bound are flagged (`keyframes.flags`) and reported. Landmarks are re-filtered at a tighter threshold.
 - A mean shift > 2 cm triggers a warning (the gauge is anchored by priors, so the frame is preserved).
 - Optional extrinsics refinement (off): SO(3) via quaternion **manifold** → exercises the Ceres compat layer. Deferred (T-006, V22).
@@ -910,7 +924,7 @@ Rough size: M0 S · M1 L · M2 M · M3 M · M4 M · M5 L · M6 M · M7 L · M8 M
 |---|---|---|
 | R1 | Repetitive scenes (identical aisles): vision picks the wrong place | LiDAR-filtered ambiguity test (§7.11), scan alternatives: a place the scan fits better makes the frame ambiguous (V55), multi-frame consistency, coverage check; misses preferred; warehouse world in benchmark |
 | R2 | Lighting changes (day/night, sim lights) | multi-session DBs, learned backends, CLAHE option for ORB; dedicated benchmark condition |
-| R3 | Prior pose quality (AMCL self-reported covariance, time sync) | covariance + speed gating, bounded BA with flagging, `image.time_offset`, tuning guide |
+| R3 | Prior pose quality (AMCL self-reported covariance, time sync) | keyframe scans matched to the map and an odometry pose graph (V56), speed gating, bounded BA with flagging, `image.time_offset`, tuning guide |
 | R4 | Wrong extrinsics (height or tilt) | sanity checks reject; P3P fallback reveals tilt in diagnostics; calibration guide; optional extrinsics refinement |
 | R5 | ORT on arm64/Jetson (GPU) | CPU aarch64 via vendor or tarball; Jetson GPU needs a source build or NVIDIA-provided libs: documented, not CI-tested; classical is the default for Pi 5 |
 | R6 | BT.CPP v3/v4 and Nav2 BT API churn (Lyrical `nav2::LifecycleNode`) | own nodes on BT.CPP's and rclcpp's stable APIs (V46); one tree per release; load tests with Nav2's plugins on every distro |

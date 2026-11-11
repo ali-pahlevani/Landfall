@@ -33,6 +33,7 @@ struct PoseSample
   double covariance_age = 0.0;           ///< s from the covariance estimate to the image
   double linear_speed = 0.0;             ///< m/s of the base (odometry), just before the image
   double angular_speed = 0.0;            ///< rad/s
+  std::optional<Pose2> odom_base;        ///< odometry pose (odom -> base) at the image stamp
 };
 
 /// Pose of the robot and its camera at a given time: live TF, TF replayed from a bag, and later

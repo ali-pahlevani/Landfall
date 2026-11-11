@@ -18,6 +18,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <opencv2/imgcodecs.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -33,19 +34,35 @@ namespace fs = std::filesystem;
 
 constexpr const char * kSessionFile = "session.yaml";
 constexpr const char * kKeyframesFile = "keyframes.csv";
+constexpr const char * kScansFile = "scans.csv";
 constexpr const char * kImagesDir = "images";
 constexpr const char * kFormatName = "landfall_staging";
-constexpr const char * kCsvHeader =
+constexpr const char * kCsvHeaderV1 =
   "id,stamp_ns,image,x,y,yaw,cov_xx,cov_xy,cov_xyaw,cov_yy,cov_yyaw,cov_yawyaw,"
   "base_cam_tx,base_cam_ty,base_cam_tz,base_cam_qx,base_cam_qy,base_cam_qz,base_cam_qw,"
   "sharpness,mean_intensity,saturated_fraction,tilt_deg";
-constexpr int kCsvColumns = 23;
+constexpr int kCsvColumnsV1 = 23;
+// Format 2: the odometry pose at the stamp.
+constexpr const char * kCsvOdomColumns = ",odom_x,odom_y,odom_yaw";
+constexpr int kCsvColumnsV2 = 26;
+constexpr const char * kScansHeader =
+  "id,laser_tx,laser_ty,laser_tz,laser_qx,laser_qy,laser_qz,laser_qw,angle_min,angle_increment,"
+  "range_min,range_max,ranges";
+constexpr int kScanColumns = 13;
 
 // Shortest text that reads back to the same double.
 std::string number(double value)
 {
   char buffer[32];
   std::snprintf(buffer, sizeof(buffer), "%.17g", value);
+  return buffer;
+}
+
+// A range reading with enough digits (9) to read back the same float; inf and nan as text.
+std::string reading(float value)
+{
+  char buffer[24];
+  std::snprintf(buffer, sizeof(buffer), "%.9g", static_cast<double>(value));
   return buffer;
 }
 
@@ -156,7 +173,47 @@ StagingKeyframe parseRow(const std::vector<std::string> & f, const std::string &
   if (!f[22].empty()) {
     k.tilt_deg = parseDouble(f[22], where + " tilt_deg");
   }
+  if (f.size() == static_cast<std::size_t>(kCsvColumnsV2)) {
+    const bool any = !f[23].empty() || !f[24].empty() || !f[25].empty();
+    const bool all = !f[23].empty() && !f[24].empty() && !f[25].empty();
+    if (any && !all) {
+      throw std::runtime_error(where + ": incomplete odometry pose");
+    }
+    if (all) {
+      k.odom_base = Pose2{
+        parseDouble(f[23], where + " odom_x"), parseDouble(f[24], where + " odom_y"),
+        parseDouble(f[25], where + " odom_yaw")};
+    }
+  }
   return k;
+}
+
+// One row of scans.csv: the keyframe id and its scan.
+std::pair<int64_t, PlanarScan> parseScanRow(
+  const std::vector<std::string> & f, const std::string & where)
+{
+  PlanarScan scan;
+  const int64_t id = parseInt(f[0], where + " id");
+  scan.T_base_laser.translation() = Vec3(
+    parseDouble(f[1], where + " laser_tx"), parseDouble(f[2], where + " laser_ty"),
+    parseDouble(f[3], where + " laser_tz"));
+  const Eigen::Quaterniond q(
+    parseDouble(f[7], where + " laser_qw"), parseDouble(f[4], where + " laser_qx"),
+    parseDouble(f[5], where + " laser_qy"), parseDouble(f[6], where + " laser_qz"));
+  if (q.norm() < 1e-6) {
+    throw std::runtime_error(where + ": invalid base->laser rotation");
+  }
+  scan.T_base_laser.linear() = q.normalized().toRotationMatrix();
+  scan.angle_min = parseDouble(f[8], where + " angle_min");
+  scan.angle_increment = parseDouble(f[9], where + " angle_increment");
+  scan.range_min = parseDouble(f[10], where + " range_min");
+  scan.range_max = parseDouble(f[11], where + " range_max");
+  std::istringstream ranges(f[12]);
+  std::string value;
+  while (ranges >> value) {
+    scan.ranges.push_back(static_cast<float>(parseDouble(value, where + " ranges")));
+  }
+  return {id, scan};
 }
 
 }  // namespace
@@ -177,7 +234,12 @@ StagingWriter::StagingWriter(std::string directory, StagingSession session)
   if (!csv_) {
     throw std::runtime_error("cannot write " + directory_ + "/" + kKeyframesFile);
   }
-  csv_ << kCsvHeader << '\n' << std::flush;
+  csv_ << kCsvHeaderV1 << kCsvOdomColumns << '\n' << std::flush;
+  scans_.open(fs::path(directory_) / kScansFile, std::ios::out | std::ios::trunc);
+  if (!scans_) {
+    throw std::runtime_error("cannot write " + directory_ + "/" + kScansFile);
+  }
+  scans_ << kScansHeader << '\n' << std::flush;
 }
 
 const StagingKeyframe & StagingWriter::add(StagingKeyframe keyframe, const cv::Mat & image)
@@ -218,6 +280,31 @@ const StagingKeyframe & StagingWriter::add(StagingKeyframe keyframe, const cv::M
   if (keyframe.tilt_deg) {
     row += number(*keyframe.tilt_deg);
   }
+  if (keyframe.odom_base) {
+    row += "," + number(keyframe.odom_base->x) + "," + number(keyframe.odom_base->y) + "," +
+           number(keyframe.odom_base->yaw);
+  } else {
+    row += ",,,";
+  }
+  if (keyframe.scan) {
+    const PlanarScan & scan = *keyframe.scan;
+    const Vec3 lt = scan.T_base_laser.translation();
+    const Eigen::Quaterniond lq(scan.T_base_laser.linear());
+    std::string line = std::to_string(keyframe.id);
+    for (const double v :
+         {lt.x(), lt.y(), lt.z(), lq.x(), lq.y(), lq.z(), lq.w(), scan.angle_min,
+          scan.angle_increment, scan.range_min, scan.range_max}) {
+      line += "," + number(v);
+    }
+    line += ",";
+    for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
+      line += (i > 0 ? " " : "") + reading(scan.ranges[i]);
+    }
+    scans_ << line << '\n' << std::flush;
+    if (!scans_) {
+      throw std::runtime_error("cannot append to " + directory_ + "/" + kScansFile);
+    }
+  }
   csv_ << row << '\n' << std::flush;
   if (!csv_) {
     throw std::runtime_error("cannot append to " + directory_ + "/" + kKeyframesFile);
@@ -230,6 +317,7 @@ const StagingKeyframe & StagingWriter::add(StagingKeyframe keyframe, const cv::M
 void StagingWriter::close(const GateCounts & counts)
 {
   csv_.close();
+  scans_.close();
   session_.complete = true;
   session_.counts = counts;
   writeSession();
@@ -294,10 +382,10 @@ StagingFolder readStaging(const std::string & directory)
       throw std::runtime_error("session.yaml is not a Landfall staging session");
     }
     const int version = doc["format_version"].as<int>();
-    if (version != kStagingFormatVersion) {
+    if (version < 1 || version > kStagingFormatVersion) {
       throw std::runtime_error(
-        "unsupported staging format version " + std::to_string(version) + " (this build reads " +
-        std::to_string(kStagingFormatVersion) + ")");
+        "unsupported staging format version " + std::to_string(version) +
+        " (this build reads 1 to " + std::to_string(kStagingFormatVersion) + ")");
     }
     StagingSession & s = folder.session;
     s.name = doc["session"].as<std::string>();
@@ -349,9 +437,11 @@ StagingFolder readStaging(const std::string & directory)
   const std::string text((std::istreambuf_iterator<char>(csv)), std::istreambuf_iterator<char>());
   std::istringstream lines(text);
   std::string line;
-  if (!std::getline(lines, line) || line != kCsvHeader) {
+  const std::string header_v2 = std::string(kCsvHeaderV1) + kCsvOdomColumns;
+  if (!std::getline(lines, line) || (line != kCsvHeaderV1 && line != header_v2)) {
     throw std::runtime_error(csv_path.string() + ": missing or unexpected header");
   }
+  const int columns = line == kCsvHeaderV1 ? kCsvColumnsV1 : kCsvColumnsV2;
   // Only lines terminated by a newline are complete; a crash can leave a partial last line.
   const std::size_t complete_end = text.rfind('\n') + 1;
   std::size_t offset = static_cast<std::size_t>(lines.tellg());
@@ -364,10 +454,47 @@ StagingFolder readStaging(const std::string & directory)
     }
     const std::string where = csv_path.string() + ":" + std::to_string(line_number);
     const auto fields = splitCsv(line);
-    if (static_cast<int>(fields.size()) != kCsvColumns) {
-      throw std::runtime_error(where + ": expected " + std::to_string(kCsvColumns) + " columns");
+    if (static_cast<int>(fields.size()) != columns) {
+      throw std::runtime_error(where + ": expected " + std::to_string(columns) + " columns");
     }
     folder.keyframes.push_back(parseRow(fields, where));
+  }
+
+  // scans.csv (format 2): attached by keyframe id; a scan whose keyframe row is missing (a crash
+  // between the two writes) and a partial last line are ignored.
+  const fs::path scans_path = fs::path(directory) / kScansFile;
+  if (fs::exists(scans_path)) {
+    std::ifstream file(scans_path, std::ios::binary);
+    const std::string scans_text(
+      (std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    std::istringstream scan_lines(scans_text);
+    if (!std::getline(scan_lines, line) || line != kScansHeader) {
+      throw std::runtime_error(scans_path.string() + ": missing or unexpected header");
+    }
+    std::map<int64_t, std::size_t> by_id;
+    for (std::size_t i = 0; i < folder.keyframes.size(); ++i) {
+      by_id[folder.keyframes[i].id] = i;
+    }
+    const std::size_t scans_end = scans_text.rfind('\n') + 1;
+    std::size_t scan_offset = static_cast<std::size_t>(scan_lines.tellg());
+    int scan_line = 1;
+    while (scan_offset < scans_end && std::getline(scan_lines, line)) {
+      ++scan_line;
+      scan_offset += line.size() + 1;
+      if (line.empty()) {
+        continue;
+      }
+      const std::string where = scans_path.string() + ":" + std::to_string(scan_line);
+      const auto fields = splitCsv(line);
+      if (static_cast<int>(fields.size()) != kScanColumns) {
+        throw std::runtime_error(where + ": expected " + std::to_string(kScanColumns) + " columns");
+      }
+      auto [id, scan] = parseScanRow(fields, where);
+      const auto it = by_id.find(id);
+      if (it != by_id.end()) {
+        folder.keyframes[it->second].scan = std::move(scan);
+      }
+    }
   }
   return folder;
 }

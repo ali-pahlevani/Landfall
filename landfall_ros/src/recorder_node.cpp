@@ -24,6 +24,7 @@
 
 #include "landfall/ros/conversions.hpp"
 #include "landfall/ros/parameters.hpp"
+#include "landfall/ros/scan_input.hpp"
 #include "landfall/version.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
@@ -136,6 +137,13 @@ void RecorderNode::declareParameters()
     describe("Largest fraction of pixels at 250 or brighter", 0.0, 1.0));
   declare_parameter(
     "max_keyframes", 0, describeInt("Stop after this many keyframes; 0: unlimited", 0, 10000000));
+  declare_parameter(
+    "scan.topic", "scan",
+    describe(
+      "sensor_msgs/LaserScan stored with each keyframe, to match its pose to the map; \"\": none"));
+  declare_parameter(
+    "scan.max_time_offset", 0.2,
+    describe("Farthest scan from a keyframe's image, seconds", 0.0, 1.0));
   declare_parameter("bond.enabled", true, describe("Heartbeat bond with nav2_lifecycle_manager"));
   declare_parameter(
     "autostart", false, describe("recorder_node executable: configure and activate on start"));
@@ -188,6 +196,8 @@ RecorderNode::Settings RecorderNode::readSettings()
     throw std::invalid_argument(
       "quality.min_mean_intensity must be below quality.max_mean_intensity");
   }
+  s.scan_topic = get_parameter("scan.topic").as_string();
+  s.scan_max_time_offset = get_parameter("scan.max_time_offset").as_double();
   s.bond_enabled = get_parameter("bond.enabled").as_bool();
   return s;
 }
@@ -234,6 +244,24 @@ RecorderNode::CallbackReturn RecorderNode::on_configure(const rclcpp_lifecycle::
       [this](const sensor_msgs::msg::Imu::ConstSharedPtr & imu) {
         if (imu_.add(*imu) && imu_frame_.empty()) {
           imu_frame_ = settings_.imu_frame.empty() ? imu->header.frame_id : settings_.imu_frame;
+        }
+      });
+  }
+  scans_.clear();
+  if (!settings_.scan_topic.empty()) {
+    scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
+      settings_.scan_topic, rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::LaserScan::ConstSharedPtr & scan) {
+        // Time-ordered, the last few seconds: images wait at most tf_timeout for their pose.
+        constexpr std::size_t kMaxScans = 200;
+        if (
+          !scans_.empty() &&
+          toNanoseconds(scan->header.stamp) < toNanoseconds(scans_.back().header.stamp)) {
+          scans_.clear();  // time jumped back (a bag restarted): start over
+        }
+        scans_.push_back(*scan);
+        if (scans_.size() > kMaxScans) {
+          scans_.pop_front();
         }
       });
   }
@@ -328,6 +356,8 @@ RecorderNode::CallbackReturn RecorderNode::on_cleanup(const rclcpp_lifecycle::St
   camera_info_sub_.reset();
   covariance_sub_.reset();
   imu_sub_.reset();
+  scan_sub_.reset();
+  scans_.clear();
   poses_.reset();
   tf_listener_.reset();
   tf_buffer_.reset();
@@ -450,6 +480,26 @@ void RecorderNode::handle(const PendingImage & image)
   keyframe.T_base_cam = decision.pose.T_base_cam;
   keyframe.quality = decision.quality;
   keyframe.tilt_deg = decision.tilt_deg;
+  keyframe.odom_base = decision.pose.odom_base;
+  if (!settings_.scan_topic.empty()) {
+    // The scan nearest the image, its laser pose moved to the image's stamp with odometry.
+    std::string error = "no scan on '" + settings_.scan_topic + "' within " +
+                        std::to_string(settings_.scan_max_time_offset) + " s of the image";
+    if (
+      const auto * nearest = nearestScan(
+        scans_, image.stamp_ns, static_cast<int64_t>(settings_.scan_max_time_offset * 1e9))) {
+      if (
+        auto scan = scanAtImage(
+          *nearest, *tf_buffer_, settings_.frames.odom, settings_.frames.base, image.stamp_ns,
+          &error)) {
+        keyframe.scan = std::move(*scan);
+      }
+    }
+    if (!keyframe.scan) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 10000, "keyframe without a scan: %s", error.c_str());
+    }
+  }
   try {
     writer_->add(keyframe, decision.image);
   } catch (const std::exception & e) {

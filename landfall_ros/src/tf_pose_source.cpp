@@ -79,6 +79,7 @@ std::optional<PoseSample> TfPoseSource::poseAt(
     const double window = static_cast<double>(speed_window_ns_) * 1e-9;
     sample.linear_speed = translationDistance(earlier, now) / window;
     sample.angular_speed = rotationDistance(earlier, now) / window;
+    sample.odom_base = now;
   } catch (const tf2::TransformException & e) {
     if (error != nullptr) {
       *error = e.what();

@@ -13,6 +13,7 @@ landfall_recorder:
     bond.enabled: false
     image.topic: /rgbd_camera/image
     camera_info.topic: /rgbd_camera/camera_info
+    scan.topic: /scan  # stored with each keyframe: the build matches it to the map (PLAN V56)
     imu.topic: /imu
     # Gazebo stamps the IMU with its scoped sensor name, which is not a TF frame.
     imu.frame: imu_link

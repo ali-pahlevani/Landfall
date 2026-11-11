@@ -220,6 +220,30 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   ba.read("max_reprojection_px", &b.ba_max_reprojection_px);
   ba.finish();
 
+  Section poses = top.child("poses");
+  poses.read("scan_matching", &b.poses.scan_matching);
+  poses.read("search_xy", &b.poses.scan.search_xy);
+  poses.read("search_yaw_deg", &b.poses.scan.search_yaw_deg);
+  poses.read("beam_sigma", &b.poses.scan.beam_sigma);
+  poses.read("hit_tolerance", &b.poses.scan.hit_tolerance);
+  poses.read("min_beams", &b.poses.scan.min_beams);
+  poses.read("min_hit_ratio", &b.poses.scan.min_hit_ratio);
+  poses.read("effective_beams", &b.poses.scan.effective_beams);
+  poses.read("max_range", &b.poses.max_range);
+  poses.read("recorded_std_xy", &b.poses.recorded_std_xy);
+  poses.read("recorded_std_yaw_deg", &b.poses.recorded_std_yaw_deg);
+  poses.read("disagreement_std_xy", &b.poses.disagreement_std_xy);
+  poses.read("disagreement_std_yaw_deg", &b.poses.disagreement_std_yaw_deg);
+  poses.read("agreement_chi2", &b.poses.agreement_chi2);
+  poses.read("odometry", &b.poses.odometry);
+  poses.read("odom_std_xy", &b.ba.odometry.std_xy);
+  poses.read("odom_std_xy_per_m", &b.ba.odometry.std_xy_per_m);
+  poses.read("odom_std_yaw_deg", &b.ba.odometry.std_yaw_deg);
+  poses.read("odom_std_yaw_per_rad", &b.ba.odometry.std_yaw_per_rad);
+  poses.read("odom_max_step", &b.ba.odometry.max_step);
+  poses.read("prior_loss_scale", &b.ba.prior_loss_scale);
+  poses.finish();
+
   Section db = top.child("db");
   db.read("prune_unobserved_features", &b.prune_unobserved_features);
   db.read("covisibility_min_shared", &b.covisibility_min_shared);
@@ -239,6 +263,7 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   bag_section.read("imu_topic", &bag.imu_topic);
   bag_section.read("imu_frame", &bag.imu_frame);
   bag_section.read("scan_topic", &bag.scan_topic);
+  bag_section.read("scan_max_time_offset", &bag.scan_max_time_offset);
   bag_section.read("gravity_source", &bag.gravity_source);
   bag_section.read("imu_max_age", &bag.imu_max_age);
   bag_section.read("pose_source", &bag.pose_source);
@@ -300,7 +325,33 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
     (b.ba.prior_std_xy > 0.0) == (b.ba.prior_std_yaw_deg > 0.0) && b.ba.prior_std_xy >= 0.0 &&
       b.ba.prior_std_yaw_deg >= 0.0,
     "'ba.prior_std_xy' and 'ba.prior_std_yaw_deg' are set together (0 = recorded covariance)");
+  const KeyframePoseParams & kp = b.poses;
+  require(
+    kp.scan.search_xy >= 0.0 && kp.scan.search_yaw_deg >= 0.0,
+    "'poses.search_xy' and 'poses.search_yaw_deg' must be >= 0");
+  require(
+    kp.scan.beam_sigma > 0.0 && kp.scan.hit_tolerance > 0.0,
+    "'poses.beam_sigma' and 'poses.hit_tolerance' must be positive");
+  require(kp.scan.min_beams >= 3, "'poses.min_beams' must be >= 3");
+  require(kp.scan.effective_beams >= 1, "'poses.effective_beams' must be >= 1");
+  require(
+    kp.scan.min_hit_ratio >= 0.0 && kp.scan.min_hit_ratio <= 1.0,
+    "'poses.min_hit_ratio' must be in [0, 1]");
+  require(kp.max_range >= 0.0, "'poses.max_range' must be >= 0 (0: the scanner's)");
+  require(
+    kp.recorded_std_xy > 0.0 && kp.recorded_std_yaw_deg > 0.0 && kp.disagreement_std_xy > 0.0 &&
+      kp.disagreement_std_yaw_deg > 0.0,
+    "'poses.recorded_std_*' and 'poses.disagreement_std_*' must be positive");
+  require(kp.agreement_chi2 > 0.0, "'poses.agreement_chi2' must be positive");
+  const OdometryParams & odo = b.ba.odometry;
+  require(
+    odo.std_xy > 0.0 && odo.std_yaw_deg > 0.0 && odo.std_xy_per_m >= 0.0 &&
+      odo.std_yaw_per_rad >= 0.0 && odo.max_step > 0.0,
+    "'poses.odom_std_*' must be positive (the per-metre and per-radian parts >= 0) and "
+    "'poses.odom_max_step' positive");
+  require(b.ba.prior_loss_scale > 0.0, "'poses.prior_loss_scale' must be positive");
   require(bag.speed_window > 0.0, "'bag.speed_window' must be positive");
+  require(bag.scan_max_time_offset >= 0.0, "'bag.scan_max_time_offset' must be >= 0");
   return config;
 }
 
@@ -356,6 +407,28 @@ std::string canonicalYaml(const BuildConfigFile & config)
     {"prior_floor_yaw_deg", number(b.ba.prior_floor_yaw_deg)},
     {"prior_std_xy", number(b.ba.prior_std_xy)},
     {"prior_std_yaw_deg", number(b.ba.prior_std_yaw_deg)}};
+  sections["poses"] = {
+    {"agreement_chi2", number(b.poses.agreement_chi2)},
+    {"beam_sigma", number(b.poses.scan.beam_sigma)},
+    {"disagreement_std_xy", number(b.poses.disagreement_std_xy)},
+    {"disagreement_std_yaw_deg", number(b.poses.disagreement_std_yaw_deg)},
+    {"effective_beams", std::to_string(b.poses.scan.effective_beams)},
+    {"hit_tolerance", number(b.poses.scan.hit_tolerance)},
+    {"max_range", number(b.poses.max_range)},
+    {"min_beams", std::to_string(b.poses.scan.min_beams)},
+    {"min_hit_ratio", number(b.poses.scan.min_hit_ratio)},
+    {"odom_max_step", number(b.ba.odometry.max_step)},
+    {"odom_std_xy", number(b.ba.odometry.std_xy)},
+    {"odom_std_xy_per_m", number(b.ba.odometry.std_xy_per_m)},
+    {"odom_std_yaw_deg", number(b.ba.odometry.std_yaw_deg)},
+    {"odom_std_yaw_per_rad", number(b.ba.odometry.std_yaw_per_rad)},
+    {"odometry", flag(b.poses.odometry)},
+    {"prior_loss_scale", number(b.ba.prior_loss_scale)},
+    {"recorded_std_xy", number(b.poses.recorded_std_xy)},
+    {"recorded_std_yaw_deg", number(b.poses.recorded_std_yaw_deg)},
+    {"scan_matching", flag(b.poses.scan_matching)},
+    {"search_xy", number(b.poses.scan.search_xy)},
+    {"search_yaw_deg", number(b.poses.scan.search_yaw_deg)}};
   sections["db"] = {
     {"covisibility_min_shared", std::to_string(b.covisibility_min_shared)},
     {"global_dtype", text(b.global_dtype == db::BlobType::kF16 ? "f16" : "f32")},
@@ -372,6 +445,7 @@ std::string canonicalYaml(const BuildConfigFile & config)
     {"imu_topic", text(bag.imu_topic)},
     {"pose_source", text(bag.pose_source)},
     {"pose_topic", text(bag.pose_topic)},
+    {"scan_max_time_offset", number(bag.scan_max_time_offset)},
     {"scan_topic", text(bag.scan_topic)},
     {"speed_window", number(bag.speed_window)}};
   sections["gating"] = {

@@ -63,11 +63,12 @@ Problem makeProblem(double prior_sigma_xy, double prior_sigma_yaw, int seed)
   std::vector<std::vector<std::pair<int, Vec2>>> per_landmark(room.landmarks.size());
   for (std::size_t k = 0; k < problem.truth.size(); ++k) {
     const Pose2 & t = problem.truth[k];
-    problem.keyframes.push_back(
-      {{t.x + xy(rng), t.y + xy(rng), t.yaw + yaw(rng)},
-       covariance,
-       T_base_cam,
-       landfall::test::kFocal});
+    BaKeyframe keyframe;
+    keyframe.prior = {t.x + xy(rng), t.y + xy(rng), t.yaw + yaw(rng)};
+    keyframe.covariance = covariance;
+    keyframe.T_base_cam = T_base_cam;
+    keyframe.focal_px = landfall::test::kFocal;
+    problem.keyframes.push_back(keyframe);
     const auto T_cam_map = landfall::cameraPose(t, T_base_cam).inverse();
     for (std::size_t l = 0; l < room.landmarks.size(); ++l) {
       Vec2 px;
@@ -202,4 +203,109 @@ TEST(PosePriorBa, WithoutObservationsThePriorsStay)
   EXPECT_THROW(
     landfall::adjustPosePriors(problem.keyframes, {}, {{0, 0, Vec2::Zero()}}, {}),
     std::out_of_range);
+}
+
+namespace
+{
+
+// U with U^T U = diag(std)^-2.
+Mat3 sqrtInformation(double std_x, double std_y, double std_yaw)
+{
+  return Vec3(1.0 / std_x, 1.0 / std_y, 1.0 / std_yaw).asDiagonal();
+}
+
+// A 15 m corridor driven along x, a keyframe every 0.5 m. The scan pins every keyframe across the
+// corridor and in heading, but only the two at its ends along it; the priors drift along it by
+// up to 0.6 m in the middle (as AMCL does in a long aisle). Odometry: exact up to 2 mm.
+std::vector<BaKeyframe> corridor(std::vector<Pose2> * truth, int seed)
+{
+  std::mt19937 rng(seed);
+  std::normal_distribution<double> mm(0.0, 0.002);
+  std::vector<BaKeyframe> keyframes;
+  const int n = 31;
+  for (int k = 0; k < n; ++k) {
+    const Pose2 t{0.5 * k, 0.0, 0.0};
+    truth->push_back(t);
+    const bool end = k == 0 || k == n - 1;
+    BaKeyframe kf;
+    kf.prior = {t.x + 0.6 * std::sin(M_PI * k / (n - 1)), t.y + mm(rng), t.yaw};
+    kf.prior_sqrt_information = sqrtInformation(end ? 0.01 : 2.0, 0.01, deg(0.2));
+    // Odometry in its own frame (offset and turned by 0.3 rad), the same motion with 2 mm noise.
+    const double c = std::cos(0.3);
+    const double s = std::sin(0.3);
+    const double along = t.x + mm(rng);
+    kf.odom = Pose2{10.0 + c * along, -5.0 + s * along, 0.3};
+    keyframes.push_back(kf);
+  }
+  return keyframes;
+}
+
+}  // namespace
+
+TEST(PosePriorBa, OdometryCarriesPosesWhereThePriorsAreWeak)
+{
+  std::vector<Pose2> truth;
+  const auto keyframes = corridor(&truth, 5);
+  const auto params = landfall::PosePriorBaParams();
+  const auto graph = landfall::adjustPosePriors(keyframes, {}, {}, params);
+  ASSERT_TRUE(graph.usable) << graph.message;
+  EXPECT_EQ(graph.odometry_links, static_cast<int>(keyframes.size()) - 1);
+  double worst = 0.0;
+  for (std::size_t k = 0; k < truth.size(); ++k) {
+    worst = std::max(worst, landfall::translationDistance(graph.poses[k], truth[k]));
+    EXPECT_EQ(graph.at_bound[k], 0) << k;
+  }
+  RecordProperty("worst_error_m", std::to_string(worst));
+  EXPECT_LT(worst, 0.05);
+
+  // Without odometry the middle keeps its drift.
+  auto unlinked = keyframes;
+  for (auto & k : unlinked) {
+    k.odom.reset();
+  }
+  const auto alone = landfall::adjustPosePriors(unlinked, {}, {}, params);
+  ASSERT_TRUE(alone.usable);
+  EXPECT_EQ(alone.odometry_links, 0);
+  EXPECT_GT(landfall::translationDistance(alone.poses[15], truth[15]), 0.5);
+}
+
+TEST(PosePriorBa, OdometrySlipDoesNotOverrideStrongPriors)
+{
+  // A loop the scan pins down everywhere (2 cm, 0.5 deg); one odometry step slips by 0.5 m.
+  const auto truth = landfall::test::loopBothWays(0, 0, 10, 6, 0.5);
+  std::vector<BaKeyframe> keyframes;
+  Pose2 odom{0.0, 0.0, 0.0};
+  for (std::size_t k = 0; k < truth.size(); ++k) {
+    if (k > 0) {
+      odom = landfall::compose(odom, landfall::between(truth[k - 1], truth[k]));
+      if (k == 20) {
+        odom.x += 0.5;
+      }
+    }
+    BaKeyframe kf;
+    kf.prior = truth[k];
+    kf.prior_sqrt_information = sqrtInformation(0.02, 0.02, deg(0.5));
+    kf.odom = odom;
+    keyframes.push_back(kf);
+  }
+  const auto result = landfall::adjustPosePriors(keyframes, {}, {}, landfall::PosePriorBaParams());
+  ASSERT_TRUE(result.usable) << result.message;
+  for (std::size_t k = 0; k < truth.size(); ++k) {
+    EXPECT_LT(landfall::translationDistance(result.poses[k], truth[k]), 0.03) << k;
+  }
+}
+
+TEST(PosePriorBa, OdometryLinksOnlyConsecutiveKeyframesOfASession)
+{
+  std::vector<BaKeyframe> keyframes(6);
+  for (std::size_t k = 0; k < keyframes.size(); ++k) {
+    keyframes[k].prior = {0.4 * static_cast<double>(k), 0.0, 0.0};
+    keyframes[k].odom = keyframes[k].prior;
+    keyframes[k].session = k < 3 ? 0 : 1;
+  }
+  keyframes[4].odom.reset();                  // no odometry: no links to 3 or 5
+  keyframes[2].odom = Pose2{30.0, 0.0, 0.0};  // a 29 m jump: beyond max_step
+  const auto result = landfall::adjustPosePriors(keyframes, {}, {}, landfall::PosePriorBaParams());
+  ASSERT_TRUE(result.usable);
+  EXPECT_EQ(result.odometry_links, 1);  // 0-1 only
 }

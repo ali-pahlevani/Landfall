@@ -51,11 +51,12 @@ All of this is simulation; validation on a real robot comes before v1.0.0.
 
 ## How it works
 
-1. **Record** keyframes while the robot is well localized: camera images with their pose in the
-   `map` frame, live with the recorder node or from a rosbag2.
-2. **Build** the map database offline (`landfall build`): features and global descriptors of every
-   keyframe, landmarks triangulated with the keyframe poses fixed, a bounded bundle adjustment. One
-   SQLite file, bound to the occupancy map by its hashes.
+1. **Record** keyframes while the robot is localized: camera images with their pose in the `map`
+   frame, the LiDAR scan and the odometry pose, live with the recorder node or from a rosbag2.
+2. **Build** the map database offline (`landfall build`): every keyframe's scan matched to the map
+   (the localization's pose counts only where the scan agrees with it), the keyframes tied by
+   odometry, features and global descriptors, landmarks triangulated with those poses, a bounded
+   bundle adjustment. One SQLite file, bound to the occupancy map by its hashes.
 3. **Relocalize** on request (a service, at startup, when AMCL is uncertain, or the kidnap
    watchdog): retrieve similar keyframes, match landmarks, solve the camera pose with gravity, then
    check it (sanity, LiDAR, ambiguity, odometry consistency) and hand it to AMCL.
@@ -80,11 +81,11 @@ source install/setup.bash
 The robot needs a calibrated camera (`CameraInfo`), a `LaserScan`, odometry in TF and AMCL (or
 slam_toolbox localization) on its map: [`docs/sensors.md`](docs/sensors.md).
 
-1. Record while AMCL is well localized; drive every aisle both ways:
+1. Record while AMCL is localized; drive every aisle both ways:
    ```bash
    ros2 run landfall_ros recorder_node --ros-args -p autostart:=true -p bond.enabled:=false \
      -p image.topic:=/camera/image_raw -p camera_info.topic:=/camera/camera_info \
-     -p output_dir:=$HOME/landfall_sessions
+     -p scan.topic:=/scan -p output_dir:=$HOME/landfall_sessions
    ```
 2. Build the database for the map AMCL uses:
    ```bash

@@ -22,6 +22,15 @@ poses before what it does to successes. All parameters are listed in `docs/param
   five times its actual error (PLAN V16), so the default rejects many good poses there (the
   simulation's build uses 8 cm / 3°). It can also be confident and wrong in a corridor. Look at the
   recorder's rejection counts (`~/status`) and the build report's coverage map.
+- **Keyframe poses** (`poses.*` of the build, `docs/recording.md`). Record the scan with the
+  keyframes (`scan.topic`): the build then matches every keyframe to the map instead of trusting
+  the localization's pose. The build report's "Keyframe poses" section tells how often the scan
+  contradicted the recorded pose; many contradictions mean the localization drifted during the
+  recording. `poses.recorded_std_*` is how far a recorded pose that agrees with its scan is
+  trusted in the directions the scan confirms: lower it only if your localization is better than
+  the map's cells (5 cm). Few contradictions don't prove good poses: where one scan fits two
+  positions equally (a wall the map has twice, repeating shelf legs), the localization and the
+  scan can agree on the wrong one (`docs/recording.md`, "Limit").
 - **Speed gate** (`gating.max_linear_speed`, `gating.max_angular_speed`). It bounds the error that
   image and odometry timing leave in the keyframe poses; with a measured `image.time_offset` it can
   be relaxed a little.

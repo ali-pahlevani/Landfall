@@ -292,13 +292,19 @@ int build(const std::vector<std::string> & argv)
       keyframe.prior = k.map_base;
       keyframe.covariance = k.covariance;
       keyframe.T_base_cam = k.T_base_cam;
+      keyframe.odom = k.odom_base;
+      keyframe.scan = k.scan;
       keyframe.quality_json = landfall::toJson(k.quality);
       keyframe.load_image = [folder, k] {
         return landfall::loadStagingImage(*folder, k, cv::IMREAD_COLOR);
       };
       input.keyframes.push_back(std::move(keyframe));
     }
-    std::cerr << "staging " << dir << ": " << folder->keyframes.size() << " keyframes"
+    const auto scans = std::count_if(
+      folder->keyframes.begin(), folder->keyframes.end(),
+      [](const landfall::StagingKeyframe & k) { return k.scan.has_value(); });
+    std::cerr << "staging " << dir << ": " << folder->keyframes.size() << " keyframes, " << scans
+              << " with a LiDAR scan"
               << (folder->session.complete ? "" : " (session not closed cleanly)") << "\n";
   }
   for (const auto & uri : bags) {
@@ -320,6 +326,8 @@ int build(const std::vector<std::string> & argv)
       input.keyframes.push_back(std::move(keyframe));
     }
     printCounts(uri, bag.counts);
+    std::cerr << "  " << bag.with_scan << " of " << bag.keyframes.size()
+              << " keyframes with a LiDAR scan ('" << config.bag.scan_topic << "')\n";
   }
 
   std::cerr << "building " << output << " from " << input.keyframes.size() << " keyframes\n";
@@ -357,6 +365,15 @@ int build(const std::vector<std::string> & argv)
             << fixed(100.0 * stats.ba_max_shift_m, 2) << " cm / "
             << fixed(stats.ba_max_shift_yaw_deg, 2) << " deg, " << stats.ba_keyframes_at_bound
             << " at the bound\n"
+            << "  keyframe poses: " << stats.poses_scan_matched
+            << " matched to the map with their scan"
+            << (stats.poses_scan_unmatched > 0
+                  ? " (" + std::to_string(stats.poses_scan_unmatched) + " didn't match)"
+                  : std::string())
+            << " (" << stats.poses_scan_contradicted << " contradicted the recorded pose), "
+            << stats.poses_odometry_links << " odometry links, corrected by "
+            << fixed(100.0 * stats.poses_mean_correction_m, 1) << " cm on average, at most "
+            << fixed(100.0 * stats.poses_max_correction_m, 1) << " cm\n"
             << "  content SHA-256 " << database.meta("content_sha256").value_or("?") << "\n"
             << "  report in " << report_dir << "\n";
   for (const auto & warning : stats.warnings) {

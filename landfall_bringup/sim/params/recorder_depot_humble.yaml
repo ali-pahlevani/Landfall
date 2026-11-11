@@ -7,6 +7,7 @@ landfall_recorder:
     bond.enabled: false
     image.topic: /oakd/rgb/preview/image_raw
     camera_info.topic: /oakd/rgb/preview/camera_info
+    scan.topic: /scan  # stored with each keyframe: the build matches it to the map (PLAN V56)
     frames.base: base_link
     gravity.source: flat_floor
     gating.max_std_xy: 0.08

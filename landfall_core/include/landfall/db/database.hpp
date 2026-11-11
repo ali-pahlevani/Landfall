@@ -106,6 +106,10 @@ struct KeyframeRecord
 {
   /// Bits of `flags`.
   static constexpr uint32_t kFlagBaShiftAtBound = 1U << 0;
+  /// The keyframe's pose was matched to the map with its LiDAR scan before the adjustment.
+  static constexpr uint32_t kFlagScanMatched = 1U << 1;
+  /// It had a scan that didn't match the map (poor fit): the recorded pose was used.
+  static constexpr uint32_t kFlagScanUnmatched = 1U << 2;
 
   int64_t id = 0;
   int64_t session_id = 0;

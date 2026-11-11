@@ -22,14 +22,16 @@
 #include <vector>
 
 #include "landfall/camera_model.hpp"
+#include "landfall/grid/scan_verifier.hpp"
 #include "landfall/record/image_quality.hpp"
 #include "landfall/record/keyframe_selector.hpp"
 
 namespace landfall
 {
 
-/// Version of the staging folder layout (session.yaml `format_version`).
-constexpr int kStagingFormatVersion = 1;
+/// Version of the staging folder layout (session.yaml `format_version`). Version 2 added each
+/// keyframe's odometry pose (keyframes.csv) and LiDAR scan (scans.csv); version 1 still reads.
+constexpr int kStagingFormatVersion = 2;
 
 struct StagingFrames
 {
@@ -65,10 +67,14 @@ struct StagingKeyframe
   Pose3 T_base_cam = Pose3::Identity();
   ImageQuality quality;
   std::optional<double> tilt_deg;
+  std::optional<Pose2> odom_base;  ///< odometry pose (odom -> base) at the stamp
+  /// LiDAR scan near the stamp, its laser pose in the base frame at the stamp (scans.csv).
+  std::optional<PlanarScan> scan;
 };
 
-/// Writes a staging folder: session.yaml, keyframes.csv and images/. Every image is written before
-/// its CSV row and every row is flushed, so a crash loses at most the keyframe being written.
+/// Writes a staging folder: session.yaml, keyframes.csv, scans.csv and images/. Every image and scan
+/// is written before its keyframe's row and every row is flushed, so a crash loses at most the
+/// keyframe being written.
 class StagingWriter
 {
 public:
@@ -92,6 +98,7 @@ private:
   std::string directory_;
   StagingSession session_;
   std::ofstream csv_;
+  std::ofstream scans_;
   int64_t next_id_ = 0;
   StagingKeyframe last_;
 };

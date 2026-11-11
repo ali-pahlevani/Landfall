@@ -17,8 +17,11 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <limits>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <sstream>
 #include <string>
 
 #include "landfall/record/image_quality.hpp"
@@ -261,4 +264,95 @@ TEST(Staging, RoundTripAndCrashTolerance)
   }
   EXPECT_THROW(landfall::readStaging(folder), std::runtime_error);
   EXPECT_THROW(landfall::readStaging(dir.file("missing")), std::runtime_error);
+}
+
+TEST(Staging, OdometryAndScansRoundTripAndFormatOneStillReads)
+{
+  landfall::test::TempDir dir;
+  const std::string folder = dir.file("session_b");
+  landfall::StagingSession session;
+  session.name = "session_b";
+  session.pose_source = "tf_with_covariance";
+  session.frames.camera = "cam_optical";
+  session.camera = landfall::CameraModel(
+    640, 480, 500.0, 500.0, 320.0, 240.0, landfall::DistortionModel::kPlumbBob,
+    {0.0, 0.0, 0.0, 0.0, 0.0});
+  landfall::StagingKeyframe k0;
+  k0.stamp_ns = 1'700'000'000'000'000'000;
+  k0.map_base = {1.0, 2.0, 0.5};
+  k0.odom_base = landfall::Pose2{-3.0 / 7.0, 12.25, -2.987654321};
+  landfall::PlanarScan scan;
+  scan.angle_min = -M_PI;
+  scan.angle_increment = 2.0 * M_PI / 360.0;
+  scan.range_min = 0.12F;
+  scan.range_max = 15.0F;
+  scan.T_base_laser.translation() = landfall::Vec3(0.1, -0.02, 0.4);
+  scan.T_base_laser.linear() = Eigen::AngleAxisd(0.01, landfall::Vec3::UnitX()).toRotationMatrix();
+  for (int i = 0; i < 360; ++i) {
+    scan.ranges.push_back(
+      i % 7 == 0 ? std::numeric_limits<float>::infinity() : 0.5F + 0.0137F * static_cast<float>(i));
+  }
+  k0.scan = scan;
+  landfall::StagingKeyframe k1 = k0;  // no odometry, no scan
+  k1.stamp_ns += 1'000'000'000;
+  k1.odom_base.reset();
+  k1.scan.reset();
+  {
+    landfall::StagingWriter writer(folder, session);
+    writer.add(k0, texture(640, 480));
+    writer.add(k1, texture(640, 480));
+    writer.close({});
+  }
+  // A crash between a scan's row and its keyframe's: a scan of no keyframe is ignored.
+  {
+    std::ofstream scans(folder + "/scans.csv", std::ios::app);
+    scans << "7,0,0,0,0,0,0,1,0,0.1,0.1,10,1 2 3\n";
+  }
+
+  const landfall::StagingFolder read = landfall::readStaging(folder);
+  ASSERT_EQ(read.keyframes.size(), 2U);
+  const auto & r0 = read.keyframes[0];
+  ASSERT_TRUE(r0.odom_base.has_value());
+  EXPECT_EQ(r0.odom_base->x, k0.odom_base->x);  // bit-exact
+  EXPECT_EQ(r0.odom_base->yaw, k0.odom_base->yaw);
+  ASSERT_TRUE(r0.scan.has_value());
+  EXPECT_EQ(r0.scan->angle_min, scan.angle_min);
+  EXPECT_EQ(r0.scan->angle_increment, scan.angle_increment);
+  EXPECT_EQ(r0.scan->range_max, scan.range_max);
+  EXPECT_TRUE(r0.scan->T_base_laser.isApprox(scan.T_base_laser, 1e-12));
+  ASSERT_EQ(r0.scan->ranges.size(), scan.ranges.size());
+  for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
+    EXPECT_EQ(r0.scan->ranges[i], scan.ranges[i]) << i;  // float-exact, inf included
+  }
+  EXPECT_FALSE(read.keyframes[1].odom_base.has_value());
+  EXPECT_FALSE(read.keyframes[1].scan.has_value());
+
+  // Format 1 (no odometry columns, no scans.csv) still reads.
+  {
+    std::ifstream in(folder + "/keyframes.csv");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::string v1;
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+      v1 += line.substr(0, line.rfind(',', line.rfind(',', line.rfind(',') - 1) - 1)) + "\n";
+    }
+    std::ofstream out(folder + "/keyframes.csv", std::ios::trunc);
+    out << v1;
+  }
+  std::filesystem::remove(folder + "/scans.csv");
+  {
+    std::ifstream in(folder + "/session.yaml");
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto at = text.find("format_version: 2");
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at, 17, "format_version: 1");
+    std::ofstream out(folder + "/session.yaml", std::ios::trunc);
+    out << text;
+  }
+  const landfall::StagingFolder old = landfall::readStaging(folder);
+  ASSERT_EQ(old.keyframes.size(), 2U);
+  EXPECT_FALSE(old.keyframes[0].odom_base.has_value());
+  EXPECT_FALSE(old.keyframes[0].scan.has_value());
+  EXPECT_EQ(old.keyframes[0].map_base.x, k0.map_base.x);
 }

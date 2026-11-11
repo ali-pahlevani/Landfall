@@ -73,6 +73,7 @@ struct BagKeyframes
   std::vector<BuildKeyframe> keyframes;  ///< session 0, camera 0 (the caller re-indexes)
   GateCounts counts;
   std::size_t images = 0;
+  std::size_t with_scan = 0;           ///< keyframes that got a LiDAR scan (bag.scan_topic)
   std::size_t invalid_transforms = 0;  ///< TF entries tf2 refused (skipped)
 };
 
@@ -80,7 +81,9 @@ struct BagKeyframes
 using BagProgress = std::function<void(std::size_t, std::size_t)>;
 
 /// Replays a bag through the recorder's keyframe gates (`config.bag`, `config.gating`): first all
-/// TF, camera_info, localization covariance and IMU messages, then every image. Any storage
+/// TF, camera_info, localization covariance, IMU and LiDAR messages, then every image. Each
+/// keyframe gets its odometry pose and, as the recorder stores them, the scan nearest its image
+/// (within `bag.scan_max_time_offset`; none when `poses.scan_matching` is off). Any storage
 /// plugin rosbag2 has (sqlite3, mcap). Throws std::runtime_error with the reason (missing topic,
 /// no camera_info, unreadable bag).
 BagKeyframes readBagKeyframes(

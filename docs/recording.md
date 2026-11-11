@@ -18,6 +18,7 @@ The relocalizer (M3) uses the database together with the occupancy map it was bu
 | `sensor_msgs/CameraInfo` | calibrated `K` and `D` (plumb_bob, rational_polynomial or equidistant). The images are used unrectified |
 | TF `map → odom → base_footprint → camera optical frame` | base→camera is looked up at each image stamp, so a camera on a moving joint works if the joint is in TF |
 | Localization covariance, `geometry_msgs/PoseWithCovarianceStamped` (`amcl_pose`) | not needed with `pose_source.type: tf_only` |
+| LiDAR scan, `sensor_msgs/LaserScan` (`scan`) | stored with each keyframe: the build matches the keyframe's pose to the map with it (below). Without it the build trusts the localization's poses |
 | IMU orientation, `sensor_msgs/Imu` (optional) | used only to skip keyframes on ramps |
 
 ## Keyframe gates
@@ -48,6 +49,57 @@ the result of a recording, and the pose-prior bundle adjustment flags keyframes 
 simulation, keyframes taken at 0.45-0.5 rad/s were up to 1.7° off. With the gate at 0.25 rad/s,
 the worst of 419 keyframes was 1.04° off (0.42° at the 95th percentile), and keyframes taken while
 turning less than 2°/s stayed within 0.51°.
+
+## Keyframe poses
+
+A keyframe's recorded pose is the localization's (`map → base` from TF). In the URDF Maker warehouse
+(2026-11-11 analysis), AMCL was off by a median 14 cm and 44 cm at the 90th percentile, up to 80 cm
+along the long aisles, while it reported a median 7.5 cm; the frames its covariance gate passed
+were still off by 40 cm (p90). Triangulating landmarks 9-20 m away from such poses fails, and the
+landmarks that survive inherit the error. So `landfall build` doesn't take the recorded poses as
+they are:
+
+1. **Each keyframe's scan is matched to the map** near its recorded pose (`poses.search_xy`,
+   1 m; `poses.search_yaw_deg`, 6°): a correlative search on the map's likelihood field, every beam
+   up to the scanner's range, refined to 2.5 mm and 0.025°. Its covariance comes from the geometry
+   (each beam constrains the pose along the surface it hit: tight across a corridor, loose along
+   it) plus the fit's spread over the whole search window: every pose counts with its likelihood
+   (beams with heavy-tailed errors, counted as `poses.effective_beams` independent ones), so a
+   second fit nearly as good tens of centimetres away (shelf legs repeating along an aisle, a
+   wall the map has twice) makes the match uncertain in that direction.
+2. **The match is fused with the recorded pose.** Where they agree (the difference within the
+   99 % chi-square of both uncertainties, `poses.agreement_chi2`), both count, the recorded pose
+   at `poses.recorded_std_xy` (2 cm) and `poses.recorded_std_yaw_deg` (0.5°) in the directions
+   the scan confirms: a good localization keeps its accuracy. In a direction the scan can't check
+   (along a corridor) the recorded pose counts only as much as the scan's own uncertainty there,
+   at most `poses.disagreement_std_*` (0.3 m, 3°). Where the scan contradicts it (a localization
+   that drifted), the recorded pose counts only with `poses.disagreement_std_*`, which fills in
+   what the scan can't see. A scan that doesn't fit (`poses.min_hit_ratio`, 60 % of its beams
+   within 10 cm of an obstacle) leaves the recorded pose; the keyframe is flagged.
+3. **Odometry ties consecutive keyframes** of a session (`odom → base` at their stamps, std
+   `poses.odom_std_xy` 2 cm + 3 % of the distance and `poses.odom_std_yaw_deg` 0.5° + 10 % of the
+   turn, robust to a wheel slip). A pose graph of these priors and links gives the poses that pair
+   selection, triangulation and the bundle adjustment start from; along a corridor, where the
+   scans can't tell, the odometry carries the corridor's ends inward.
+4. The **bundle adjustment** keeps the same priors and odometry and adds the landmarks; a keyframe
+   may move up to three of its prior's standard deviations (at least `ba.max_shift_xy`).
+
+The build report's "Keyframe poses" section counts the matched keyframes, the recorded poses the
+scan contradicted, the odometry links, and how far the poses moved. Older sessions without scans
+(staging format 1) and bags without a scan topic build as before, from the recorded poses alone
+(odometry still links them when there is some).
+
+**Limit: places a scan can't tell apart.** Where one scan fits two positions equally well and the
+localization sits on the wrong one, the build keeps that position: the localization slid there for
+the same reason (it uses the same map and scans). In the URDF Maker warehouse this happened in the
+southern aisles, where the map has a wall drawn twice and a scan fits 35-50 cm along the aisle as
+well as at the truth: for 64 of the 70 keyframes matched more than 15 cm from the truth, the two
+positions fit the scan within 0.6 nats of each other. Relocalizing there against such a database
+gives poses off by as much (0.3-0.5 m in that warehouse), and the LiDAR check can't refuse them,
+since the scan fits there too. Only odometry from a place where the position is clear can tell
+the two apart, and the pose graph doesn't yet choose between them: the keyframes whose scan and
+recorded pose agree on the wrong one outweigh the odometry (T-011). A gap in the recording (the
+localization's covariance gate rejecting frames) also breaks the odometry chain.
 
 ## Live recording: the recorder node
 
@@ -82,6 +134,7 @@ them with their ranges. Besides the gates above:
 | `image.format`, `image.jpeg_quality` | `png`, 95 | keyframe image files |
 | `pose_source.type`, `pose_source.covariance_topic` | `tf_with_covariance`, `amcl_pose` | `tf_only` for stacks without a covariance (no covariance gate) |
 | `tf_timeout` | 0.2 s | how long an image waits for TF at its stamp |
+| `scan.topic`, `scan.max_time_offset` | `scan`, 0.2 s | the scan stored with each keyframe: the one nearest its image, moved to the image's stamp with odometry; "" stores none |
 | `gravity.source`, `imu.topic`, `imu.frame`, `imu.max_age` | `auto`, `imu`, "", 0.1 s | `imu.frame` overrides the messages' `frame_id` when it isn't a TF frame |
 | `max_keyframes` | 0 (unlimited) | |
 | `bond.enabled`, `autostart` | true, false | |
@@ -90,25 +143,30 @@ them with their ranges. Besides the gates above:
 
 ```
 <output_dir>/<session>/
-  session.yaml      format, landfall version, frames, camera model, gate counts, complete flag
+  session.yaml      format (version 2), landfall version, frames, camera model, gate counts,
+                    complete flag
   keyframes.csv     one row per keyframe: stamp, base pose (x, y, yaw) and its covariance,
-                    base->camera transform, image quality, IMU tilt
+                    base->camera transform, image quality, IMU tilt, odometry pose (x, y, yaw)
+  scans.csv         one row per keyframe with a scan: base->laser transform at the image's stamp,
+                    angles, range limits and the ranges
   images/000000.png ...
 ```
 
-Each image is written before its CSV row, and every row is flushed. After a crash the folder still
-reads; `complete: false` in `session.yaml` tells that the recorder didn't close it.
+Each image and scan is written before its keyframe's row, and every row is flushed. After a crash
+the folder still reads; `complete: false` in `session.yaml` tells that the recorder didn't close
+it. Format 1 folders (no odometry columns, no `scans.csv`) still build.
 
 ## Recording a bag instead
 
 Record the same inputs and select keyframes later:
 
 ```bash
-ros2 bag record -s sqlite3 /tf /tf_static /amcl_pose /camera/image_raw/compressed /camera/camera_info /imu
+ros2 bag record -s sqlite3 /tf /tf_static /amcl_pose /scan /camera/image_raw/compressed /camera/camera_info /imu
 ```
 
-(`-s mcap` works too; add `/scan` for later relocalization tests.) In simulation add
-`--use-sim-time`.
+(`-s mcap` works too.) The build matches each keyframe to the map with the scan nearest its image
+(`bag.scan_topic`, within `bag.scan_max_time_offset`), as with the recorder's sessions. In
+simulation add `--use-sim-time`.
 
 ## Building the database
 
@@ -155,9 +213,31 @@ triangulation:
   min_track_length: 3
   depth_range: [0.2, 30.0]
   min_height: -0.05                       # below the floor: reflections
-ba:                                       # pose-prior bundle adjustment
+poses:                                    # keyframe poses (see "Keyframe poses" above)
+  scan_matching: true                     # match keyframes that have a scan to the map
+  search_xy: 1.0                          #   around the recorded pose, m
+  search_yaw_deg: 6.0
+  max_range: 0                            #   longer beams are ignored; 0: the scanner's own
+  beam_sigma: 0.05                        #   likelihood field spread, m
+  hit_tolerance: 0.10
+  min_beams: 60
+  min_hit_ratio: 0.6                      #   below: the scan doesn't match, the recorded pose stays
+  effective_beams: 40                     #   beams counted as independent in the covariance
+  recorded_std_xy: 0.02                   # the recorded pose where the scan agrees with it (in
+  recorded_std_yaw_deg: 0.5               #   the directions the scan confirms)
+  disagreement_std_xy: 0.3                # ... and where the scan contradicts it
+  disagreement_std_yaw_deg: 3.0
+  agreement_chi2: 11.34                   # 99 % of a 3-DoF chi-square
+  odometry: true                          # tie consecutive keyframes by their odometry
+  odom_std_xy: 0.02                       #   + odom_std_xy_per_m of the distance
+  odom_std_xy_per_m: 0.03
+  odom_std_yaw_deg: 0.5                   #   + odom_std_yaw_per_rad of the turn
+  odom_std_yaw_per_rad: 0.1
+  odom_max_step: 2.0                      #   farther steps (a gap) aren't tied
+  prior_loss_scale: 3.0                   # Huber scale of the scan priors, in stds
+ba:                                       # bundle adjustment
   enabled: true
-  max_shift_xy: 0.10                      # hard bounds on how far a keyframe may move
+  max_shift_xy: 0.10                      # hard bounds on how far a keyframe may move (at least)
   max_shift_yaw_deg: 2.0
   loss_scale_px: 2.0
   prior_floor_xy: 0.02                    # added to the recorded std
@@ -175,7 +255,8 @@ bag:                                      # where `--bag` recordings keep their 
   pose_topic: /amcl_pose
   imu_topic: ""
   imu_frame: ""
-  scan_topic: /scan                       # LaserScan; used by `landfall query`, not by the build
+  scan_topic: /scan                       # LaserScan: keyframe poses, and `landfall query`
+  scan_max_time_offset: 0.2               # farthest scan from a keyframe's image, s
   gravity_source: auto
   imu_max_age: 0.1
   pose_source: tf_with_covariance
@@ -187,9 +268,10 @@ quality: {...}
 max_keyframes: 0
 ```
 
-**BA priors.** The bundle adjustment weighs each keyframe's recorded pose by its recorded
-covariance. If the localization misreports its covariance (as AMCL does above), set
-`ba.prior_std_xy` / `ba.prior_std_yaw_deg` to its actual accuracy (per axis). With AMCL's 5 cm
+**BA priors.** A keyframe matched to the map with its scan has the fused prior above. A keyframe
+without a scan keeps its recorded pose, weighed by its recorded covariance. If the localization
+misreports its covariance (as AMCL does above), set `ba.prior_std_xy` / `ba.prior_std_yaw_deg` to
+its actual accuracy (per axis); they apply to keyframes without a scan. With AMCL's 5 cm
 reports, BA moved simulated keyframes by up to 5 cm *away* from the truth. With 2 cm, one keyframe
 (the first of the drive, accelerating, its landmarks 7-20 m straight ahead) still slid 8 cm along
 its weakly constrained viewing direction. With the measured 1 cm / 0.5°, the largest shift was

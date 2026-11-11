@@ -14,6 +14,8 @@
 
 #include "landfall/build/map_builder.hpp"
 
+#include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -33,7 +35,9 @@
 #include "landfall/db/database.hpp"
 #include "landfall/features/retrieval.hpp"
 #include "landfall/geometry/two_view.hpp"
+#include "landfall/grid/likelihood_field.hpp"
 #include "landfall/grid/occupancy_grid.hpp"
+#include "landfall/grid/scan_matcher.hpp"
 #include "landfall/record/image_quality.hpp"
 #include "landfall/util/json.hpp"
 #include "landfall/util/thread_pool.hpp"
@@ -167,6 +171,8 @@ void validate(const BuildInput & input)
 const char * toString(BuildStage stage)
 {
   switch (stage) {
+    case BuildStage::kPoses:
+      return "poses";
     case BuildStage::kFeatures:
       return "features";
     case BuildStage::kVocabulary:
@@ -210,6 +216,154 @@ BuildStats buildMap(
   const auto n = input.keyframes.size();
   stats.keyframes = static_cast<int>(n);
   stats.sessions = static_cast<int>(input.sessions.size());
+
+  // --- Keyframe poses: scans matched to the map, odometry between keyframes (plan §7.6) --------
+  // The recording's localization (e.g. AMCL, off by tens of centimetres along an aisle while it
+  // reports a few) is trusted only where the scan can't tell; the pose graph of these priors and
+  // the odometry gives the poses that pair selection, triangulation and the adjustment start from.
+  report(BuildStage::kPoses, 0, n);
+  std::vector<uint32_t> flags(n, 0);
+  std::vector<BaKeyframe> ba_keyframes(n);
+  bool any_scan = false;
+  bool any_odometry = false;
+  for (std::size_t i = 0; i < n; ++i) {
+    const BuildKeyframe & k = input.keyframes[i];
+    BaKeyframe & b = ba_keyframes[i];
+    b.prior = k.prior;
+    b.covariance = k.covariance;
+    b.T_base_cam = k.T_base_cam;
+    b.focal_px = focal;
+    b.session = k.session;
+    if (config.poses.odometry && k.odom) {
+      b.odom = k.odom;
+      any_odometry = true;
+    }
+    any_scan = any_scan || k.scan.has_value();
+  }
+  if (config.poses.scan_matching && any_scan) {
+    const auto field = std::make_shared<const LikelihoodField>(input.map.grid);
+    ScanCheckParams projection;
+    projection.max_range =
+      config.poses.max_range > 0.0 ? config.poses.max_range : std::numeric_limits<double>::max();
+    projection.check_alternatives = false;
+    const ScanVerifier projector(field, projection);
+    std::vector<std::optional<ScanMatch>> matches(n);
+    chunked(
+      pool, n,
+      [&](std::size_t i) {
+        const BuildKeyframe & k = input.keyframes[i];
+        if (!k.scan) {
+          return;
+        }
+        PlanarScan scan = *k.scan;
+        scan.range_max -= 1e-3;  // readings at the scanner's maximum are no returns
+        const ProjectedScan projected = projector.project(scan, Vec3(0.0, 0.0, -1.0));
+        matches[i] = matchScan(*field, projected.endpoints, k.prior, config.poses.scan);
+      },
+      [&](std::size_t done) { report(BuildStage::kPoses, done, n); });
+    // Fused with the recorded pose: both count where they agree; where the scan contradicts the
+    // recording (a localization that drifted), the recording only fills in what the scan can't
+    // tell.
+    const auto information = [](double std_xy, double std_yaw_deg) -> Mat3 {
+      const double std_yaw = std_yaw_deg * M_PI / 180.0;
+      return Vec3(1.0 / (std_xy * std_xy), 1.0 / (std_xy * std_xy), 1.0 / (std_yaw * std_yaw))
+        .asDiagonal();
+    };
+    const Mat3 trusted =
+      information(config.poses.recorded_std_xy, config.poses.recorded_std_yaw_deg);
+    const Mat3 doubted =
+      information(config.poses.disagreement_std_xy, config.poses.disagreement_std_yaw_deg);
+    // A recorded pose the scan agrees with is trusted only as far as the scan could check it: in
+    // each of the scan's principal directions, at the scan's own std, between recorded_std_* and
+    // disagreement_std_* (along an aisle the scan can't see, the recording barely counts).
+    const auto confirmed = [&](const Mat3 & scan_covariance) -> Mat3 {
+      const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> xy(
+        0.5 * (scan_covariance.topLeftCorner<2, 2>() +
+               scan_covariance.topLeftCorner<2, 2>().transpose()));
+      Eigen::Vector2d inverse_variance;
+      for (int d = 0; d < 2; ++d) {
+        const double std_xy = std::clamp(
+          std::sqrt(std::max(xy.eigenvalues()(d), 0.0)), config.poses.recorded_std_xy,
+          config.poses.disagreement_std_xy);
+        inverse_variance(d) = 1.0 / (std_xy * std_xy);
+      }
+      const double std_yaw = std::clamp(
+        std::sqrt(std::max(scan_covariance(2, 2), 0.0)),
+        config.poses.recorded_std_yaw_deg * M_PI / 180.0,
+        config.poses.disagreement_std_yaw_deg * M_PI / 180.0);
+      Mat3 result = Mat3::Zero();
+      result.topLeftCorner<2, 2>() =
+        xy.eigenvectors() * inverse_variance.asDiagonal() * xy.eigenvectors().transpose();
+      result(2, 2) = 1.0 / (std_yaw * std_yaw);
+      return result;
+    };
+    const double floor_yaw = config.ba.prior_floor_yaw_deg * M_PI / 180.0;
+    const Vec3 floors(
+      config.ba.prior_floor_xy * config.ba.prior_floor_xy,
+      config.ba.prior_floor_xy * config.ba.prior_floor_xy, floor_yaw * floor_yaw);
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!matches[i]) {
+        continue;
+      }
+      const ScanMatch & m = *matches[i];
+      if (!m.valid) {
+        flags[i] |= db::KeyframeRecord::kFlagScanUnmatched;
+        ++stats.poses_scan_unmatched;
+        continue;
+      }
+      const Pose2 & recorded = input.keyframes[i].prior;
+      const Mat3 scan_information = m.covariance.inverse();
+      const Vec3 offset(
+        m.pose.x - recorded.x, m.pose.y - recorded.y, normalizeAngle(m.pose.yaw - recorded.yaw));
+      const Mat3 agreement = m.covariance + trusted.inverse();
+      const bool agrees = offset.dot(agreement.ldlt().solve(offset)) <= config.poses.agreement_chi2;
+      if (!agrees) {
+        ++stats.poses_scan_contradicted;
+      }
+      const Mat3 total = scan_information + (agrees ? confirmed(m.covariance) : doubted);
+      const Vec3 fused = total.ldlt().solve(scan_information * offset);
+      Mat3 covariance = total.inverse();
+      covariance = 0.5 * (covariance + covariance.transpose());
+      covariance.diagonal() += floors;
+      BaKeyframe & b = ba_keyframes[i];
+      b.prior = {recorded.x + fused.x(), recorded.y + fused.y(), recorded.yaw + fused.z()};
+      b.prior_sqrt_information = Eigen::LLT<Mat3>(covariance.inverse()).matrixU();
+      flags[i] |= db::KeyframeRecord::kFlagScanMatched;
+      ++stats.poses_scan_matched;
+    }
+    if (stats.poses_scan_unmatched > 0) {
+      stats.warnings.push_back(
+        std::to_string(stats.poses_scan_unmatched) +
+        " keyframe(s) had a scan that didn't match the map; their recorded pose was used");
+    }
+  }
+  std::vector<Pose2> start(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    start[i] = ba_keyframes[i].prior;
+  }
+  if (stats.poses_scan_matched > 0 || any_odometry) {
+    const BaResult graph = adjustPosePriors(ba_keyframes, {}, {}, config.ba);
+    if (graph.usable) {
+      start = graph.poses;
+      stats.poses_odometry_links = graph.odometry_links;
+    } else {
+      stats.warnings.push_back(
+        "keyframe pose graph failed (" + graph.message + "); the priors were used");
+    }
+  }
+  double correction_sum = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const Pose2 & recorded = input.keyframes[i].prior;
+    const double shift = std::hypot(start[i].x - recorded.x, start[i].y - recorded.y);
+    correction_sum += shift;
+    stats.poses_max_correction_m = std::max(stats.poses_max_correction_m, shift);
+    stats.poses_max_correction_yaw_deg = std::max(
+      stats.poses_max_correction_yaw_deg,
+      std::abs(normalizeAngle(start[i].yaw - recorded.yaw)) * 180.0 / M_PI);
+  }
+  stats.poses_mean_correction_m = correction_sum / static_cast<double>(n);
+  report(BuildStage::kPoses, n, n);
+  stats.stage_seconds[static_cast<int>(BuildStage::kPoses)] = watch.lap();
 
   // --- Features, learned global descriptors and thumbnails -------------------------------------
   BackendRegistry builtin;
@@ -350,7 +504,7 @@ BuildStats buildMap(
   std::vector<Pose3> prior_cameras(n);
   std::vector<KeyframeView> views(n);
   for (std::size_t i = 0; i < n; ++i) {
-    prior_cameras[i] = cameraPose(input.keyframes[i].prior, input.keyframes[i].T_base_cam);
+    prior_cameras[i] = cameraPose(start[i], input.keyframes[i].T_base_cam);
     views[i] = keyframeView(prior_cameras[i]);
   }
   const auto pairs = selectPairs(views, retrieved, config.pairs);
@@ -499,18 +653,13 @@ BuildStats buildMap(
   stats.stage_seconds[static_cast<int>(BuildStage::kTriangulation)] = watch.lap();
 
   // --- Pose-prior bundle adjustment and re-triangulation ---------------------------------------
-  std::vector<Pose2> refined(n);
-  std::vector<uint32_t> flags(n, 0);
-  for (std::size_t i = 0; i < n; ++i) {
-    refined[i] = input.keyframes[i].prior;
-  }
+  // The priors and odometry of the pose graph, the landmarks added, starting from its poses.
+  std::vector<Pose2> refined = start;
   report(BuildStage::kBundleAdjustment, 0, 1);
   if (config.ba.enabled && !landmarks.empty()) {
     stats.ba_run = true;
-    std::vector<BaKeyframe> ba_keyframes(n);
     for (std::size_t i = 0; i < n; ++i) {
-      const BuildKeyframe & k = input.keyframes[i];
-      ba_keyframes[i] = {k.prior, k.covariance, k.T_base_cam, focal};
+      ba_keyframes[i].initial = start[i];
     }
     std::vector<Vec3> positions;
     std::vector<BaObservation> ba_observations;
@@ -533,13 +682,15 @@ BuildStats buildMap(
       double shift_sum = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
         refined[i] = ba.poses[i];
-        const Pose2 & prior = input.keyframes[i].prior;
-        const Vec2 shift(refined[i].x - prior.x, refined[i].y - prior.y);
+        // The adjustment's own shift, from where it started.
+        const Pose2 & before = start[i];
+        const Vec2 shift(refined[i].x - before.x, refined[i].y - before.y);
         shift_sum += shift.norm();
         stats.ba_mean_shift_vector += shift;
         stats.ba_max_shift_m = std::max(stats.ba_max_shift_m, shift.norm());
-        stats.ba_max_shift_yaw_deg =
-          std::max(stats.ba_max_shift_yaw_deg, std::abs(refined[i].yaw - prior.yaw) * 180.0 / M_PI);
+        stats.ba_max_shift_yaw_deg = std::max(
+          stats.ba_max_shift_yaw_deg,
+          std::abs(normalizeAngle(refined[i].yaw - before.yaw)) * 180.0 / M_PI);
         if (ba.at_bound[i] != 0) {
           flags[i] |= db::KeyframeRecord::kFlagBaShiftAtBound;
           ++stats.ba_keyframes_at_bound;
@@ -824,7 +975,14 @@ std::string toJson(const BuildStats & s)
     .field("ba_max_shift_yaw_deg", s.ba_max_shift_yaw_deg)
     .field("ba_mean_shift_x_m", s.ba_mean_shift_vector.x())
     .field("ba_mean_shift_y_m", s.ba_mean_shift_vector.y())
-    .field("ba_keyframes_at_bound", s.ba_keyframes_at_bound);
+    .field("ba_keyframes_at_bound", s.ba_keyframes_at_bound)
+    .field("poses_scan_matched", s.poses_scan_matched)
+    .field("poses_scan_unmatched", s.poses_scan_unmatched)
+    .field("poses_scan_contradicted", s.poses_scan_contradicted)
+    .field("poses_odometry_links", s.poses_odometry_links)
+    .field("poses_mean_correction_m", s.poses_mean_correction_m)
+    .field("poses_max_correction_m", s.poses_max_correction_m)
+    .field("poses_max_correction_yaw_deg", s.poses_max_correction_yaw_deg);
   json.key("stage_seconds").beginObject();
   for (int i = 0; i < kBuildStageCount && i < static_cast<int>(s.stage_seconds.size()); ++i) {
     json.field(toString(static_cast<BuildStage>(i)), s.stage_seconds[i]);

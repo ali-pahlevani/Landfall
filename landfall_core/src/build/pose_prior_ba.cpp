@@ -22,6 +22,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace landfall
 {
@@ -89,6 +90,35 @@ struct PriorResidual
   Mat3 sqrt_information;
 };
 
+// Relative motion of two consecutive keyframes against their odometry, whitened.
+struct OdometryResidual
+{
+  OdometryResidual(const Pose2 & delta, const Vec3 & inverse_std)
+  : delta(delta), inverse_std(inverse_std)
+  {
+  }
+
+  template <typename T>
+  bool operator()(const T * const a, const T * const b, T * residual) const
+  {
+    using std::atan2;
+    using std::cos;
+    using std::sin;
+    const T c = cos(a[2]);
+    const T s = sin(a[2]);
+    const T dx = b[0] - a[0];
+    const T dy = b[1] - a[1];
+    const T dyaw = b[2] - a[2] - T(delta.yaw);
+    residual[0] = (c * dx + s * dy - T(delta.x)) * T(inverse_std.x());
+    residual[1] = (-s * dx + c * dy - T(delta.y)) * T(inverse_std.y());
+    residual[2] = atan2(sin(dyaw), cos(dyaw)) * T(inverse_std.z());
+    return true;
+  }
+
+  Pose2 delta;
+  Vec3 inverse_std;
+};
+
 // U with U^T U = (covariance + floors)^-1, or the configured prior std's when set. Falls back to the
 // diagonal for a covariance that isn't positive semi-definite (localization stacks occasionally
 // publish those).
@@ -136,9 +166,41 @@ BaResult adjustPosePriors(
   result.landmarks = landmarks;
   result.at_bound.assign(keyframes.size(), 0);
 
+  // Per keyframe: the prior's square-root information and the hard bounds around the prior. A
+  // prior with its own information may move up to 3 of its standard deviations, at least the
+  // configured shift.
+  const double max_yaw = toRad(params.max_shift_yaw_deg);
+  std::vector<Mat3> sqrt_info(keyframes.size());
+  std::vector<std::array<double, 3>> bounds(keyframes.size());
+  for (std::size_t k = 0; k < keyframes.size(); ++k) {
+    bounds[k] = {params.max_shift_xy, params.max_shift_xy, max_yaw};
+    if (keyframes[k].prior_sqrt_information) {
+      sqrt_info[k] = *keyframes[k].prior_sqrt_information;
+      const Mat3 covariance = (sqrt_info[k].transpose() * sqrt_info[k]).inverse();
+      const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> xy(
+        0.5 * (covariance.topLeftCorner<2, 2>() + covariance.topLeftCorner<2, 2>().transpose()),
+        Eigen::EigenvaluesOnly);
+      const double std_xy = std::sqrt(std::max(xy.eigenvalues().maxCoeff(), 0.0));
+      const double std_yaw = std::sqrt(std::max(covariance(2, 2), 0.0));
+      bounds[k] = {
+        std::max(params.max_shift_xy, 3.0 * std_xy), std::max(params.max_shift_xy, 3.0 * std_xy),
+        std::max(max_yaw, 3.0 * std_yaw)};
+    } else {
+      sqrt_info[k] = sqrtInformation(keyframes[k].covariance, params);
+    }
+  }
+
+  // The start: the initial pose (its heading unwrapped next to the prior's), inside the bounds.
   std::vector<std::array<double, 3>> pose_blocks(keyframes.size());
   for (std::size_t k = 0; k < keyframes.size(); ++k) {
-    pose_blocks[k] = {keyframes[k].prior.x, keyframes[k].prior.y, keyframes[k].prior.yaw};
+    const Pose2 & prior = keyframes[k].prior;
+    const Pose2 start = keyframes[k].initial.value_or(prior);
+    const double values[3] = {start.x, start.y, prior.yaw + normalizeAngle(start.yaw - prior.yaw)};
+    const double centers[3] = {prior.x, prior.y, prior.yaw};
+    for (int i = 0; i < 3; ++i) {
+      pose_blocks[k][i] =
+        std::clamp(values[i], centers[i] - bounds[k][i], centers[i] + bounds[k][i]);
+    }
   }
   std::vector<std::array<double, 3>> point_blocks(landmarks.size());
   for (std::size_t l = 0; l < landmarks.size(); ++l) {
@@ -159,25 +221,49 @@ BaResult adjustPosePriors(
       new ceres::CauchyLoss(params.loss_scale_px), pose_blocks[o.keyframe].data(),
       point_blocks[o.landmark].data());
   }
-  const double max_yaw = toRad(params.max_shift_yaw_deg);
   for (std::size_t k = 0; k < keyframes.size(); ++k) {
     double * pose = pose_blocks[k].data();
+    ceres::LossFunction * loss =
+      keyframes[k].prior_sqrt_information ? new ceres::HuberLoss(params.prior_loss_scale) : nullptr;
     problem.AddResidualBlock(
       new ceres::AutoDiffCostFunction<PriorResidual, 3, 3>(
-        new PriorResidual(keyframes[k].prior, sqrtInformation(keyframes[k].covariance, params))),
-      nullptr, pose);
-    const double bounds[3] = {params.max_shift_xy, params.max_shift_xy, max_yaw};
+        new PriorResidual(keyframes[k].prior, sqrt_info[k])),
+      loss, pose);
+    const Pose2 & prior = keyframes[k].prior;
+    const double centers[3] = {prior.x, prior.y, prior.yaw};
     for (int i = 0; i < 3; ++i) {
-      problem.SetParameterLowerBound(pose, i, pose[i] - bounds[i]);
-      problem.SetParameterUpperBound(pose, i, pose[i] + bounds[i]);
+      problem.SetParameterLowerBound(pose, i, centers[i] - bounds[k][i]);
+      problem.SetParameterUpperBound(pose, i, centers[i] + bounds[k][i]);
     }
+  }
+  const OdometryParams & odo = params.odometry;
+  for (std::size_t k = 1; k < keyframes.size(); ++k) {
+    const BaKeyframe & a = keyframes[k - 1];
+    const BaKeyframe & b = keyframes[k];
+    if (a.session != b.session || !a.odom || !b.odom) {
+      continue;
+    }
+    const Pose2 delta = between(*a.odom, *b.odom);
+    const double distance = std::hypot(delta.x, delta.y);
+    if (distance > odo.max_step) {
+      continue;
+    }
+    const double std_xy = odo.std_xy + odo.std_xy_per_m * distance;
+    const double std_yaw = toRad(odo.std_yaw_deg) + odo.std_yaw_per_rad * std::abs(delta.yaw);
+    problem.AddResidualBlock(
+      new ceres::AutoDiffCostFunction<OdometryResidual, 3, 3, 3>(
+        new OdometryResidual(delta, Vec3(1.0 / std_xy, 1.0 / std_xy, 1.0 / std_yaw))),
+      new ceres::CauchyLoss(2.0), pose_blocks[k - 1].data(), pose_blocks[k].data());
+    ++result.odometry_links;
   }
 
   ceres::Solver::Options options;
-  options.linear_solver_type = ceres::SPARSE_SCHUR;
+  // Landmarks: the Schur complement on them. A pose graph alone: sparse normal equations.
+  options.linear_solver_type =
+    observations.empty() ? ceres::SPARSE_NORMAL_CHOLESKY : ceres::SPARSE_SCHUR;
   std::string invalid;
   if (!options.IsValid(&invalid)) {
-    options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.linear_solver_type = observations.empty() ? ceres::DENSE_QR : ceres::DENSE_SCHUR;
   }
   options.max_num_iterations = params.max_iterations;
   options.num_threads = 1;
@@ -194,12 +280,12 @@ BaResult adjustPosePriors(
   result.usable = true;
   for (std::size_t k = 0; k < keyframes.size(); ++k) {
     const auto & p = pose_blocks[k];
-    result.poses[k] = {p[0], p[1], p[2]};
+    result.poses[k] = {p[0], p[1], p[2]};  // heading unwrapped next to the prior's
     const Pose2 & prior = keyframes[k].prior;
     const double tolerance = 1e-9;
-    result.at_bound[k] = std::abs(p[0] - prior.x) >= params.max_shift_xy - tolerance ||
-                             std::abs(p[1] - prior.y) >= params.max_shift_xy - tolerance ||
-                             std::abs(p[2] - prior.yaw) >= max_yaw - tolerance
+    result.at_bound[k] = std::abs(p[0] - prior.x) >= bounds[k][0] - tolerance ||
+                             std::abs(p[1] - prior.y) >= bounds[k][1] - tolerance ||
+                             std::abs(p[2] - prior.yaw) >= bounds[k][2] - tolerance
                            ? 1
                            : 0;
   }

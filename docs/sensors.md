@@ -10,7 +10,7 @@ the same inputs (`docs/recording.md`, `docs/relocalization.md`).
 | TF `odom → base` | everything | the robot's odometry, the same transform AMCL uses |
 | TF `base → camera` | everything | looked up at each image's stamp |
 | TF `map → odom` | recording, the monitors | from AMCL (or slam_toolbox in localization mode) |
-| `sensor_msgs/LaserScan` | relocalization | the scan check; the scan AMCL uses |
+| `sensor_msgs/LaserScan` | recording, relocalization | stored with each keyframe so the build matches its pose to the map (`scan.topic`); the scan check; the scan AMCL uses |
 | `sensor_msgs/Imu` with orientation | optional | gravity on ramps, the tilt check |
 
 ## Camera
@@ -88,10 +88,12 @@ IMU, and the recorder skips keyframes on ramps (`gating.max_tilt_deg`; the reloc
 
 ## LiDAR
 
-The relocalizer checks every pose against the occupancy map with a `LaserScan`
-(`scan_check.topic`): use the scan AMCL uses, which matches the map. A merged scan of several
-scanners works if its frame is in TF. The scan must be within `scan_check.max_time_offset` (0.5 s)
-of an image; the relocalizer moves it to the image's time with odometry.
+The recorder stores the scan with each keyframe (`scan.topic`), and the build matches the
+keyframe's pose to the map with it (`docs/recording.md`). The relocalizer checks every pose
+against the occupancy map with a `LaserScan` (`scan_check.topic`). Use the scan AMCL uses, which
+matches the map, for both. A merged scan of several scanners works if its frame is in TF. The scan
+must be within `scan_check.max_time_offset` (0.5 s) of an image; the relocalizer moves it to the
+image's time with odometry.
 
 On coarse maps, `scan_check.hit_tolerance` (0.10 m) must be at least one cell: a 0.1 m map needs
 0.10 to 0.15 m. A camera-only setup (`scan_check.mode: disabled`) gives up the strongest check

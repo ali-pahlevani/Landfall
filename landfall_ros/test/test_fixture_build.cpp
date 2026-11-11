@@ -42,6 +42,7 @@ namespace
 
 namespace fs = std::filesystem;
 using landfall::Pose2;
+using landfall::Vec2;
 
 const std::string kFixture = LANDFALL_FIXTURE_DIR;
 
@@ -163,7 +164,18 @@ TEST(FixtureBuild, DepotFixtureBuildsAnAccurateDeterministicMap)
   RecordProperty("mean_track_length", std::to_string(stats.mean_track_length));
   RecordProperty("reprojection_rms_px", std::to_string(stats.reprojection_rms_px));
   RecordProperty("ba_max_shift_cm", std::to_string(100.0 * stats.ba_max_shift_m));
+  RecordProperty("poses_scan_matched", std::to_string(stats.poses_scan_matched));
+  RecordProperty("poses_scan_contradicted", std::to_string(stats.poses_scan_contradicted));
+  RecordProperty("poses_odometry_links", std::to_string(stats.poses_odometry_links));
+  RecordProperty("poses_mean_correction_cm", std::to_string(100.0 * stats.poses_mean_correction_m));
 
+  // The fixture keeps a scan every 3 s and an image every 5 s: most keyframes have a scan within
+  // bag.scan_max_time_offset. Every one matches the map, and none contradicts the recorded pose:
+  // AMCL was good in this drive, and the build keeps its poses (V56).
+  EXPECT_GE(bag.with_scan, bag.keyframes.size() / 2);
+  EXPECT_EQ(stats.poses_scan_matched, static_cast<int>(bag.with_scan));
+  EXPECT_EQ(stats.poses_scan_contradicted, 0);
+  EXPECT_EQ(stats.poses_odometry_links, stats.keyframes - 1);
   EXPECT_LT(seconds, 60.0);
   EXPECT_GE(stats.landmarks, 600);
   EXPECT_GE(stats.mean_track_length, 3.0);
@@ -193,13 +205,25 @@ TEST(FixtureBuild, DepotFixtureBuildsAnAccurateDeterministicMap)
   const Errors after = errors(truth, refined);
   RecordProperty("prior_max_error_cm", std::to_string(100.0 * before.fitted_position));
   RecordProperty("prior_max_yaw_error_deg", std::to_string(before.fitted_yaw_deg));
+  RecordProperty("prior_nominal_max_error_cm", std::to_string(100.0 * before.nominal_position));
   RecordProperty("refined_max_error_cm", std::to_string(100.0 * after.fitted_position));
   RecordProperty("refined_max_yaw_error_deg", std::to_string(after.fitted_yaw_deg));
+  RecordProperty("refined_nominal_max_error_cm", std::to_string(100.0 * after.nominal_position));
   EXPECT_GE(before.count, prior.size() - 2);
   EXPECT_LE(before.fitted_position, 0.05);
   EXPECT_LE(before.fitted_yaw_deg, 1.0);
   EXPECT_LE(before.nominal_position, 0.05);
   EXPECT_LE(after.fitted_position, 0.05);
   EXPECT_LE(after.fitted_yaw_deg, 1.0);
-  EXPECT_LE(after.nominal_position, 0.05);
+  // The trajectory as a whole stays where the recording put it, within the map frame's own
+  // uncertainty: AMCL and the scan matching realize the map frame independently (both put it 2 to
+  // 3 cm from the nominal transform here, which is known only to about 2 cm), so the build's mean
+  // shift from the recorded poses is bounded instead of the nominal error.
+  Vec2 shift = Vec2::Zero();
+  for (std::size_t i = 0; i < prior.size(); ++i) {
+    shift += Vec2(refined[i].second.x - prior[i].second.x, refined[i].second.y - prior[i].second.y);
+  }
+  shift /= static_cast<double>(prior.size());
+  RecordProperty("mean_shift_cm", std::to_string(100.0 * shift.norm()));
+  EXPECT_LE(shift.norm(), 0.02);
 }

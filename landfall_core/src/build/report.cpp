@@ -281,6 +281,26 @@ MapReport makeReport(const db::Database & database)
         std::to_string(static_cast<int>(number(build, "rejected_below_floor"))) + " below floor, " +
         std::to_string(static_cast<int>(number(build, "rejected_reprojection"))) +
         " inconsistent |\n";
+  md += "\n## Keyframe poses\n\n";
+  if (build && build["poses_scan_matched"]) {
+    const int matched = static_cast<int>(number(build, "poses_scan_matched"));
+    const int unmatched = static_cast<int>(number(build, "poses_scan_unmatched"));
+    const int links = static_cast<int>(number(build, "poses_odometry_links"));
+    md += "| | |\n|---|---|\n";
+    md += "| Matched to the map with their scan | " + std::to_string(matched) + " of " +
+          std::to_string(static_cast<int>(number(build, "keyframes"))) +
+          (unmatched > 0 ? " (" + std::to_string(unmatched) + " scans didn't match)" : "") + " |\n";
+    md += "| Recorded poses the scan contradicted | " +
+          std::to_string(static_cast<int>(number(build, "poses_scan_contradicted"))) +
+          " (their scan match was used instead) |\n";
+    md += "| Odometry links | " + std::to_string(links) + " |\n";
+    md += "| Correction of the recorded poses | mean " +
+          fixed(100.0 * number(build, "poses_mean_correction_m"), 1) + " cm, max " +
+          fixed(100.0 * number(build, "poses_max_correction_m"), 1) + " cm, max yaw " +
+          fixed(number(build, "poses_max_correction_yaw_deg"), 2) + " deg |\n";
+  } else {
+    md += "Recorded poses (built before scan matching and odometry existed).\n";
+  }
   md += "\n## Pose-prior bundle adjustment\n\n";
   if (build && build["ba_run"] && build["ba_run"].as<bool>()) {
     md += "| | |\n|---|---|\n";

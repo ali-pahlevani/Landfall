@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <random>
 #include <set>
 #include <string>
@@ -27,6 +28,9 @@
 #include "landfall/build/report.hpp"
 #include "landfall/db/codec.hpp"
 #include "landfall/db/database.hpp"
+#include "landfall/grid/likelihood_field.hpp"
+#include "landfall/grid/scan_matcher.hpp"
+#include "landfall/grid/scan_verifier.hpp"
 #include "synthetic_map.hpp"
 #include "test_utils.hpp"
 
@@ -281,4 +285,140 @@ TEST(MapBuilder, RejectsInvalidInput)
   // Never overwrites an existing database.
   landfall::test::writeText(dir.file("exists.db"), "x");
   EXPECT_THROW(landfall::buildMap(s.input, config(1), dir.file("exists.db")), std::runtime_error);
+}
+
+TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
+{
+  // The recording's localization drifts as AMCL does in a warehouse: a bias wandering up to 25 cm
+  // and 1.5 deg plus 3 cm of noise, while reporting 2 cm. The keyframes carry their LiDAR scan
+  // (the room's walls are in the map) and their odometry (3 mm noise per step).
+  Scenario s = makeScenario(31);
+  landfall::test::addRoomToGrid(&s.input.map.grid, -3.0, -3.0, 13.0, 9.0);
+  BuildInput drifting = s.input;
+  std::mt19937 rng(31);
+  std::normal_distribution<double> noise(0.0, 0.03);
+  std::normal_distribution<double> step(0.0, 0.003);
+  landfall::Pose3 T_base_laser = landfall::Pose3::Identity();
+  T_base_laser.translation() = Vec3(0.0, 0.0, 0.4);
+  Pose2 odom{2.0, -1.0, 0.5};
+  for (std::size_t k = 0; k < s.truth.size(); ++k) {
+    const Pose2 & t = s.truth[k];
+    const auto phase = static_cast<double>(k);
+    auto & keyframe = drifting.keyframes[k];
+    keyframe.prior = {
+      t.x + 0.25 * std::sin(phase / 7.0) + noise(rng),
+      t.y + 0.15 * std::cos(phase / 11.0) + noise(rng), t.yaw + deg(1.5) * std::sin(phase / 5.0)};
+    if (k > 0) {
+      Pose2 motion = landfall::between(s.truth[k - 1], t);
+      motion.x += step(rng);
+      motion.y += step(rng);
+      odom = landfall::compose(odom, motion);
+    }
+    keyframe.odom = odom;
+  }
+  // The scans come from the true surfaces, which lie inside the map's occupied cells (as in a map
+  // made from the same LiDAR): the walls of a 1 cm grid, at the centres of the 5 cm map's
+  // innermost occupied cells.
+  landfall::OccupancyGrid surfaces;
+  surfaces.resolution = 0.01;
+  surfaces.origin = s.input.map.grid.origin;
+  surfaces.width = 2000;
+  surfaces.height = 1500;
+  surfaces.data.assign(std::size_t{2000} * 1500, landfall::kCellFree);
+  landfall::test::addRoomToGrid(&surfaces, -3.0 + 0.015, -3.0 + 0.015, 13.0 - 0.015, 9.0 - 0.015);
+  BuildInput with_scans = drifting;
+  for (std::size_t k = 0; k < s.truth.size(); ++k) {
+    with_scans.keyframes[k].scan = landfall::test::simulateScan(
+      surfaces, landfall::toPose3(s.truth[k]), T_base_laser, static_cast<int>(k), 360, 10.0, 0.01);
+  }
+  for (auto & keyframe : drifting.keyframes) {
+    keyframe.odom.reset();  // the recorded poses alone, as before scans and odometry
+  }
+
+  landfall::test::TempDir dir;
+  const auto plain = landfall::buildMap(drifting, config(0), dir.file("plain.landfall.db"));
+  const auto fixed = landfall::buildMap(with_scans, config(0), dir.file("fixed.landfall.db"));
+  EXPECT_EQ(plain.poses_scan_matched, 0);
+  EXPECT_EQ(fixed.poses_scan_matched, static_cast<int>(s.truth.size()));
+  EXPECT_EQ(fixed.poses_scan_unmatched, 0);
+  // Every step is linked but the jump from the end of the first loop to the start of the second.
+  EXPECT_EQ(fixed.poses_odometry_links, static_cast<int>(s.truth.size()) - 2);
+
+  // The scan matches alone, as the builder computes them.
+  {
+    const auto field = std::make_shared<const landfall::LikelihoodField>(s.input.map.grid);
+    landfall::ScanCheckParams projection;
+    projection.max_range = 100.0;
+    projection.check_alternatives = false;
+    const landfall::ScanVerifier projector(field, projection);
+    double sum = 0.0;
+    double worst = 0.0;
+    double sum_x = 0.0;
+    double sum_y = 0.0;
+    for (std::size_t k = 0; k < s.truth.size(); ++k) {
+      auto scan = *with_scans.keyframes[k].scan;
+      scan.range_max -= 1e-3;
+      const auto projected = projector.project(scan, Vec3(0.0, 0.0, -1.0));
+      const auto match = landfall::matchScan(
+        *field, projected.endpoints, with_scans.keyframes[k].prior, landfall::ScanMatchParams());
+      const double e = landfall::translationDistance(match.pose, s.truth[k]);
+      sum += e;
+      worst = std::max(worst, e);
+      sum_x += match.pose.x - s.truth[k].x;
+      sum_y += match.pose.y - s.truth[k].y;
+    }
+    const auto count = static_cast<double>(s.truth.size());
+    RecordProperty("scan_mean_error_mm", std::to_string(1000.0 * sum / count));
+    RecordProperty("scan_worst_error_mm", std::to_string(1000.0 * worst));
+    RecordProperty(
+      "scan_mean_offset_mm",
+      std::to_string(1000.0 * sum_x / count) + ", " + std::to_string(1000.0 * sum_y / count));
+    EXPECT_LT(sum / count, 0.03);
+    EXPECT_LT(worst, 0.06);
+  }
+  EXPECT_TRUE(fixed.ba_usable);
+
+  const auto error = [&](const std::string & path) {
+    const auto db = landfall::db::Database::open(path, landfall::db::Database::Access::kReadOnly);
+    double sum = 0.0;
+    double worst = 0.0;
+    for (const auto & k : db.keyframes()) {
+      const double e =
+        landfall::translationDistance(k.refined, s.truth[static_cast<std::size_t>(k.id - 1)]);
+      sum += e;
+      worst = std::max(worst, e);
+    }
+    return std::make_pair(sum / static_cast<double>(s.truth.size()), worst);
+  };
+  double prior_error = 0.0;
+  for (std::size_t k = 0; k < s.truth.size(); ++k) {
+    prior_error += landfall::translationDistance(drifting.keyframes[k].prior, s.truth[k]);
+  }
+  prior_error /= static_cast<double>(s.truth.size());
+  const auto [plain_mean, plain_worst] = error(dir.file("plain.landfall.db"));
+  const auto [fixed_mean, fixed_worst] = error(dir.file("fixed.landfall.db"));
+  RecordProperty("mean_prior_error_mm", std::to_string(1000.0 * prior_error));
+  RecordProperty("plain_mean_error_mm", std::to_string(1000.0 * plain_mean));
+  RecordProperty("fixed_mean_error_mm", std::to_string(1000.0 * fixed_mean));
+  RecordProperty("fixed_worst_error_mm", std::to_string(1000.0 * fixed_worst));
+  RecordProperty("plain_landmarks", std::to_string(plain.landmarks));
+  RecordProperty("fixed_landmarks", std::to_string(fixed.landmarks));
+  RecordProperty("plain_rms_px", std::to_string(plain.reprojection_rms_px));
+  RecordProperty("fixed_rms_px", std::to_string(fixed.reprojection_rms_px));
+  // A 5 cm map pins a scan to a couple of centimetres (two-cell walls are flat across their
+  // thickness); the adjustment with odometry and vision keeps that, far below the drift.
+  EXPECT_GT(prior_error, 0.1);
+  EXPECT_LT(fixed_mean, 0.03);
+  EXPECT_LT(fixed_worst, 0.06);
+  EXPECT_LT(fixed_mean, 0.25 * plain_mean);
+  EXPECT_LT(fixed.reprojection_rms_px, 0.8 * plain.reprojection_rms_px);
+
+  // Flags and the report tell the story.
+  const auto db = landfall::db::Database::open(
+    dir.file("fixed.landfall.db"), landfall::db::Database::Access::kReadOnly);
+  for (const auto & k : db.keyframes()) {
+    EXPECT_NE(k.flags & landfall::db::KeyframeRecord::kFlagScanMatched, 0U) << k.id;
+  }
+  const auto report = landfall::makeReport(db);
+  EXPECT_NE(report.markdown.find("| Matched to the map with their scan | "), std::string::npos);
 }

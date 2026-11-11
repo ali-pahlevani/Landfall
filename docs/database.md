@@ -43,6 +43,10 @@ builder (`landfall build`, see `docs/recording.md`) and opened read-only by the 
 | `vocabulary` | `backend_id` | serialized vocabulary tree (classical backend) |
 | `pca` | `backend_id` | optional projection for learned global descriptors |
 
+Keyframe `flags` bits: 1 the bundle adjustment's shift reached its bound, 2 the pose was matched to
+the map with the keyframe's LiDAR scan, 4 the keyframe had a scan that didn't match the map (its
+recorded pose was used); see `docs/recording.md`, "Keyframe poses".
+
 ## What the builder writes
 
 - `meta`: `landfall_version`, `created_utc`, `builder_config` (every effective setting as YAML),

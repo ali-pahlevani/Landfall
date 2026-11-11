@@ -23,6 +23,7 @@
 #include "landfall/build/triangulation.hpp"
 #include "landfall/db/database.hpp"
 #include "landfall/features/vocab_tree.hpp"
+#include "landfall/grid/scan_matcher.hpp"
 #include "landfall/record/keyframe_selector.hpp"
 #include "landfall/record/staging.hpp"
 #include "landfall/registry.hpp"
@@ -42,6 +43,28 @@ inline TriangulationParams autoTriangulationParams()
 }  // namespace detail
 
 /// What `landfall build` does with its keyframes (YAML keys in parentheses).
+/// (poses.*) Keyframe poses beyond the recording's localization (plan §7.6): each keyframe's scan
+/// matched to the map, consecutive keyframes tied by odometry. The odometry's noise is
+/// `ba.odometry` (keys poses.odom_*).
+struct KeyframePoseParams
+{
+  bool scan_matching = true;  ///< (poses.scan_matching) match the keyframes that have a scan
+  /// (poses.search_xy, search_yaw_deg, beam_sigma, hit_tolerance, min_beams, min_hit_ratio,
+  /// effective_beams)
+  ScanMatchParams scan;
+  double max_range = 0.0;  ///< m (poses.max_range): longer beams are ignored; 0: the scanner's
+  /// The scan match is fused with the recorded pose. Where they agree (Mahalanobis distance within
+  /// agreement_chi2), the recorded pose counts with recorded_std_* (a good localization keeps its
+  /// accuracy); where the scan contradicts it, with disagreement_std_* only, so it just fills in
+  /// what the scan can't tell (e.g. along a corridor). (poses.recorded_std_xy, ...)
+  double recorded_std_xy = 0.02;
+  double recorded_std_yaw_deg = 0.5;
+  double disagreement_std_xy = 0.3;
+  double disagreement_std_yaw_deg = 3.0;
+  double agreement_chi2 = 11.34;  ///< 99 % of a 3-DoF chi-square
+  bool odometry = true;           ///< (poses.odometry) tie consecutive keyframes that have odometry
+};
+
 struct BuilderConfig
 {
   std::string local_backend = "orb";   ///< (backend.local)
@@ -64,7 +87,8 @@ struct BuilderConfig
 
   /// (triangulation.*); max_reprojection_px 0 = auto: 0.6 % of the image width.
   TriangulationParams triangulation = detail::autoTriangulationParams();
-  PosePriorBaParams ba;                 ///< (ba.*)
+  KeyframePoseParams poses;             ///< (poses.*)
+  PosePriorBaParams ba;                 ///< (ba.*; its odometry: poses.odom_*)
   double ba_max_reprojection_px = 0.0;  ///< (ba.max_reprojection_px) re-filter; 0 = 0.75 x above
 
   bool prune_unobserved_features = true;           ///< (db.prune_unobserved_features)
@@ -82,7 +106,8 @@ struct BagConfig
   std::string camera_info_topic = "/camera/camera_info";
   std::string pose_topic = "/amcl_pose";           ///< PoseWithCovarianceStamped; "" with tf_only
   std::string imu_topic;                           ///< optional: ramp gate
-  std::string scan_topic = "/scan";                ///< LaserScan; used by `landfall query` only
+  std::string scan_topic = "/scan";                ///< LaserScan (scan matching, `landfall query`)
+  double scan_max_time_offset = 0.2;               ///< s: farthest scan from a keyframe's image
   std::string imu_frame;                           ///< IMU frame in TF; "" = the messages' frame_id
   std::string gravity_source = "auto";             ///< auto, imu, flat_floor (as the recorder)
   double imu_max_age = 0.1;                        ///< s

@@ -55,6 +55,7 @@ add_library(landfall_core SHARED
   src/grid/likelihood_field.cpp
   src/grid/map_loader.cpp
   src/grid/occupancy_grid.cpp
+  src/grid/scan_matcher.cpp
   src/grid/scan_verifier.cpp
   src/record/image_quality.cpp
   src/record/keyframe_selector.cpp
@@ -168,6 +169,7 @@ if(BUILD_TESTING)
   landfall_core_test(test_sha256)
   landfall_core_test(test_database LIBRARIES SQLite::SQLite3)
   landfall_core_test(test_map_loader LIBRARIES opencv_imgcodecs)
+  landfall_core_test(test_scan_matcher)
   landfall_core_test(test_scan_verifier)
   landfall_core_test(test_features TIMEOUT 300)
   landfall_core_test(test_vocab_tree TIMEOUT 300)

@@ -24,6 +24,7 @@
 #include "landfall/build/builder_config.hpp"
 #include "landfall/camera_model.hpp"
 #include "landfall/grid/map_loader.hpp"
+#include "landfall/grid/scan_verifier.hpp"
 #include "landfall/registry.hpp"
 
 namespace landfall
@@ -50,9 +51,13 @@ struct BuildKeyframe
   int session = 0;  ///< index into BuildInput::sessions
   int camera = 0;   ///< index into BuildInput::cameras
   int64_t stamp_ns = 0;
-  Pose2 prior;
-  std::optional<Mat3> covariance;
+  Pose2 prior;                           ///< recorded base pose (the localization's)
+  std::optional<Mat3> covariance;        ///< recorded x, y, yaw covariance
   Pose3 T_base_cam = Pose3::Identity();  ///< at this keyframe's stamp
+  /// Odometry pose (odom -> base) at the stamp: ties consecutive keyframes of the session.
+  std::optional<Pose2> odom;
+  /// LiDAR scan near the stamp, its laser pose in the base frame at the stamp: matched to the map.
+  std::optional<PlanarScan> scan;
   std::string quality_json = "{}";
   /// Loads the image (8-bit gray, BGR or BGRA). Called once, from a worker thread.
   std::function<cv::Mat()> load_image;
@@ -98,12 +103,21 @@ struct BuildStats
   double ba_max_shift_yaw_deg = 0.0;
   Vec2 ba_mean_shift_vector = Vec2::Zero();  ///< a large one means a biased recording
   int ba_keyframes_at_bound = 0;
+  int poses_scan_matched = 0;       ///< keyframes whose scan was matched to the map
+  int poses_scan_unmatched = 0;     ///< keyframes whose scan didn't match (recorded pose kept)
+  int poses_scan_contradicted = 0;  ///< matched keyframes whose scan contradicted the recording
+  int poses_odometry_links = 0;     ///< odometry constraints between consecutive keyframes
+  /// How far the scan matching and odometry moved the recorded poses (before the adjustment).
+  double poses_mean_correction_m = 0.0;
+  double poses_max_correction_m = 0.0;
+  double poses_max_correction_yaw_deg = 0.0;
   std::vector<double> stage_seconds;  ///< per BuildStage below
   std::vector<std::string> warnings;
 };
 
 /// Stages, in order, for progress reports and timings.
 enum class BuildStage : uint8_t {
+  kPoses,
   kFeatures,
   kVocabulary,
   kPairs,
@@ -113,16 +127,18 @@ enum class BuildStage : uint8_t {
   kBundleAdjustment,
   kWriting,
 };
-constexpr int kBuildStageCount = 8;
+constexpr int kBuildStageCount = 9;
 const char * toString(BuildStage stage);
 
 /// (stage, done, total); called from the building thread only.
 using BuildProgress = std::function<void(BuildStage, std::size_t, std::size_t)>;
 
-/// Builds a map database from keyframes with known poses: features, global descriptors (a
-/// vocabulary and bags of words, or a learned backend), pair selection, matching with two-view
-/// verification, tracks, triangulation with the poses held fixed, the optional bounded
-/// pose-prior BA, re-triangulation, and the database (written in one transaction; its content
+/// Builds a map database from keyframes with recorded poses: the keyframe poses first (each scan
+/// matched to the map where the scan can tell, the recorded pose elsewhere, consecutive keyframes
+/// tied by odometry; plan §7.6), then features, global descriptors (a vocabulary and bags of
+/// words, or a learned backend), pair selection, matching with two-view verification, tracks,
+/// triangulation with the poses held fixed, the optional bounded bundle adjustment (with the same
+/// priors and odometry), re-triangulation, and the database (written in one transaction; its content
 /// hash depends only on the input and the configuration, not on the number of threads).
 /// `registry` provides the backends; nullptr: the built-in ones (registerBuiltinBackends()).
 /// `db_path` must not exist. Throws std::runtime_error on invalid input.

@@ -25,6 +25,7 @@
 #include "landfall/ros/conversions.hpp"
 #include "landfall/ros/frame_gate.hpp"
 #include "landfall/ros/imu_gravity_source.hpp"
+#include "landfall/ros/scan_input.hpp"
 #include "landfall/ros/tf_pose_source.hpp"
 #include "rclcpp/serialization.hpp"
 #include "rclcpp/serialized_message.hpp"
@@ -197,9 +198,11 @@ BagKeyframes readBagKeyframes(
   const std::size_t image_count = countBagImages(uri, bag.image_topic);
 
   // Pass 1: everything except images.
+  // Scans only when the build matches keyframes to the map with them.
   BagSideData side = readBagSideData(
     uri, bag.camera_info_topic, bag.pose_source == "tf_with_covariance" ? bag.pose_topic : "",
-    bag.imu_topic, bag.imu_frame);
+    bag.imu_topic, bag.imu_frame,
+    config.builder.poses.scan_matching ? bag.scan_topic : std::string());
   TfPoseSource poses(
     side.buffer, bag.frames, bag.speed_window, std::numeric_limits<std::size_t>::max());
   for (const auto & [stamp, covariance] : side.covariances) {
@@ -267,6 +270,18 @@ BagKeyframes readBagKeyframes(
       keyframe.covariance = decision.pose.covariance;
       keyframe.T_base_cam = decision.pose.T_base_cam;
       keyframe.quality_json = toJson(decision.quality);
+      keyframe.odom = decision.pose.odom_base;
+      if (
+        const auto * nearest =
+          nearestScan(side.scans, stamp_ns, static_cast<int64_t>(bag.scan_max_time_offset * 1e9))) {
+        std::string error;
+        if (
+          auto scan = scanAtImage(
+            *nearest, *side.buffer, bag.frames.odom, bag.frames.base, stamp_ns, &error)) {
+          keyframe.scan = std::move(*scan);
+          ++result.with_scan;
+        }
+      }
       keyframe.load_image = [image = decision.image] { return image; };
       result.keyframes.push_back(std::move(keyframe));
       return true;

@@ -37,6 +37,7 @@
 #include "sensor_msgs/msg/compressed_image.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "tf2_ros/buffer.hpp"
 #include "tf2_ros/transform_listener.hpp"
@@ -83,6 +84,8 @@ private:
     std::string imu_topic;
     std::string imu_frame;  ///< overrides the messages' frame_id when set
     double imu_max_age = 0.1;
+    std::string scan_topic;  ///< "" records no scans
+    double scan_max_time_offset = 0.2;
     KeyframeGating gating;
     bool bond_enabled = true;
   };
@@ -127,6 +130,8 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr covariance_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+  std::deque<sensor_msgs::msg::LaserScan> scans_;  ///< the latest few seconds, time-ordered
   rclcpp_lifecycle::LifecyclePublisher<landfall_msgs::msg::RecorderStatus>::SharedPtr status_pub_;
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr pause_srv_;

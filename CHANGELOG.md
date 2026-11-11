@@ -163,8 +163,26 @@ All notable changes to this project are documented here. The format follows
 - Docker workflow: the runtime image of each distro, built and started on every push to main and
   on version tags; pushed to the GitHub Container Registry when the repository variable
   `LANDFALL_PUBLISH_IMAGES` is `true`.
+- Keyframe poses from scan matching and odometry (PLAN V56): the recorder stores each keyframe's
+  LiDAR scan (`scan.topic`, `scan.max_time_offset`) and odometry pose; `landfall build` matches
+  every scan to the map near the recorded pose, fuses the match with the recorded pose (fully only
+  where they agree, and only in the directions the scan confirms), ties consecutive keyframes by
+  odometry in a pose graph, and starts pair selection, triangulation and the bundle adjustment
+  from it (builder keys `poses.*`, `bag.scan_max_time_offset`). The build report gains a
+  "Keyframe poses" section, keyframes the flags `kFlagScanMatched` and `kFlagScanUnmatched`.
+  `landfall_core`: `matchScan` (correlative scan-to-map matching; its covariance counts the
+  surfaces' directions and any near-equal second fit in the search window), odometry residuals in
+  the bundle adjustment. On the URDF Maker warehouse drive (372 keyframes, AMCL recording) the
+  keyframe poses' error fell from 12.1 / 44.3 cm (median / 90th percentile) to 3.4 / 32.6 cm, and
+  the database's landmarks from 4567 to 5376 (5378 with true poses). The rest of the tail is
+  aisles where one scan fits two positions equally and AMCL sat on the wrong one (T-011).
 
 ### Changed
+- Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.
+  Format 1 folders still build.
+- The bundle adjustment's bounds around a scan-matched keyframe widen to 3 standard deviations of
+  its prior (at least `ba.max_shift_xy` / `ba.max_shift_yaw_deg`); its shift statistics are
+  measured from the pose graph's poses.
 - License changed from MIT to Apache-2.0.
 - Lyrical is a required CI distro (was allowed to fail).
 - The map loader reproduces nav2_map_server's GraphicsMagick conversion exactly (color and

@@ -147,5 +147,7 @@ Keyframe recorder (`recorder_node`, component `landfall::ros::RecorderNode`); se
 | `quality.max_saturated_fraction` | double | `0.2` | [0, 1] | at startup | Largest fraction of pixels at 250 or brighter |
 | `quality.min_mean_intensity` | integer | `30` | [0, 255] | at startup | Darkest mean intensity |
 | `quality.min_sharpness` | double | `60` | [0, 100000] | at startup | Smallest variance of the Laplacian (images at most 640 px wide) |
+| `scan.max_time_offset` | double | `0.2` | [0, 1] | at startup | Farthest scan from a keyframe's image, seconds |
+| `scan.topic` | string | `"scan"` |  | at startup | sensor_msgs/LaserScan stored with each keyframe, to match its pose to the map; "": none |
 | `session_name` | string | `""` |  | at startup | Name of the session folder; empty: the UTC start time |
 | `tf_timeout` | double | `0.2` | [0, 5] | at startup | Seconds to wait for TF at an image stamp |

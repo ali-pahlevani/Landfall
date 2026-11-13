@@ -125,7 +125,14 @@ struct BuildStats
   double poses_mean_correction_m = 0.0;
   double poses_max_correction_m = 0.0;
   double poses_max_correction_yaw_deg = 0.0;
-  std::vector<double> stage_seconds;  ///< per BuildStage below
+  /// The floor the robot can reach and how much of it has views (build/coverage.hpp).
+  double coverage_clearance_m = 0.0;  ///< used: configured, or from the recording
+  double coverage_reachable_m2 = 0.0;
+  double coverage_any_direction = 0.0;   ///< share with a view within 1 m in some direction
+  double coverage_two_directions = 0.0;  ///< ... in two or more of the 8
+  double coverage_headings = 0.0;        ///< share of the (position, heading sector) pairs
+  double coverage_target = 0.0;          ///< coverage.target the build checked against
+  std::vector<double> stage_seconds;     ///< per BuildStage below
   std::vector<std::string> warnings;
 };
 

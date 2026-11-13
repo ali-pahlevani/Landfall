@@ -68,6 +68,17 @@ struct KeyframePoseParams
   bool odometry = true;           ///< (poses.odometry) tie consecutive keyframes that have odometry
 };
 
+/// (coverage.*) The build report's measure of the floor the recording covers (build/coverage.hpp).
+struct CoverageConfig
+{
+  /// m the robot's centre keeps from obstacles (coverage.clearance): the free floor at least this
+  /// far from them, connected to the drive, is what the robot can reach. 0: from the recording.
+  double clearance = 0.0;
+  /// Share of the reachable floor that should have a view within 1 m, in some direction
+  /// (coverage.target); the build warns below it. 0: never.
+  double target = 0.8;
+};
+
 /// features.floor_mask_distance when the configuration doesn't set it, m: the floor nearer than
 /// this is hidden from the feature detector (features/floor_mask.hpp).
 inline constexpr double kDefaultFloorMaskDistance = 5.0;
@@ -102,6 +113,8 @@ struct BuilderConfig
   KeyframePoseParams poses;             ///< (poses.*)
   PosePriorBaParams ba;                 ///< (ba.*; its odometry: poses.odom_*)
   double ba_max_reprojection_px = 0.0;  ///< (ba.max_reprojection_px) re-filter; 0 = 0.75 x above
+
+  CoverageConfig coverage;  ///< (coverage.*) report only: what the database holds doesn't change
 
   bool prune_unobserved_features = true;           ///< (db.prune_unobserved_features)
   int covisibility_min_shared = 5;                 ///< (db.covisibility_min_shared)

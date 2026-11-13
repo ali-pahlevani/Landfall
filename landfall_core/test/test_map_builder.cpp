@@ -171,6 +171,8 @@ landfall::BuildConfigFile config(int threads)
   landfall::BuildConfigFile c = landfall::parseBuildConfig("");
   c.builder.threads = threads;
   c.builder.vocabulary.depth = 3;  // ~200 k descriptors would make depth 5 sparse
+  // The synthetic drives cover a band of their rooms only; the coverage warning has its own test.
+  c.builder.coverage.target = 0.0;
   return c;
 }
 
@@ -296,9 +298,18 @@ TEST(MapBuilder, SyntheticLoopBuildsAccurateDeterministicMap)
   const auto report = landfall::makeReport(db_a);
   EXPECT_EQ(report.summary.landmarks, stats.landmarks);
   EXPECT_NEAR(report.summary.mean_track_length, stats.mean_track_length, 1e-9);
-  // The loop is driven both ways: two opposite sectors per cell (corners aside).
-  EXPECT_GT(report.summary.both_directions_fraction, 0.8);
-  EXPECT_NEAR(report.summary.heading_sector_fraction, 0.25, 0.05);
+  // Coverage: the grid has no obstacle, so the robot can reach all of its 300 m2; the loop's views
+  // cover the band within 1 m of it, in two opposite directions as it was driven both ways. The
+  // report measures what the build did.
+  RecordProperty("coverage_any_direction", std::to_string(report.summary.coverage_any_direction));
+  RecordProperty("coverage_two_directions", std::to_string(report.summary.coverage_two_directions));
+  EXPECT_NEAR(report.summary.coverage_reachable_m2, 300.0, 1e-6);
+  EXPECT_GT(report.summary.coverage_any_direction, 0.15);
+  EXPECT_LT(report.summary.coverage_any_direction, 0.30);
+  EXPECT_GT(report.summary.coverage_two_directions, 0.9 * report.summary.coverage_any_direction);
+  EXPECT_EQ(report.summary.coverage_two_directions, stats.coverage_two_directions);
+  EXPECT_EQ(report.summary.coverage_clearance_m, stats.coverage_clearance_m);
+  EXPECT_NE(report.markdown.find("| Coverage | the robot can reach 300 m"), std::string::npos);
   EXPECT_NE(
     report.markdown.find("| Landmarks | " + std::to_string(stats.landmarks)), std::string::npos);
   EXPECT_GT(stats.mean_keypoints, 0.0);
@@ -314,6 +325,7 @@ TEST(MapBuilder, SelfChecksFindScansThatFitTwoPlaces)
   // The checks run on the scan matches, before the adjustment: skipped to save time.
   landfall::BuildConfigFile checks = config(0);
   checks.builder.ba.enabled = false;
+  checks.builder.coverage.target = 0.8;  // the default: the loop covers a band of the room only
   // A map that draws every wall pinning x twice, 0.4 m apart (as a SLAM map can): every scan fits
   // the true place and one 0.4 m along x alike. The builder flags those keyframes and warns.
   {
@@ -345,12 +357,20 @@ TEST(MapBuilder, SelfChecksFindScansThatFitTwoPlaces)
     EXPECT_NEAR(stats.poses_ambiguity_median_m, 0.4, 0.05);
     int warned = 0;
     int floor_warned = 0;
+    int coverage_warned = 0;
     for (const auto & w : stats.warnings) {
       warned += w.find("fits a second place") != std::string::npos ? 1 : 0;
       floor_warned += w.find("the floor mask hides") != std::string::npos ? 1 : 0;
+      coverage_warned += w.find("below coverage.target (80 %)") != std::string::npos ? 1 : 0;
     }
     EXPECT_EQ(warned, 1);
     EXPECT_EQ(floor_warned, 1);
+    // The robot kept about 3 m from the walls: it can reach the floor inside the loop too, more
+    // than 1 m from every view.
+    RecordProperty("doubled_coverage_any_direction", std::to_string(stats.coverage_any_direction));
+    EXPECT_LT(stats.coverage_any_direction, 0.8);
+    EXPECT_EQ(coverage_warned, 1);
+    EXPECT_NEAR(stats.coverage_target, 0.8, 1e-12);
     const auto db = landfall::db::Database::open(
       dir.file("doubled.landfall.db"), landfall::db::Database::Access::kReadOnly);
     int flagged = 0;

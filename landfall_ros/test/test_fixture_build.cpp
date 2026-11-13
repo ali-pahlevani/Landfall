@@ -183,7 +183,16 @@ TEST(FixtureBuild, DepotFixtureBuildsAnAccurateDeterministicMap)
   EXPECT_TRUE(stats.ba_usable);
   EXPECT_LE(stats.ba_max_shift_m, 0.03);
   EXPECT_EQ(stats.ba_keyframes_at_bound, 0);
-  EXPECT_TRUE(stats.warnings.empty()) << stats.warnings.front();
+  // A cut of the drive sees little of the depot, and the build says so; nothing else is wrong.
+  RecordProperty("coverage_any_direction", std::to_string(stats.coverage_any_direction));
+  RecordProperty("coverage_two_directions", std::to_string(stats.coverage_two_directions));
+  EXPECT_LT(stats.coverage_any_direction, 0.8);
+  std::string warnings;
+  for (const std::string & w : stats.warnings) {
+    warnings += w + "\n";
+  }
+  ASSERT_EQ(stats.warnings.size(), 1U) << warnings;
+  EXPECT_NE(stats.warnings.front().find("below coverage.target"), std::string::npos);
 
   // Deterministic: the same content whatever the thread count.
   const auto a = landfall::db::Database::open(

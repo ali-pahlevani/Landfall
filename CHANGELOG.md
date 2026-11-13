@@ -203,9 +203,23 @@ All notable changes to this project are documented here. The format follows
   direction. The build report checks the recording against these assumptions: keyframes whose scan
   fits a second place almost as well (a wall the map has twice; flagged, orange on the coverage
   map, a warning above 5 %), and the odometry against the scan matches (a warning when turns err
-  more than the setting); it also warns when the floor mask hides more than 60 % of the image. On the URDF Maker warehouse route: wrong poses 3 -> 0, median error
-  7.3 -> 5.2 cm, success 9.6 -> 9.3 % of the sweep frames; in the depot simulation unchanged
-  (98.2-98.6 %, no wrong pose).
+  more than a quarter above the setting); it also warns when the floor mask hides more than 60 %
+  of the image. On the URDF Maker warehouse route: wrong poses 3 -> 0, median error 7.3 -> 5.2 cm,
+  success 9.6 -> 9.3 % of the sweep frames; in the depot simulation unchanged (98.2-98.6 %, no
+  wrong pose).
+- The build report measures coverage on the floor the robot can reach (PLAN V60; builder keys
+  `coverage.clearance`, `coverage.target`): the free floor at least the robot's clearance from
+  obstacles (by default the clearance it kept while recording), connected to the drive, and which
+  of 8 heading sectors a keyframe holding at least 40 landmarks sees from within 1 m.
+  `coverage.png` shades that floor (red no view, yellow one direction, blue two or more) instead of
+  drawing a heading rose per cell; `landfall build` prints the shares and warns when less than
+  `coverage.target` (80 %) of that floor has a view. `report.json`'s summary has `coverage_*`
+  instead of `heading_sector_fraction` and `both_directions_fraction`. `docs/recording.md` gains a
+  driving protocol ("Where to drive"). On the URDF Maker warehouse, a 70-minute drive by it gave
+  82 % of the floor a view (the earlier route: 32 %): success 9.3 -> 22.8 % of the sweep frames,
+  look-around 48 -> 85 of 113 places, median error 5.2 -> 3.4 cm. In the aisles where the map draws
+  walls twice the keyframes stay up to 0.57 m off (T-011), and two requests there were 0.52 and
+  0.56 m off.
 - CI: the Docker images retry their network steps (apt update and downloads, rosdep update and
   install).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.

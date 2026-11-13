@@ -383,6 +383,10 @@ int build(const std::vector<std::string> & argv)
             << stats.poses_odometry_links << " odometry links, corrected by "
             << fixed(100.0 * stats.poses_mean_correction_m, 1) << " cm on average, at most "
             << fixed(100.0 * stats.poses_max_correction_m, 1) << " cm\n"
+            << "  coverage: " << fixed(stats.coverage_reachable_m2, 0)
+            << " m2 the robot can reach, " << fixed(100.0 * stats.coverage_any_direction, 1)
+            << " % with a view within 1 m, " << fixed(100.0 * stats.coverage_two_directions, 1)
+            << " % in two or more directions\n"
             << "  content SHA-256 " << database.meta("content_sha256").value_or("?") << "\n"
             << "  report in " << report_dir << "\n";
   for (const auto & warning : stats.warnings) {

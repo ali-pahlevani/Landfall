@@ -41,8 +41,9 @@ poses before what it does to successes. All parameters are listed in `docs/param
   radian turned) is how much a turn may throw the odometry's position off: about 0.015 m for the
   depot simulation's TurtleBot 4, 0.2 m for a skid-steer robot whose wheels slip. The report's
   "Odometry against the scans" row measures it on your recording, and a warning names the value
-  when it is larger than the setting; too low a setting lets a slipping turn drag the keyframes
-  after it, too high one costs little where the scans pin the poses.
+  when it is more than a quarter above the setting (set it to that value); too low a setting lets
+  a slipping turn drag the keyframes after it, too high one costs little where the scans pin the
+  poses.
 - **Floor mask** (`features.floor_mask_distance` of the build, 5 m; `docs/recording.md`). The
   floor nearer than this is hidden from the feature detector, in the build and in queries.
   In the URDF Maker warehouse 3 m and 5 m did equally well (relocalization success 9.5 and 9.6 % of
@@ -52,9 +53,11 @@ poses before what it does to successes. All parameters are listed in `docs/param
 - **Speed gate** (`gating.max_linear_speed`, `gating.max_angular_speed`). It bounds the error that
   image and odometry timing leave in the keyframe poses; with a measured `image.time_offset` it can
   be relaxed a little.
-- **Coverage.** Drive every lane in both directions: the relocalizer finds only views the
-  recording saw (M6: a robot that stopped in an unrecorded lane couldn't relocalize). The build
-  report's heading rose per cell shows the gaps.
+- **Coverage.** The relocalizer finds only views the recording saw (M6: a robot that stopped in an
+  unrecorded lane couldn't relocalize). Drive every lane both ways, open floor in lanes at most 2 m
+  apart, and turn on the spot at aisle ends and junctions (`docs/recording.md`, "Where to drive").
+  The build report shades the floor the robot can reach by the directions it has views of, and the
+  build warns below `coverage.target` (80 % of that floor with a view within 1 m).
 
 ## Requests
 

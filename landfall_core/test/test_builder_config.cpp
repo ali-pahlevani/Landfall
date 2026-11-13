@@ -178,6 +178,26 @@ TEST(BuilderConfig, PoseSettingsForTurnsAndUnconfirmedDirections)
   EXPECT_NE(errorOf("poses: {odom_std_xy_per_rad: -0.1}").find("odom_std"), std::string::npos);
 }
 
+TEST(BuilderConfig, CoverageSettings)
+{
+  // The robot's clearance comes from the recording unless set; the build warns below the target.
+  const BuildConfigFile defaults = landfall::parseBuildConfig("");
+  EXPECT_EQ(defaults.builder.coverage.clearance, 0.0);
+  EXPECT_EQ(defaults.builder.coverage.target, 0.8);
+  const std::string canonical = landfall::canonicalYaml(defaults);
+  EXPECT_NE(
+    canonical.find("coverage:\n  clearance: 0\n  target: 0.80000000000000004\n"),
+    std::string::npos);
+  const BuildConfigFile set = landfall::parseBuildConfig("coverage: {clearance: 0.45, target: 0}");
+  EXPECT_EQ(set.builder.coverage.clearance, 0.45);
+  EXPECT_EQ(set.builder.coverage.target, 0.0);
+  EXPECT_EQ(
+    landfall::parseBuildConfig(landfall::canonicalYaml(set)).builder.coverage.clearance, 0.45);
+  EXPECT_NE(errorOf("coverage: {clearance: -1}").find("'coverage.clearance'"), std::string::npos);
+  EXPECT_NE(errorOf("coverage: {target: 1.5}").find("'coverage.target'"), std::string::npos);
+  EXPECT_NE(errorOf("coverage: {radius: 2}").find("'coverage.radius'"), std::string::npos);
+}
+
 TEST(BuilderConfig, RejectsTyposAndInvalidValues)
 {
   EXPECT_NE(errorOf("pairs: {max_distanse: 3}").find("'pairs.max_distanse'"), std::string::npos);

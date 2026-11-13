@@ -219,11 +219,12 @@ found no match where the robot had stopped, as in run 10.
 
 **Limitation.** Nav2 notices a wrong pose only when the robot can't move. Until then the robot
 drives on blind, and it can stop where the database holds no views of the place: the recovery can
-only relocalize where the recording went, in some direction. Record every lane, in both directions
-(docs/recording.md). A robot whose AMCL grows uncertain relocalizes sooner, through the
-relocalizer's auto trigger; one whose AMCL stays confident on the wrong pose, through its kidnap
-watchdog (`kidnap_watchdog.enabled`, docs/relocalization.md). In run 2, the relocalizer's
-background check placed the robot 9 cm from the truth while AMCL was confidently 8 m off.
+only relocalize where the recording went, in some direction. Record every lane, in both directions,
+and check the build report's coverage (docs/recording.md, "Where to drive"). A robot whose AMCL
+grows uncertain relocalizes sooner, through the relocalizer's auto trigger; one whose AMCL stays
+confident on the wrong pose, through its kidnap watchdog (`kidnap_watchdog.enabled`,
+docs/relocalization.md). In run 2, the relocalizer's background check placed the robot 9 cm from
+the truth while AMCL was confidently 8 m off.
 
 ### On Humble
 

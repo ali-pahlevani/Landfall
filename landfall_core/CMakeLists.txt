@@ -96,6 +96,7 @@ landfall_set_warnings(landfall_core)
 # online relocalizer stays free of both.
 add_library(landfall_core_build SHARED
   src/build/builder_config.cpp
+  src/build/coverage.cpp
   src/build/map_builder.cpp
   src/build/pair_selection.cpp
   src/build/pose_prior_ba.cpp
@@ -185,6 +186,7 @@ if(BUILD_TESTING)
   landfall_core_test(test_tracks LIBRARIES landfall_core_build)
   landfall_core_test(test_pose_prior_ba TIMEOUT 120 LIBRARIES landfall_core_build)
   landfall_core_test(test_builder_config LIBRARIES landfall_core_build)
+  landfall_core_test(test_coverage LIBRARIES landfall_core_build)
   landfall_core_test(test_map_builder TIMEOUT 900 LIBRARIES landfall_core_build)
   landfall_core_test(test_trajectory)
   landfall_core_test(test_localizer TIMEOUT 300 LIBRARIES landfall_core_build)

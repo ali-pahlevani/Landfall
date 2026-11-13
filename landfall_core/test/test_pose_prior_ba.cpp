@@ -377,6 +377,13 @@ TEST(OdometryCheck, MeasuresWhatTurningAddsBeyondAStraightStep)
   EXPECT_NEAR(slipping.turn_std_per_rad, 0.25 / std::sqrt(2.0 * std::log(2.0)), 0.03);
   EXPECT_NEAR(slipping.straight_std_m, exact.straight_std_m, 1e-12);
   EXPECT_EQ(landfall::checkOdometry({}, deg(15.0)).turns, 0);
+  // The build asks for a larger setting when the turns err clearly more than it, from 10 turns on;
+  // a setting at the measured value (what the warning asks for) stays quiet.
+  EXPECT_TRUE(landfall::turnsNeedMore(slipping, 0.1, 10));
+  EXPECT_FALSE(landfall::turnsNeedMore(slipping, slipping.turn_std_per_rad, 10));
+  EXPECT_FALSE(landfall::turnsNeedMore(slipping, 0.9 * slipping.turn_std_per_rad, 10));
+  EXPECT_FALSE(landfall::turnsNeedMore(slipping, 0.1, 41));  // 40 turns only
+  EXPECT_FALSE(landfall::turnsNeedMore(exact, 0.1, 10));
 }
 
 TEST(PosePriorBa, OdometryLinksOnlyConsecutiveKeyframesOfASession)

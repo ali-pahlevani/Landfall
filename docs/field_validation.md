@@ -22,10 +22,12 @@ well localized, checked by the operator wherever the two disagree.
 
 ## 1. Recording
 
-Record at least three sessions on different days or in different lighting, driving every aisle in
-both directions while AMCL is well localized (`docs/recording.md`). Build one database from all
-of them and read the build report: keyframes per area, the heading rose of every cell (gaps are
-directions never driven), landmarks per keyframe.
+Record at least three sessions on different days or in different lighting, driving as
+`docs/recording.md` ("Where to drive") says: every aisle in both directions, open floor in lanes
+at most 2 m apart, full turns on the spot at aisle ends, junctions and where the forklift stops,
+while AMCL is well localized. Build one database from all of them and read the build report: the
+coverage of the floor the forklift can reach (target: 80 % with a view within 1 m; the coverage
+map shows the gaps), landmarks per keyframe, the keyframe-pose checks.
 
 ## 2. Shadow mode
 

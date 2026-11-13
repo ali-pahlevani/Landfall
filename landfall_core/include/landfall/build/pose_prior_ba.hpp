@@ -120,6 +120,12 @@ struct OdometryCheck
 /// sigma per axis is chi-square(2), median 2 ln 2), so a few bad references don't count.
 OdometryCheck checkOdometry(const std::vector<OdometryStep> & steps, double min_turn_rad);
 
+/// Whether the turns call for a larger odometry turn std than `std_xy_per_rad`
+/// (poses.odom_std_xy_per_rad): from `min_turns` turns on, when the measured error is more than a
+/// quarter above it (about the measurement's own spread from a few tens of turns), so that a setting
+/// at the measured value stays quiet.
+bool turnsNeedMore(const OdometryCheck & check, double std_xy_per_rad, int min_turns);
+
 BaResult adjustPosePriors(
   const std::vector<BaKeyframe> & keyframes, const std::vector<Vec3> & landmarks,
   const std::vector<BaObservation> & observations, const PosePriorBaParams & params);

@@ -81,7 +81,9 @@ source install/setup.bash
 The robot needs a calibrated camera (`CameraInfo`), a `LaserScan`, odometry in TF and AMCL (or
 slam_toolbox localization) on its map: [`docs/sensors.md`](docs/sensors.md).
 
-1. Record while AMCL is localized; drive every aisle both ways:
+1. Record while AMCL is localized; drive every aisle both ways, open floor in lanes at most 2 m
+   apart, and turn on the spot at aisle ends ([`docs/recording.md`](docs/recording.md), "Where to
+   drive"):
    ```bash
    ros2 run landfall_ros recorder_node --ros-args -p autostart:=true -p bond.enabled:=false \
      -p image.topic:=/camera/image_raw -p camera_info.topic:=/camera/camera_info \

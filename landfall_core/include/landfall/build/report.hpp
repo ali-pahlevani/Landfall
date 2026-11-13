@@ -38,10 +38,14 @@ struct MapSummary
   double ba_max_shift_m = 0.0;
   double ba_max_shift_yaw_deg = 0.0;
   int flagged_keyframes = 0;
-  /// Mean fraction of the 8 heading sectors seen per 1 m cell visited by keyframes.
-  double heading_sector_fraction = 0.0;
-  /// Fraction of visited 1 m cells seen in two opposite directions ("drive both ways").
-  double both_directions_fraction = 0.0;
+  /// The floor the robot can reach and its views (build/coverage.hpp), with the clearance the
+  /// build used.
+  double coverage_clearance_m = 0.0;
+  double coverage_reachable_m2 = 0.0;
+  double coverage_any_direction = 0.0;   ///< share with a view within 1 m in some direction
+  double coverage_two_directions = 0.0;  ///< ... in two or more of the 8 heading sectors
+  double coverage_headings = 0.0;        ///< share of the (position, heading sector) pairs
+  double coverage_target = 0.0;          ///< the build's coverage.target; 0: none or unknown
 };
 
 struct MapReport
@@ -53,8 +57,8 @@ struct MapReport
 };
 
 /// Builds the report of a map database: summary numbers, the builder's own statistics (meta
-/// `build_report`) and a coverage image (keyframes with headings over the occupancy grid, an
-/// 8-sector heading rose per 1 m cell showing directions never driven, landmark density).
+/// `build_report`) and a coverage image: the floor the robot can reach shaded by the number of
+/// directions with a view within 1 m (none in red), keyframes with their headings, landmarks.
 MapReport makeReport(const db::Database & database);
 
 /// Writes report.md, report.json and coverage.png into `directory` (created if needed).

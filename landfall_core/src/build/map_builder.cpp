@@ -32,6 +32,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "landfall/build/coverage.hpp"
 #include "landfall/build/tracks.hpp"
 #include "landfall/db/codec.hpp"
 #include "landfall/db/database.hpp"
@@ -429,14 +430,14 @@ BuildStats buildMap(
       stats.odometry_turns = check.turns;
       stats.odometry_turn_std_per_rad = check.turn_std_per_rad;
       if (
-        config.poses.odometry && stats.odometry_turns >= kCheckTurns &&
-        stats.odometry_turn_std_per_rad > config.ba.odometry.std_xy_per_rad) {
-        char text[256];
+        config.poses.odometry &&
+        turnsNeedMore(check, config.ba.odometry.std_xy_per_rad, kCheckTurns)) {
+        char text[320];
         std::snprintf(
           text, sizeof(text),
           "turning odometry errs about %.2f m per radian turned (from %d turns, against the scan "
-          "matches), more than poses.odom_std_xy_per_rad (%.2f): raise it, or the odometry of the "
-          "turns pulls keyframes off",
+          "matches), more than poses.odom_std_xy_per_rad (%.2f): raise it to the measured value, "
+          "or the odometry of the turns pulls keyframes off",
           stats.odometry_turn_std_per_rad, stats.odometry_turns, config.ba.odometry.std_xy_per_rad);
         stats.warnings.emplace_back(text);
       }
@@ -880,6 +881,46 @@ BuildStats buildMap(
     stats.warnings.emplace_back("no landmark could be triangulated");
   }
 
+  // --- Coverage: the floor the robot can reach, and how much of it has views ---------------------
+  {
+    std::vector<CoverageView> views(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      views[i].pose = refined[i];
+    }
+    for (const Landmark & landmark : landmarks) {
+      for (const TrackNode & node : landmark.observations) {
+        ++views[node.keyframe].landmarks;
+      }
+    }
+    CoverageParams coverage_params;
+    coverage_params.clearance = config.coverage.clearance;
+    const CoverageMap coverage = measureCoverage(input.map.grid, views, coverage_params);
+    stats.coverage_clearance_m = coverage.clearance;
+    stats.coverage_reachable_m2 = coverage.reachable_area;
+    stats.coverage_any_direction = coverage.any_direction;
+    stats.coverage_two_directions = coverage.two_directions;
+    stats.coverage_headings = coverage.headings;
+    stats.coverage_target = config.coverage.target;
+    // The target applies to the floor with a view in some direction: driving there fixes the rest,
+    // while a second direction can lack landmarks however often it is driven (open floor, distant
+    // walls).
+    if (
+      config.coverage.target > 0.0 && !coverage.positions.empty() &&
+      coverage.any_direction < config.coverage.target) {
+      char text[512];
+      std::snprintf(
+        text, sizeof(text),
+        "%.0f %% of the floor the robot can reach (%.0f m2 at least %.2f m from obstacles) has a "
+        "view within 1 m, below coverage.target (%.0f %%); relocalization mostly fails in the "
+        "rest. %.0f %% has views in two or more directions. The coverage map shows the gaps in "
+        "red: drive them both ways and turn on the spot at junctions (docs/recording.md), or "
+        "lower the target if the robot never goes there",
+        100.0 * coverage.any_direction, coverage.reachable_area, coverage.clearance,
+        100.0 * config.coverage.target, 100.0 * coverage.two_directions);
+      stats.warnings.emplace_back(text);
+    }
+  }
+
   // Keypoint index remapping: keep only observed keypoints when pruning.
   std::vector<std::vector<int>> keep_index(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -1125,7 +1166,13 @@ std::string toJson(const BuildStats & s)
     .field("odometry_turn_std_per_rad", s.odometry_turn_std_per_rad)
     .field("poses_mean_correction_m", s.poses_mean_correction_m)
     .field("poses_max_correction_m", s.poses_max_correction_m)
-    .field("poses_max_correction_yaw_deg", s.poses_max_correction_yaw_deg);
+    .field("poses_max_correction_yaw_deg", s.poses_max_correction_yaw_deg)
+    .field("coverage_clearance_m", s.coverage_clearance_m)
+    .field("coverage_reachable_m2", s.coverage_reachable_m2)
+    .field("coverage_any_direction", s.coverage_any_direction)
+    .field("coverage_two_directions", s.coverage_two_directions)
+    .field("coverage_headings", s.coverage_headings)
+    .field("coverage_target", s.coverage_target);
   json.key("stage_seconds").beginObject();
   for (int i = 0; i < kBuildStageCount && i < static_cast<int>(s.stage_seconds.size()); ++i) {
     json.field(toString(static_cast<BuildStage>(i)), s.stage_seconds[i]);

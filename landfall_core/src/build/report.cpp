@@ -25,7 +25,11 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "landfall/build/coverage.hpp"
 #include "landfall/grid/occupancy_grid.hpp"
 #include "landfall/util/json.hpp"
 
@@ -35,9 +39,25 @@ namespace landfall
 namespace
 {
 
-constexpr double kRoseCell = 1.0;  // m
-constexpr int kSectors = 8;
 constexpr double kArrowLength = 0.3;  // m
+
+// Reachable floor by the number of heading sectors with a view (BGR): none in red-orange, one in
+// yellow, more in light to dark blue (no red-green pair, for colour-blind readers).
+const cv::Scalar kNoView(70, 90, 235);
+const cv::Scalar kOneDirection(80, 215, 245);
+const cv::Scalar kTwoToThree(220, 170, 110);
+const cv::Scalar kFourOrMore(170, 100, 40);
+
+const cv::Scalar & coverageColor(int directions)
+{
+  if (directions <= 0) {
+    return kNoView;
+  }
+  if (directions == 1) {
+    return kOneDirection;
+  }
+  return directions <= 3 ? kTwoToThree : kFourOrMore;
+}
 
 std::string fixed(double value, int decimals)
 {
@@ -46,25 +66,29 @@ std::string fixed(double value, int decimals)
   return buffer;
 }
 
-// Heading sectors are centred on the compass directions (0, 45, 90 deg, ...), so a robot driving
-// along axis-aligned aisles stays inside one sector; sector s is centred on -180 + 45 s deg.
-int sectorOf(double yaw)
-{
-  const double a = normalizeAngle(yaw + M_PI / kSectors) + M_PI;  // [0, 2 pi)
-  return std::min(kSectors - 1, static_cast<int>(a / (2.0 * M_PI / kSectors)));
-}
-
 std::string metaOr(const db::Database & database, const std::string & key, const std::string & dflt)
 {
   return database.meta(key).value_or(dflt);
 }
 
-cv::Mat renderCoverage(
-  const db::MapRecord & map, const std::vector<db::KeyframeRecord> & keyframes,
-  const std::vector<db::LandmarkRecord> & landmarks, const MapSummary & summary)
+// One line of the legend, shrunk to the image's width when it doesn't fit.
+void legendLine(cv::Mat & image, const std::string & text, cv::Point origin)
 {
-  const OccupancyGrid grid =
-    decodeGridPng(map.grid, map.resolution, {map.origin_x, map.origin_y, map.origin_yaw});
+  constexpr double kScale = 0.45;
+  int baseline = 0;
+  const cv::Size size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, kScale, 1, &baseline);
+  const int room = image.cols - origin.x - 4;
+  const double scale =
+    size.width > room ? std::max(0.25, kScale * room / std::max(1, size.width)) : kScale;
+  cv::putText(
+    image, text, origin, cv::FONT_HERSHEY_SIMPLEX, scale, cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
+}
+
+cv::Mat renderCoverage(
+  const OccupancyGrid & grid, const std::vector<db::KeyframeRecord> & keyframes,
+  const std::vector<db::LandmarkRecord> & landmarks, const CoverageMap & coverage,
+  const MapSummary & summary)
+{
   const int scale = std::clamp(1600 / std::max(grid.width, grid.height), 1, 8);
   cv::Mat image(grid.height * scale, grid.width * scale, CV_8UC3);
   for (int row = 0; row < grid.height; ++row) {
@@ -75,51 +99,37 @@ cv::Mat renderCoverage(
         .setTo(cv::Scalar(shade, shade, shade));
     }
   }
-  const double px_per_m = scale / map.resolution;
+  const double px_per_m = scale / grid.resolution;
   const auto toPixel = [&](double x, double y) {
-    return cv::Point2d((x - map.origin_x) * px_per_m, image.rows - (y - map.origin_y) * px_per_m);
+    return cv::Point2d((x - grid.origin.x) * px_per_m, image.rows - (y - grid.origin.y) * px_per_m);
   };
   const auto inside = [&](const cv::Point2d & p) {
     return p.x >= 0 && p.y >= 0 && p.x < image.cols && p.y < image.rows;
   };
 
-  // Landmark density.
+  // The floor the robot can reach, by the number of directions with a view within 1 m.
+  cv::Mat overlay = image.clone();
+  const double half = 0.5 * coverage.step * px_per_m;
+  for (std::size_t p = 0; p < coverage.positions.size(); ++p) {
+    const cv::Point2d c = toPixel(coverage.positions[p].x(), coverage.positions[p].y());
+    cv::rectangle(
+      overlay,
+      cv::Point(
+        static_cast<int>(std::lround(c.x - half)), static_cast<int>(std::lround(c.y - half))),
+      cv::Point(
+        static_cast<int>(std::lround(c.x + half)) - 1,
+        static_cast<int>(std::lround(c.y + half)) - 1),
+      coverageColor(coveredSectors(coverage.sectors[p])), cv::FILLED);
+  }
+  cv::addWeighted(overlay, 0.5, image, 0.5, 0.0, image);
+
+  // Landmarks.
   for (const auto & l : landmarks) {
     const cv::Point2d p = toPixel(l.position.x(), l.position.y());
     if (inside(p)) {
-      cv::circle(image, p, std::max(1, scale / 2), cv::Scalar(180, 119, 31), cv::FILLED);
+      cv::circle(image, p, std::max(1, scale / 2), cv::Scalar(140, 50, 110), cv::FILLED);
     }
   }
-
-  // Heading rose per 1 m cell: filled sectors are driven directions.
-  std::map<std::pair<int, int>, int> sectors;
-  for (const auto & k : keyframes) {
-    const auto cell = std::make_pair(
-      static_cast<int>(std::floor((k.refined.x - map.origin_x) / kRoseCell)),
-      static_cast<int>(std::floor((k.refined.y - map.origin_y) / kRoseCell)));
-    sectors[cell] |= 1 << sectorOf(k.refined.yaw);
-  }
-  cv::Mat overlay = image.clone();
-  const int radius = std::max(2, static_cast<int>(0.4 * kRoseCell * px_per_m));
-  for (const auto & [cell, mask] : sectors) {
-    const cv::Point2d center = toPixel(
-      map.origin_x + (cell.first + 0.5) * kRoseCell,
-      map.origin_y + (cell.second + 0.5) * kRoseCell);
-    for (int s = 0; s < kSectors; ++s) {
-      if ((mask & (1 << s)) == 0) {
-        continue;
-      }
-      // Map angles turn counter-clockwise with y up; image angles clockwise with y down.
-      const double first = -180.0 + (s - 0.5) * 360.0 / kSectors;  // map degrees
-      const double start = -(first + 360.0 / kSectors);
-      const double end = -first;
-      cv::ellipse(
-        overlay, center, cv::Size(radius, radius), 0.0, start, end, cv::Scalar(60, 170, 60),
-        cv::FILLED);
-    }
-    cv::circle(overlay, center, radius, cv::Scalar(120, 120, 120), 1);
-  }
-  cv::addWeighted(overlay, 0.55, image, 0.45, 0.0, image);
 
   // Keyframes: arrows along the heading; at the BA bound in magenta, with a scan that fits a
   // second place in orange.
@@ -137,15 +147,46 @@ cv::Mat renderCoverage(
     cv::arrowedLine(image, from, to, color, 1, cv::LINE_AA, 0, 0.3);
   }
 
-  const std::string legend = "keyframes " + std::to_string(summary.keyframes) + "  landmarks " +
-                             std::to_string(summary.landmarks) + "  cells driven both ways " +
-                             fixed(100.0 * summary.both_directions_fraction, 0) + "%";
-  cv::rectangle(
-    image, cv::Rect(0, 0, std::min(image.cols, 560), 22), cv::Scalar(255, 255, 255), cv::FILLED);
-  cv::putText(
-    image, legend, cv::Point(6, 16), cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1,
-    cv::LINE_AA);
-  return image;
+  // Legend, below the map.
+  constexpr int kLine = 20;
+  cv::Mat out(image.rows + 4 * kLine + 8, image.cols, CV_8UC3, cv::Scalar(255, 255, 255));
+  image.copyTo(out(cv::Rect(0, 0, image.cols, image.rows)));
+  int y = image.rows + kLine;
+  legendLine(
+    out,
+    "keyframes " + std::to_string(summary.keyframes) +
+      " (arrows; orange: scan fits a second "
+      "place, magenta: at the BA bound), landmarks " +
+      std::to_string(summary.landmarks) + " (purple)",
+    cv::Point(6, y));
+  y += kLine;
+  legendLine(
+    out,
+    "floor the robot can reach: " + fixed(summary.coverage_reachable_m2, 0) + " m2, at least " +
+      fixed(summary.coverage_clearance_m, 2) + " m from obstacles",
+    cv::Point(6, y));
+  y += kLine;
+  legendLine(
+    out,
+    fixed(100.0 * summary.coverage_any_direction, 0) + "% of it has a view within 1 m, " +
+      fixed(100.0 * summary.coverage_two_directions, 0) + "% in 2 or more of 8 directions",
+    cv::Point(6, y));
+  y += kLine;
+  int x = 6;
+  const std::pair<const char *, int> keys[] = {
+    {"no view", 0}, {"1 direction", 1}, {"2-3", 2}, {"4-8", 4}};
+  for (const auto & [label, directions] : keys) {
+    const cv::Scalar & color = coverageColor(directions);
+    const cv::Scalar blended(
+      0.5 * color[0] + 127.5, 0.5 * color[1] + 127.5, 0.5 * color[2] + 127.5);
+    cv::rectangle(out, cv::Rect(x, y - 11, 14, 14), blended, cv::FILLED);
+    cv::rectangle(out, cv::Rect(x, y - 11, 14, 14), cv::Scalar(120, 120, 120), 1);
+    x += 18;
+    legendLine(out, label, cv::Point(x, y));
+    int baseline = 0;
+    x += cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.45, 1, &baseline).width + 14;
+  }
+  return out;
 }
 
 double number(const YAML::Node & node, const char * key)
@@ -199,33 +240,6 @@ MapReport makeReport(const db::Database & database)
     s.keyframes_with_100_landmarks = static_cast<double>(with_100) / s.keyframes;
     s.ba_mean_shift_m = shift_sum / s.keyframes;
   }
-  std::map<std::pair<int, int>, int> sectors;
-  for (const auto & k : keyframes) {
-    sectors[{
-      static_cast<int>(std::floor((k.refined.x - maps[0].origin_x) / kRoseCell)),
-      static_cast<int>(std::floor((k.refined.y - maps[0].origin_y) / kRoseCell))}] |=
-      1 << sectorOf(k.refined.yaw);
-  }
-  int sector_sum = 0;
-  int both_ways = 0;
-  for (const auto & entry : sectors) {
-    const int mask = entry.second;
-    bool opposite = false;
-    for (int sector = 0; sector < kSectors / 2; ++sector) {
-      const int pair = (1 << sector) | (1 << (sector + kSectors / 2));
-      opposite = opposite || (mask & pair) == pair;
-    }
-    for (int sector = 0; sector < kSectors; ++sector) {
-      sector_sum += (mask >> sector) & 1;
-    }
-    both_ways += opposite ? 1 : 0;
-  }
-  if (!sectors.empty()) {
-    const auto cells = static_cast<double>(sectors.size());
-    s.heading_sector_fraction = static_cast<double>(sector_sum) / (kSectors * cells);
-    s.both_directions_fraction = static_cast<double>(both_ways) / cells;
-  }
-
   const std::string build_json = metaOr(database, "build_report", "{}");
   YAML::Node build;
   try {
@@ -233,6 +247,24 @@ MapReport makeReport(const db::Database & database)
   } catch (const YAML::Exception &) {
     build = YAML::Node();
   }
+
+  // Coverage, with the clearance the build used (from the recording when it didn't say).
+  const OccupancyGrid grid = decodeGridPng(
+    maps[0].grid, maps[0].resolution, {maps[0].origin_x, maps[0].origin_y, maps[0].origin_yaw});
+  std::vector<CoverageView> views;
+  views.reserve(keyframes.size());
+  for (const auto & k : keyframes) {
+    views.push_back({k.refined, per_keyframe[k.id]});
+  }
+  CoverageParams coverage_params;
+  coverage_params.clearance = number(build, "coverage_clearance_m");
+  const CoverageMap coverage = measureCoverage(grid, views, coverage_params);
+  s.coverage_clearance_m = coverage.clearance;
+  s.coverage_reachable_m2 = coverage.reachable_area;
+  s.coverage_any_direction = coverage.any_direction;
+  s.coverage_two_directions = coverage.two_directions;
+  s.coverage_headings = coverage.headings;
+  s.coverage_target = number(build, "coverage_target");
 
   JsonWriter json;
   json.beginObject()
@@ -250,8 +282,11 @@ MapReport makeReport(const db::Database & database)
     .field("ba_max_shift_m", s.ba_max_shift_m)
     .field("ba_max_shift_yaw_deg", s.ba_max_shift_yaw_deg)
     .field("flagged_keyframes", s.flagged_keyframes)
-    .field("heading_sector_fraction", s.heading_sector_fraction)
-    .field("both_directions_fraction", s.both_directions_fraction)
+    .field("coverage_clearance_m", s.coverage_clearance_m)
+    .field("coverage_reachable_m2", s.coverage_reachable_m2)
+    .field("coverage_any_direction", s.coverage_any_direction)
+    .field("coverage_two_directions", s.coverage_two_directions)
+    .field("coverage_headings", s.coverage_headings)
     .field("content_sha256", metaOr(database, "content_sha256", ""))
     .endObject();
   report.json = json.str() + ",\"build\":" + build_json + "}";
@@ -278,9 +313,19 @@ MapReport makeReport(const db::Database & database)
                         : std::string("no floor mask")) +
           " |\n";
   }
-  md += "| Heading coverage | " + fixed(100.0 * s.both_directions_fraction, 1) +
-        " % of visited 1 m cells driven both ways; " + fixed(100.0 * s.heading_sector_fraction, 1) +
-        " % of the 8 heading sectors seen per cell |\n";
+  if (coverage.positions.empty()) {
+    md += "| Coverage | no keyframe on free floor of the map |\n";
+  } else {
+    md +=
+      "| Coverage | the robot can reach " + fixed(s.coverage_reachable_m2, 0) +
+      " m² (free floor at least " + fixed(s.coverage_clearance_m, 2) +
+      " m from obstacles, connected to the drive): " + fixed(100.0 * s.coverage_any_direction, 1) +
+      " % of it has a view within 1 m" +
+      (s.coverage_target > 0.0 ? " (target " + fixed(100.0 * s.coverage_target, 0) + " %)"
+                               : std::string()) +
+      ", " + fixed(100.0 * s.coverage_two_directions, 1) + " % in two or more of 8 directions; " +
+      fixed(100.0 * s.coverage_headings, 1) + " % of its positions x 8 headings |\n";
+  }
   md += "| Image pairs | " + std::to_string(static_cast<int>(number(build, "pairs_verified"))) +
         " verified of " + std::to_string(static_cast<int>(number(build, "pairs_candidate"))) +
         " candidates, " + fixed(number(build, "mean_pair_inliers"), 1) + " inliers on average |\n";
@@ -383,7 +428,7 @@ MapReport makeReport(const db::Database & database)
     }
   }
   report.markdown = md;
-  report.coverage = renderCoverage(maps[0], keyframes, landmarks, s);
+  report.coverage = renderCoverage(grid, keyframes, landmarks, coverage, s);
   return report;
 }
 

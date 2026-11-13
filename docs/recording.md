@@ -52,6 +52,43 @@ simulation, keyframes taken at 0.45-0.5 rad/s were up to 1.7° off. With the gat
 the worst of 419 keyframes was 1.04° off (0.42° at the 95th percentile), and keyframes taken while
 turning less than 2°/s stayed within 0.51°.
 
+## Where to drive
+
+The relocalizer finds a pose only where the recording looked the same way from nearby. In both
+simulations (the URDF Maker warehouse's 904-request heading sweep and the depot's kidnap
+benchmark), a request succeeded 72-83 % of the time when a keyframe holding at least 40 landmarks
+lay within 1 m of it and looked within the same 45° sector, and 4-12 % of the time without one;
+3 of the 177 successes came from farther than 2 m or 45° from every keyframe. Turning and asking
+again (the example behavior tree) relocalized 67-90 % of the places with such a view in one
+direction, 94-95 % of those with views in two or more, and 15 % of those with none.
+
+So drive for the views the robot will need:
+
+1. **Every aisle and corridor in both directions.** A lane driven one way has views one way only.
+2. **Open floor in lanes at most 2 m apart**, each driven both ways (or 1 m apart, alternating
+   directions): every spot is then within 1 m of a lane.
+3. **A full turn on the spot**, slowly (below `gating.max_angular_speed`: 0.2 rad/s takes 31 s), at
+   aisle ends, junctions, every 4-5 m on open floor, and wherever the robot often stops or starts
+   (docks, chargers, pick stations). There it relocalizes from any heading at the first request.
+   Turns a few metres apart also see the same walls from two places, which is how the headings no
+   lane drives get landmarks.
+4. Below the speed gates, steadily, while the localization is good.
+
+Then read the build report's coverage (below): it shades the floor the robot can reach by how many
+directions have a view within 1 m. Drive the red (no view) parts, and the yellow (one direction)
+ones the other way, in another session and build from all sessions. Yellow that looks onto open
+floor or a distant wall may stay yellow: too few landmarks that way ("Coverage" below).
+
+In the URDF Maker warehouse (2026-11-13), a 70-minute drive by these rules (1.1 km, 30 full turns,
+2,658 keyframes) gave 82 % of the 886 m² the robot can reach a view within 1 m and 53 % views in
+two or more directions; the earlier route through the aisles gave 32 % and 14 %. Of the 904 sweep
+requests (113 places × 8 headings), 22.8 % relocalized at the first frame instead of 9.3 %, and
+turning on the spot relocalized 85 of the 113 places instead of 48 (59 of the 66 in the open north
+instead of 19), at a median error of 3.4 cm instead of 5.2. The southern aisles didn't gain (26 of
+47 places, 29 before): there the map draws walls twice, the keyframe poses stay up to 0.57 m off
+along the aisles (the build's "fits a second place" warning), and so do the poses relocalized from
+them; two requests ended 0.52 and 0.56 m off. Fix such a map before recording there.
+
 ## Keyframe poses
 
 A keyframe's recorded pose is the localization's (`map → base` from TF). In the URDF Maker warehouse
@@ -198,9 +235,9 @@ ros2 run landfall_ros landfall build --map map.yaml --output site.landfall.db \
 - The output must not exist. The database is written under `<output>.partial` and renamed when
   complete, so a failed build leaves nothing behind.
 - The report (`report.md`, `report.json`, `coverage.png`) goes to `<output>.report/`
-  (`--report-dir` to change). `coverage.png` draws the keyframes over the map, one heading rose per
-  1 m cell (filled sectors are the directions driven; drive every aisle both ways), and the
-  landmarks.
+  (`--report-dir` to change). `coverage.png` shades the floor the robot can reach by how many
+  directions have a view within 1 m (red none, yellow one, blue two or more; "Coverage" below), and
+  draws the keyframes (arrows) and landmarks over the map.
 - `--threads N` (default: all cores) doesn't change the result: the same input gives the same
   content hash.
 - `--map-semantics humble|jazzy`: nav2_map_server converts color and transparent images
@@ -257,6 +294,11 @@ poses:                                    # keyframe poses (see "Keyframe poses"
   odom_std_yaw_per_rad: 0.1
   odom_max_step: 2.0                      #   farther steps (a gap) aren't tied
   prior_loss_scale: 3.0                   # Huber scale of the scan priors, in stds
+coverage:                                 # the report's measure of what the recording covers
+  clearance: 0                            #   the robot's centre keeps this far from obstacles, m
+                                          #   (0: as far as it kept while recording)
+  target: 0.8                             #   share of that floor to have a view within 1 m;
+                                          #   below it the build warns (0: never)
 ba:                                       # bundle adjustment
   enabled: true
   max_shift_xy: 0.10                      # hard bounds on how far a keyframe may move (at least)
@@ -301,6 +343,24 @@ landmarks instead of 8,701 and relocalized half as often again; the depot fixtur
 and the build warns when that is more than 60 % (a camera that looks down at the floor).
 Set 0 to keep the floor: a camera that looks down at it, or floor markings you want as landmarks.
 Databases built before the option have no mask, and neither have their queries.
+
+**Coverage.** The report measures what the recording covers. The floor the robot can reach is the
+free floor at least `coverage.clearance` from obstacles, connected to where the robot drove; by
+default the clearance is the one the robot kept while recording (the 5th percentile of its
+keyframes' distance to the nearest obstacle), so the floor inside racks and narrow gaps drops out.
+Every 0.25 m of that floor, each of 8 heading sectors counts as seen when a keyframe with at least
+40 landmarks (the relocalizer's default `sanity.min_inliers`) lies within 1 m and looks within the
+sector ("Where to drive" above has the evidence). The report gives the share of the floor with a
+view in some direction, in two or more, and of its positions × headings; `landfall build` prints
+the same, and warns when less than `coverage.target` (80 %) has a view. The target leaves out the
+second direction on purpose: driving more reaches the floor without a view, but a heading that
+faces open floor or a distant wall gets too few landmarks however often it is driven (in the
+warehouse drive of "Where to drive", counting every keyframe whatever its landmarks would raise
+two directions from 53 to 77 % of the floor, but the floor with a view only from 82 to 85 %).
+The measure counts all of the floor the robot can reach. For a robot that keeps to fixed lanes,
+judge the red areas from the map, and set `coverage.target` to 0 (or `coverage.clearance` higher)
+to silence the warning. A camera much wider than 70° sees more from each spot than the measure
+credits, a narrow one less.
 
 **BA priors.** A keyframe matched to the map with its scan has the fused prior above. A keyframe
 without a scan keeps its recorded pose, weighed by its recorded covariance. If the localization

@@ -255,6 +255,11 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   poses.read("prior_loss_scale", &b.ba.prior_loss_scale);
   poses.finish();
 
+  Section coverage = top.child("coverage");
+  coverage.read("clearance", &b.coverage.clearance);
+  coverage.read("target", &b.coverage.target);
+  coverage.finish();
+
   Section db = top.child("db");
   db.read("prune_unobserved_features", &b.prune_unobserved_features);
   db.read("covisibility_min_shared", &b.covisibility_min_shared);
@@ -368,6 +373,9 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
     "'poses.odom_std_*' must be positive (the per-metre and per-radian parts >= 0) and "
     "'poses.odom_max_step' positive");
   require(b.ba.prior_loss_scale > 0.0, "'poses.prior_loss_scale' must be positive");
+  require(b.coverage.clearance >= 0.0, "'coverage.clearance' must be >= 0 (0: from the recording)");
+  require(
+    b.coverage.target >= 0.0 && b.coverage.target <= 1.0, "'coverage.target' must be in [0, 1]");
   require(bag.speed_window > 0.0, "'bag.speed_window' must be positive");
   require(bag.scan_max_time_offset >= 0.0, "'bag.scan_max_time_offset' must be >= 0");
   return config;
@@ -448,6 +456,8 @@ std::string canonicalYaml(const BuildConfigFile & config)
     {"scan_matching", flag(b.poses.scan_matching)},
     {"search_xy", number(b.poses.scan.search_xy)},
     {"search_yaw_deg", number(b.poses.scan.search_yaw_deg)}};
+  sections["coverage"] = {
+    {"clearance", number(b.coverage.clearance)}, {"target", number(b.coverage.target)}};
   sections["db"] = {
     {"covisibility_min_shared", std::to_string(b.covisibility_min_shared)},
     {"global_dtype", text(b.global_dtype == db::BlobType::kF16 ? "f16" : "f32")},

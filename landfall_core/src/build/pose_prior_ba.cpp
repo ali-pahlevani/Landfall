@@ -201,6 +201,12 @@ OdometryCheck checkOdometry(const std::vector<OdometryStep> & steps, double min_
   return check;
 }
 
+bool turnsNeedMore(const OdometryCheck & check, double std_xy_per_rad, int min_turns)
+{
+  constexpr double kMargin = 1.25;
+  return check.turns >= min_turns && check.turn_std_per_rad > kMargin * std_xy_per_rad;
+}
+
 BaResult adjustPosePriors(
   const std::vector<BaKeyframe> & keyframes, const std::vector<Vec3> & landmarks,
   const std::vector<BaObservation> & observations, const PosePriorBaParams & params)

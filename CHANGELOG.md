@@ -197,6 +197,17 @@ All notable changes to this project are documented here. The format follows
   working without a mask; rebuild them to use it. The build report and `landfall build` give the
   features per keyframe and how much of the image the mask hid.
 - `ILocalFeatures::extract` takes the image's camera and its pose on the robot (`ImageGeometry`).
+- Keyframe poses where the scan can't tell (PLAN V59, T-011): odometry links count less the more
+  the robot turned (`poses.odom_std_xy_per_rad`, 0.1 m per radian), and the recorded pose counts
+  only at `poses.disagreement_std_xy`, now 1 m, where the scan contradicts it or can't tell a
+  direction. The build report checks the recording against these assumptions: keyframes whose scan
+  fits a second place almost as well (a wall the map has twice; flagged, orange on the coverage
+  map, a warning above 5 %), and the odometry against the scan matches (a warning when turns err
+  more than the setting); it also warns when the floor mask hides more than 60 % of the image. On the URDF Maker warehouse route: wrong poses 3 -> 0, median error
+  7.3 -> 5.2 cm, success 9.6 -> 9.3 % of the sweep frames; in the depot simulation unchanged
+  (98.2-98.6 %, no wrong pose).
+- CI: the Docker images retry their network steps (apt update and downloads, rosdep update and
+  install).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.
   Format 1 folders still build.
 - The bundle adjustment's bounds around a scan-matched keyframe widen to 3 standard deviations of

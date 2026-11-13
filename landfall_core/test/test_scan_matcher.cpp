@@ -162,3 +162,51 @@ TEST(ScanMatcher, RefusesWhatItCannotMatch)
   EXPECT_FALSE(far.valid);
   EXPECT_FALSE(far.reason.empty());
 }
+
+TEST(ScanMatcher, ReportsASecondPlaceTheScanFitsAlike)
+{
+  // A 2 m corridor whose only feature along it is a small pillar against its north wall. The map
+  // draws the pillar a second time 0.4 m on (as a SLAM map can draw a wall twice): the scan fits
+  // there as well, so the matcher reports that place and how close its fit is.
+  const auto pillar = [](OccupancyGrid * grid, double x0) {
+    for (int row = 0; row < grid->height; ++row) {
+      for (int col = 0; col < grid->width; ++col) {
+        const Vec2 c = grid->cellCenter(col, row);
+        if (c.x() >= x0 && c.x() <= x0 + 0.2 && c.y() >= 3.6 && c.y() <= 3.95) {
+          grid->data[static_cast<std::size_t>(row) * grid->width + col] = landfall::kCellOccupied;
+        }
+      }
+    }
+  };
+  OccupancyGrid world = emptyGrid(44.0, 6.0);
+  landfall::test::addRoomToGrid(&world, 2.0, 2.0, 42.0, 4.0);
+  pillar(&world, 20.0);
+  OccupancyGrid doubled = world;
+  pillar(&doubled, 20.4);
+  const LikelihoodField once(world);
+  const LikelihoodField twice(doubled);
+  for (int seed = 1; seed <= 3; ++seed) {
+    const Pose2 truth{18.5 + 0.3 * seed, 2.9, 0.03 * seed};
+    const auto points = scanAt(world, truth, seed);
+    const Pose2 guess{truth.x + 0.1, truth.y, truth.yaw};
+    const auto clear = landfall::matchScan(once, points, guess, ScanMatchParams());
+    ASSERT_TRUE(clear.valid) << clear.reason;
+    EXPECT_LT(landfall::translationDistance(clear.pose, truth), 0.05);
+    if (clear.alternative) {  // other places fit clearly worse
+      EXPECT_GT(clear.alternative_nats, 2.0) << seed;
+    }
+    const auto alike = landfall::matchScan(twice, points, guess, ScanMatchParams());
+    ASSERT_TRUE(alike.valid) << alike.reason;
+    ASSERT_TRUE(alike.alternative.has_value()) << seed;
+    EXPECT_LT(std::abs(alike.alternative_nats), 0.5) << seed;
+    EXPECT_NEAR(std::abs(alike.alternative->x - alike.pose.x), 0.4, 0.05) << seed;
+    EXPECT_NEAR(alike.alternative->y, alike.pose.y, 0.02) << seed;
+    // One of the two is the true place.
+    EXPECT_LT(
+      std::min(
+        landfall::translationDistance(alike.pose, truth),
+        landfall::translationDistance(*alike.alternative, truth)),
+      0.05)
+      << seed;
+  }
+}

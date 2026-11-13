@@ -21,8 +21,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace landfall
 {
@@ -154,6 +157,50 @@ Pose3 cameraPose(const Pose2 & map_base, const Pose3 & T_base_cam)
   return toPose3(map_base) * T_base_cam;
 }
 
+namespace
+{
+
+double median(std::vector<double> values)
+{
+  if (values.empty()) {
+    return 0.0;
+  }
+  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+  std::nth_element(values.begin(), middle, values.end());
+  return *middle;
+}
+
+}  // namespace
+
+OdometryCheck checkOdometry(const std::vector<OdometryStep> & steps, double min_turn_rad)
+{
+  std::vector<double> straight;
+  std::vector<std::pair<double, double>> turning;  // |e|^2, turn
+  for (const auto & step : steps) {
+    const double ex = step.odometry.x - step.reference.x;
+    const double ey = step.odometry.y - step.reference.y;
+    const double turn = std::abs(normalizeAngle(step.reference.yaw));
+    if (turn < 5.0 * M_PI / 180.0) {
+      straight.push_back(ex * ex + ey * ey);
+    } else if (turn >= min_turn_rad) {
+      turning.emplace_back(ex * ex + ey * ey, turn);
+    }
+  }
+  const double chi2_median = 2.0 * std::log(2.0);
+  const double floor_variance = median(straight) / chi2_median;
+  std::vector<double> per_rad;
+  per_rad.reserve(turning.size());
+  for (const auto & [error2, turn] : turning) {
+    per_rad.push_back(std::max(0.0, error2 / chi2_median - floor_variance) / (turn * turn));
+  }
+  OdometryCheck check;
+  check.straight_steps = static_cast<int>(straight.size());
+  check.straight_std_m = std::sqrt(floor_variance);
+  check.turns = static_cast<int>(turning.size());
+  check.turn_std_per_rad = std::sqrt(median(per_rad));
+  return check;
+}
+
 BaResult adjustPosePriors(
   const std::vector<BaKeyframe> & keyframes, const std::vector<Vec3> & landmarks,
   const std::vector<BaObservation> & observations, const PosePriorBaParams & params)
@@ -248,7 +295,8 @@ BaResult adjustPosePriors(
     if (distance > odo.max_step) {
       continue;
     }
-    const double std_xy = odo.std_xy + odo.std_xy_per_m * distance;
+    const double std_xy =
+      odo.std_xy + odo.std_xy_per_m * distance + odo.std_xy_per_rad * std::abs(delta.yaw);
     const double std_yaw = toRad(odo.std_yaw_deg) + odo.std_yaw_per_rad * std::abs(delta.yaw);
     problem.AddResidualBlock(
       new ceres::AutoDiffCostFunction<OdometryResidual, 3, 3, 3>(

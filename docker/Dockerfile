@@ -23,15 +23,21 @@ ARG ROS_DISTRO
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY --from=manifests /manifests /ws/src/landfall
-RUN apt-get update \
+# The network steps retry: an apt mirror in the middle of a sync, or a dropped connection, fails a
+# build that succeeds a minute later. apt retries each download; the whole command is retried up to
+# three times.
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
+ && retry() { for attempt in 1 2 3; do "$@" && return 0; echo "attempt ${attempt} failed: $*"; sleep 20; done; return 1; } \
+ && retry apt-get update \
  && apt-get install -y --no-install-recommends ccache \
- && rosdep update --rosdistro "${ROS_DISTRO}" \
- && rosdep install --from-paths /ws/src --ignore-src --rosdistro "${ROS_DISTRO}" -y \
+ && retry rosdep update --rosdistro "${ROS_DISTRO}" \
+ && retry rosdep install --from-paths /ws/src --ignore-src --rosdistro "${ROS_DISTRO}" -y \
  && rm -rf /var/lib/apt/lists/* /ws/src
 WORKDIR /ws
 
 FROM deps AS lint
-RUN apt-get update \
+RUN retry() { for attempt in 1 2 3; do "$@" && return 0; echo "attempt ${attempt} failed: $*"; sleep 20; done; return 1; } \
+ && retry apt-get update \
  && apt-get install -y --no-install-recommends clang-format clang-tidy \
  && rm -rf /var/lib/apt/lists/*
 
@@ -46,9 +52,11 @@ ARG ROS_DISTRO
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 COPY --from=manifests /manifests /tmp/landfall_manifests
-RUN apt-get update \
- && rosdep update --rosdistro "${ROS_DISTRO}" \
- && rosdep install --from-paths /tmp/landfall_manifests --ignore-src --rosdistro "${ROS_DISTRO}" \
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
+ && retry() { for attempt in 1 2 3; do "$@" && return 0; echo "attempt ${attempt} failed: $*"; sleep 20; done; return 1; } \
+ && retry apt-get update \
+ && retry rosdep update --rosdistro "${ROS_DISTRO}" \
+ && retry rosdep install --from-paths /tmp/landfall_manifests --ignore-src --rosdistro "${ROS_DISTRO}" \
       --dependency-types exec -y \
  && rm -rf /var/lib/apt/lists/* /tmp/landfall_manifests
 COPY --from=build /ws/install /opt/landfall

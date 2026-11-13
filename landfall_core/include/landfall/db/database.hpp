@@ -110,6 +110,9 @@ struct KeyframeRecord
   static constexpr uint32_t kFlagScanMatched = 1U << 1;
   /// It had a scan that didn't match the map (poor fit): the recorded pose was used.
   static constexpr uint32_t kFlagScanUnmatched = 1U << 2;
+  /// Its scan fits a second place almost as well (a wall mapped twice, repeating structure): along
+  /// that direction the position rests on odometry and the recorded pose.
+  static constexpr uint32_t kFlagScanAmbiguous = 1U << 3;
 
   int64_t id = 0;
   int64_t session_id = 0;

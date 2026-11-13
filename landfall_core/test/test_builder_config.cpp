@@ -157,6 +157,27 @@ TEST(BuilderConfig, CovarianceGateFollowsThePoseSource)
     landfall::CovarianceGate::kNever);
 }
 
+TEST(BuilderConfig, PoseSettingsForTurnsAndUnconfirmedDirections)
+{
+  // Odometry counts less the more the robot turned; the recorded pose counts little where the
+  // scan can't confirm it (T-011).
+  const BuildConfigFile defaults = landfall::parseBuildConfig("");
+  EXPECT_EQ(defaults.builder.ba.odometry.std_xy_per_rad, 0.1);
+  EXPECT_EQ(defaults.builder.poses.disagreement_std_xy, 1.0);
+  const std::string canonical = landfall::canonicalYaml(defaults);
+  EXPECT_NE(canonical.find("  odom_std_xy_per_rad: 0.10000000000000001\n"), std::string::npos);
+  EXPECT_NE(canonical.find("  disagreement_std_xy: 1\n"), std::string::npos);
+  const BuildConfigFile set =
+    landfall::parseBuildConfig("poses: {odom_std_xy_per_rad: 0.25, disagreement_std_xy: 0.3}");
+  EXPECT_EQ(set.builder.ba.odometry.std_xy_per_rad, 0.25);
+  EXPECT_EQ(set.builder.poses.disagreement_std_xy, 0.3);
+  EXPECT_EQ(
+    landfall::parseBuildConfig("poses: {odom_std_xy_per_rad: 0}")
+      .builder.ba.odometry.std_xy_per_rad,
+    0.0);
+  EXPECT_NE(errorOf("poses: {odom_std_xy_per_rad: -0.1}").find("odom_std"), std::string::npos);
+}
+
 TEST(BuilderConfig, RejectsTyposAndInvalidValues)
 {
   EXPECT_NE(errorOf("pairs: {max_distanse: 3}").find("'pairs.max_distanse'"), std::string::npos);

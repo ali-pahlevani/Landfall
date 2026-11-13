@@ -54,12 +54,15 @@ struct KeyframePoseParams
   ScanMatchParams scan;
   double max_range = 0.0;  ///< m (poses.max_range): longer beams are ignored; 0: the scanner's
   /// The scan match is fused with the recorded pose. Where they agree (Mahalanobis distance within
-  /// agreement_chi2), the recorded pose counts with recorded_std_* (a good localization keeps its
-  /// accuracy); where the scan contradicts it, with disagreement_std_* only, so it just fills in
-  /// what the scan can't tell (e.g. along a corridor). (poses.recorded_std_xy, ...)
+  /// agreement_chi2), the recorded pose counts with recorded_std_* in the directions the scan
+  /// confirms (a good localization keeps its accuracy), and less the less the scan can tell; where
+  /// the scan contradicts it, or can't tell a direction at all, with disagreement_std_* only. The
+  /// localization uses the same scans and map, so where they can't tell (along a corridor, between
+  /// two places the scan fits alike) its pose is no better: in the URDF Maker warehouse AMCL was up
+  /// to 0.94 m off there. (poses.recorded_std_xy, ...)
   double recorded_std_xy = 0.02;
   double recorded_std_yaw_deg = 0.5;
-  double disagreement_std_xy = 0.3;
+  double disagreement_std_xy = 1.0;
   double disagreement_std_yaw_deg = 3.0;
   double agreement_chi2 = 11.34;  ///< 99 % of a 3-DoF chi-square
   bool odometry = true;           ///< (poses.odometry) tie consecutive keyframes that have odometry

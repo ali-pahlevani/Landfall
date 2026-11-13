@@ -28,7 +28,8 @@ namespace landfall
 struct OdometryParams
 {
   double std_xy = 0.02;          ///< m per step, plus ...
-  double std_xy_per_m = 0.03;    ///< ... this fraction of the distance travelled
+  double std_xy_per_m = 0.03;    ///< ... this fraction of the distance travelled, plus ...
+  double std_xy_per_rad = 0.1;   ///< ... this many metres per radian turned (wheels slip)
   double std_yaw_deg = 0.5;      ///< deg per step, plus ...
   double std_yaw_per_rad = 0.1;  ///< ... this fraction of the rotation
   double max_step = 2.0;         ///< m: farther steps (a gap in the recording) aren't linked
@@ -98,6 +99,27 @@ struct BaResult
 /// bounds make "never move a pose far from its prior" hold by construction (3 standard deviations
 /// of a `prior_sqrt_information` prior, at least the configured shift). With no landmarks it is a
 /// pose graph: priors and odometry only. Single-threaded, hence deterministic.
+/// One step between consecutive keyframes: the odometry's relative motion and the same motion
+/// from a reference (two scan matches).
+struct OdometryStep
+{
+  Pose2 odometry;
+  Pose2 reference;
+};
+
+struct OdometryCheck
+{
+  int straight_steps = 0;       ///< steps turning less than 5 degrees
+  double straight_std_m = 0.0;  ///< their position error per axis (the reference's noise included)
+  int turns = 0;                ///< steps turning at least min_turn
+  double turn_std_per_rad = 0.0;  ///< position error per axis per radian turned, beyond the above
+};
+
+/// The odometry's position error against a reference, as OdometryParams model it: on straight
+/// steps, and what turning adds per radian. From medians (|e|^2 / sigma^2 of a 2-D error with
+/// sigma per axis is chi-square(2), median 2 ln 2), so a few bad references don't count.
+OdometryCheck checkOdometry(const std::vector<OdometryStep> & steps, double min_turn_rad);
+
 BaResult adjustPosePriors(
   const std::vector<BaKeyframe> & keyframes, const std::vector<Vec3> & landmarks,
   const std::vector<BaObservation> & observations, const PosePriorBaParams & params);

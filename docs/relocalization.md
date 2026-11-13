@@ -267,6 +267,14 @@ requests.
 (M7, with the scan alternatives check. Before it, in M4 and M5, the same requests succeeded as
 often, but each single-frame direction published one wrong pose, see below.)
 
+Re-run after the warehouse fixes (PLAN V56-V59, 2026-11-13; databases built from the two drives'
+bags with scans and odometry), single-frame requests: run 1 → run 2, 438 of 444 (98.6 %), 6
+`AMBIGUOUS`, no wrong pose, error 1.4 cm / 3.8 cm (median / p95); run 2 → run 1, 428 of 436
+(98.2 %), 8 `AMBIGUOUS`, no wrong pose, 1.3 cm / 3.3 cm. These errors are measured in the map frame
+the scan-matched databases realize, (8.030, 0.041, 0.105°) from the world, which differs by 2.3 cm
+from the one fitted to AMCL's poses (8.015, 0.023, 0.105°, as used above); against that one the
+medians are 2.8 cm and 2.6 cm.
+
 The depot looks the same in its two halves when rotated 180° about the world origin. With vision
 alone (M3), 19 to 20 frames per direction were ambiguous, and 1 of 156 three-frame requests
 published the mirror pose, 27.8 m off. The LiDAR check rejects most mirror candidates, so far fewer

@@ -74,38 +74,49 @@ they are:
    at `poses.recorded_std_xy` (2 cm) and `poses.recorded_std_yaw_deg` (0.5°) in the directions
    the scan confirms: a good localization keeps its accuracy. In a direction the scan checks less
    well (along a corridor) the recorded pose counts less, its std growing with the square of the
-   scan's there (scan std² / `poses.recorded_std_xy`, at most `poses.disagreement_std_xy`, 0.3 m),
-   so a localization drifting along an aisle doesn't pull the pose its way. Where the scan
-   contradicts it (a localization
-   that drifted), the recorded pose counts only with `poses.disagreement_std_*`, which fills in
-   what the scan can't see. A scan that doesn't fit (`poses.min_hit_ratio`, 60 % of its beams
+   scan's there (scan std² / `poses.recorded_std_xy`, at most `poses.disagreement_std_xy`, 1 m),
+   so a localization drifting along an aisle doesn't pull the pose its way: it uses the same scans
+   and map, so where they can't tell a direction its pose is no better (in the URDF Maker warehouse
+   AMCL was up to 0.94 m off there). Where the scan contradicts it (a localization that drifted),
+   the recorded pose counts only with `poses.disagreement_std_*` (1 m, 3°), which fills in what
+   neither the scan nor the odometry can see. A scan that doesn't fit (`poses.min_hit_ratio`, 60 % of its beams
    within 10 cm of an obstacle, or its best fit on the edge of the search window) confirms nothing:
    the recorded pose then counts only as loosely as a contradicted one, the odometry carries the
    keyframe, and it is flagged.
 3. **Odometry ties consecutive keyframes** of a session (`odom → base` at their stamps, std
-   `poses.odom_std_xy` 2 cm + 3 % of the distance and `poses.odom_std_yaw_deg` 0.5° + 10 % of the
-   turn, robust to a wheel slip). A pose graph of these priors and links gives the poses that pair
+   `poses.odom_std_xy` 2 cm + 3 % of the distance + `poses.odom_std_xy_per_rad` 0.1 m per radian
+   turned, and `poses.odom_std_yaw_deg` 0.5° + 10 % of the turn; robust to a wheel slip). Wheels
+   slip in turns: the TurtleBot 4 of the depot simulation errs about 0.015 m per radian turned, the
+   skid-steer robot of the URDF Maker warehouse 0.2 m (50 cm in a U-turn). A pose graph of these priors and links gives the poses that pair
    selection, triangulation and the bundle adjustment start from; along a corridor, where the
    scans can't tell, the odometry carries the corridor's ends inward.
 4. The **bundle adjustment** keeps the same priors and odometry and adds the landmarks; a keyframe
    may move up to three of its prior's standard deviations (at least `ba.max_shift_xy`).
 
 The build report's "Keyframe poses" section counts the matched keyframes, the recorded poses the
-scan contradicted, the odometry links, and how far the poses moved. Older sessions without scans
+scan contradicted, the odometry links, and how far the poses moved. Two of its rows check the
+recording against these assumptions, and warn when it doesn't fit them:
+- **Scans that fit a second place almost as well** (within 1 nat, at least 15 cm away): a wall the
+  map has twice, or structure that repeats. Along that direction those keyframes' poses rest on
+  odometry and are less certain; they are flagged in the database and drawn orange on the coverage
+  map. More than 5 % of the matched keyframes give a warning.
+- **Odometry against the scans**: between consecutive keyframes whose scans matched precisely and
+  without a second place, the odometry's error on straight steps (the scans' own noise included)
+  and what turning adds per radian. A warning names the measured value when it exceeds
+  `poses.odom_std_xy_per_rad`: set it to that for this robot. Older sessions without scans
 (staging format 1) and bags without a scan topic build as before, from the recorded poses alone
 (odometry still links them when there is some).
 
-**Limit: places a scan can't tell apart.** Where one scan fits two positions equally well and the
-localization sits on the wrong one, the build keeps that position: the localization slid there for
-the same reason (it uses the same map and scans). In the URDF Maker warehouse this happened in the
-southern aisles, where the map has a wall drawn twice and a scan fits 35-50 cm along the aisle as
-well as at the truth: for 64 of the 70 keyframes matched more than 15 cm from the truth, the two
-positions fit the scan within 0.6 nats of each other. Relocalizing there against such a database
-gives poses off by as much (0.3-0.5 m in that warehouse), and the LiDAR check can't refuse them,
-since the scan fits there too. Only odometry from a place where the position is clear can tell
-the two apart, and the pose graph doesn't yet choose between them: the keyframes whose scan and
-recorded pose agree on the wrong one outweigh the odometry (T-011). A gap in the recording also
-breaks the odometry chain; the covariance gate no longer makes such gaps for frames with a scan.
+**Limit: places a scan can't tell apart.** Where one scan fits two positions equally well, nothing
+in a recording reliably tells which is right. In the URDF Maker warehouse's southern aisles the map
+has walls drawn twice, and 229 of 594 keyframes' scans fit a second place 25-50 cm along the aisle
+within 1 nat: AMCL sat on the right one 120 times of 229, the better fit was right 128 times.
+Odometry is accurate driving straight (0.7 cm per 0.5 m step there), but every aisle is entered
+and left through turns, where that robot's wheels slipped up to 50 cm (T-011). The build keeps
+such keyframes on one of the places, without letting the localization drag them further, and
+flags them; relocalizing there can be off by about the distance between the places (up to 0.43 m
+in that warehouse; the LiDAR check can't refuse it, the scan fits there too). A map without the
+doubled walls is the fix: with the true poses the same aisles relocalize to within 11 cm.
 
 ## Live recording: the recorder node
 
@@ -235,12 +246,13 @@ poses:                                    # keyframe poses (see "Keyframe poses"
   effective_beams: 40                     #   beams counted as independent in the covariance
   recorded_std_xy: 0.02                   # the recorded pose where the scan agrees with it (in
   recorded_std_yaw_deg: 0.5               #   the directions the scan confirms)
-  disagreement_std_xy: 0.3                # ... and where the scan contradicts it
+  disagreement_std_xy: 1.0                # ... where it contradicts it or can't tell a direction
   disagreement_std_yaw_deg: 3.0
   agreement_chi2: 11.34                   # 99 % of a 3-DoF chi-square
   odometry: true                          # tie consecutive keyframes by their odometry
   odom_std_xy: 0.02                       #   + odom_std_xy_per_m of the distance
   odom_std_xy_per_m: 0.03
+  odom_std_xy_per_rad: 0.1                #   + this per radian turned (wheels slip in turns)
   odom_std_yaw_deg: 0.5                   #   + odom_std_yaw_per_rad of the turn
   odom_std_yaw_per_rad: 0.1
   odom_max_step: 2.0                      #   farther steps (a gap) aren't tied
@@ -285,7 +297,8 @@ take most of the keypoint budget. The database stores the setting with the local
 relocalizer hides the same floor in its queries (from the camera's TF at each image). In the URDF
 Maker warehouse (camera 0.33 m above the floor, 43 % of the image hidden) a recording gave 15,039
 landmarks instead of 8,701 and relocalized half as often again; the depot fixture (45 % hidden),
-1,232 instead of 940. The build report's "Features" line says how much of the image the mask hid.
+1,232 instead of 940. The build report's "Features" line says how much of the image the mask hid,
+and the build warns when that is more than 60 % (a camera that looks down at the floor).
 Set 0 to keep the floor: a camera that looks down at it, or floor markings you want as landmarks.
 Databases built before the option have no mask, and neither have their queries.
 

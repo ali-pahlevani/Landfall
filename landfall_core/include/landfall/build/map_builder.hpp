@@ -111,6 +111,16 @@ struct BuildStats
   int poses_scan_unmatched = 0;     ///< keyframes whose scan didn't match (odometry carries them)
   int poses_scan_contradicted = 0;  ///< matched keyframes whose scan contradicted the recording
   int poses_odometry_links = 0;     ///< odometry constraints between consecutive keyframes
+  /// Matched keyframes whose scan fits a second place almost as well, and how far away it is.
+  int poses_scan_ambiguous = 0;
+  double poses_ambiguity_median_m = 0.0;
+  double poses_ambiguity_max_m = 0.0;
+  /// Odometry against the scan matches of consecutive unambiguous keyframes: the error per axis of
+  /// a straight step (m), and the error per radian turned (m) beyond it.
+  int odometry_straight_steps = 0;
+  double odometry_straight_std_m = 0.0;
+  int odometry_turns = 0;
+  double odometry_turn_std_per_rad = 0.0;
   /// How far the scan matching and odometry moved the recorded poses (before the adjustment).
   double poses_mean_correction_m = 0.0;
   double poses_max_correction_m = 0.0;

@@ -15,6 +15,7 @@
 #ifndef LANDFALL_GRID_SCAN_MATCHER_HPP_
 #define LANDFALL_GRID_SCAN_MATCHER_HPP_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,9 @@ struct ScanMatchParams
   /// Beams count as this many independent measurements in the covariance: neighbouring beams hit
   /// the same surface and the map's own errors, so their errors are far from independent.
   int effective_beams = 40;
+  /// m: a separate fit of the window at least this far from the best is another place the scan
+  /// could be at (ScanMatch::alternative).
+  double alternative_distance = 0.15;
 };
 
 /// Where a scan fits the map best near a guess, and how sure that is per direction.
@@ -54,6 +58,13 @@ struct ScanMatch
   double hit_ratio = 0.0;        ///< hits / beams at the best fit
   double guess_hit_ratio = 0.0;  ///< hits / beams at the guess
   int beams = 0;                 ///< valid beams used
+  /// The best other place in the window: a separate maximum of the fit at least
+  /// alternative_distance from the best (a wall mapped twice, repeating structure), refined.
+  std::optional<Pose2> alternative;
+  /// How much worse the alternative fits, in nats with the beams counted as effective_beams; near
+  /// 0 the scan can't tell the two apart (it may even be negative: the best is the best mean fit,
+  /// with a pull to the guess on ties).
+  double alternative_nats = 0.0;
 };
 
 /// Matches scan endpoints (base frame, e.g. ProjectedScan::endpoints) to the map around `guess`:

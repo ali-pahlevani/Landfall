@@ -295,6 +295,90 @@ TEST(PosePriorBa, OdometrySlipDoesNotOverrideStrongPriors)
   }
 }
 
+TEST(PosePriorBa, ASlippingTurnCountsLessThanAStraightStep)
+{
+  // An aisle driven east, a U-turn at its end, the aisle driven back west. The scan pins the east
+  // leg (1 cm) but the west leg only loosely along the aisle (0.2 m, as where the scan fits two
+  // places); the U-turn's odometry slips 0.5 m, as a skid-steer robot's did in the URDF Maker
+  // warehouse. Counted like a straight step, that slip drags the west leg; with the per-radian
+  // term its pull is a third.
+  std::vector<Pose2> truth;
+  truth.reserve(16);
+  for (int i = 0; i < 8; ++i) {
+    truth.push_back({0.5 * i, 0.0, 0.0});
+  }
+  truth.push_back({3.7, 0.3, M_PI});
+  for (int i = 1; i < 8; ++i) {
+    truth.push_back({3.7 - 0.5 * i, 0.3, M_PI});
+  }
+  std::vector<BaKeyframe> keyframes;
+  Pose2 odom{0.0, 0.0, 0.0};
+  for (std::size_t k = 0; k < truth.size(); ++k) {
+    if (k > 0) {
+      odom = landfall::compose(odom, landfall::between(truth[k - 1], truth[k]));
+      if (k == 8) {
+        odom = landfall::compose(odom, Pose2{0.5, 0.0, 0.0});
+      }
+    }
+    BaKeyframe kf;
+    kf.prior = truth[k];
+    kf.prior_sqrt_information = sqrtInformation(k < 8 ? 0.01 : 0.2, 0.01, deg(0.2));
+    kf.odom = odom;
+    keyframes.push_back(kf);
+  }
+  const auto worstWest = [&](const landfall::PosePriorBaParams & params) {
+    const auto result = landfall::adjustPosePriors(keyframes, {}, {}, params);
+    EXPECT_TRUE(result.usable) << result.message;
+    double worst = 0.0;
+    for (std::size_t k = 8; k < truth.size(); ++k) {
+      worst = std::max(worst, landfall::translationDistance(result.poses[k], truth[k]));
+    }
+    return worst;
+  };
+  landfall::PosePriorBaParams params;
+  EXPECT_DOUBLE_EQ(params.odometry.std_xy_per_rad, 0.1);
+  const double with_turn_term = worstWest(params);
+  params.odometry.std_xy_per_rad = 0.0;
+  const double without = worstWest(params);
+  RecordProperty("west_error_with_turn_term_m", std::to_string(with_turn_term));
+  RecordProperty("west_error_without_m", std::to_string(without));
+  EXPECT_LT(with_turn_term, 0.035);  // measured 2.0 cm
+  EXPECT_GT(without, 0.05);          // measured 6.6 cm
+}
+
+TEST(OdometryCheck, MeasuresWhatTurningAddsBeyondAStraightStep)
+{
+  // Steps of 0.5 m, every fifth turning 20 to 90 degrees; the reference (scan matches) carries
+  // 1 cm of noise per axis, the odometry 3 mm, plus `slip` metres sideways per radian turned.
+  const auto measure = [](double slip) {
+    std::mt19937 rng(3);
+    std::normal_distribution<double> noise(0.0, 1.0);
+    std::vector<landfall::OdometryStep> steps;
+    for (int k = 0; k < 200; ++k) {
+      const double turn = k % 5 == 0 ? deg(20.0 + 70.0 * (k % 3) / 2.0) : 0.0;
+      const Pose2 truth{0.5, 0.0, turn};
+      Pose2 odometry = truth;
+      odometry.x += 0.003 * noise(rng);
+      odometry.y += 0.003 * noise(rng) + slip * turn;
+      Pose2 reference = truth;
+      reference.x += 0.01 * noise(rng);
+      reference.y += 0.01 * noise(rng);
+      steps.push_back({odometry, reference});
+    }
+    return landfall::checkOdometry(steps, deg(15.0));
+  };
+  const auto exact = measure(0.0);
+  EXPECT_EQ(exact.straight_steps, 160);
+  EXPECT_EQ(exact.turns, 40);
+  EXPECT_NEAR(exact.straight_std_m, 0.0104, 0.003);  // the reference's 1 cm and the odometry's 3 mm
+  EXPECT_LT(exact.turn_std_per_rad, 0.02);
+  // A deterministic slip s per radian along one axis reads as s / sqrt(2 ln 2) per axis.
+  const auto slipping = measure(0.25);
+  EXPECT_NEAR(slipping.turn_std_per_rad, 0.25 / std::sqrt(2.0 * std::log(2.0)), 0.03);
+  EXPECT_NEAR(slipping.straight_std_m, exact.straight_std_m, 1e-12);
+  EXPECT_EQ(landfall::checkOdometry({}, deg(15.0)).turns, 0);
+}
+
 TEST(PosePriorBa, OdometryLinksOnlyConsecutiveKeyframesOfASession)
 {
   std::vector<BaKeyframe> keyframes(6);

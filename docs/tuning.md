@@ -32,7 +32,17 @@ poses before what it does to successes. All parameters are listed in `docs/param
   trusted in the directions the scan confirms: lower it only if your localization is better than
   the map's cells (5 cm). Few contradictions don't prove good poses: where one scan fits two
   positions equally (a wall the map has twice, repeating shelf legs), the localization and the
-  scan can agree on the wrong one (`docs/recording.md`, "Limit").
+  scan can agree on the wrong one; the report counts those keyframes ("Scans that fit a second
+  place") and draws them orange on the coverage map (`docs/recording.md`, "Limit").
+  `poses.disagreement_std_xy` (1 m) is how much the recorded pose counts where the scan can't
+  confirm it; lower it only for a localization with information the scans lack (e.g. another
+  sensor), since one built on the same scans is no better there.
+- **Odometry noise** (`poses.odom_std_*` of the build). `poses.odom_std_xy_per_rad` (0.1 m per
+  radian turned) is how much a turn may throw the odometry's position off: about 0.015 m for the
+  depot simulation's TurtleBot 4, 0.2 m for a skid-steer robot whose wheels slip. The report's
+  "Odometry against the scans" row measures it on your recording, and a warning names the value
+  when it is larger than the setting; too low a setting lets a slipping turn drag the keyframes
+  after it, too high one costs little where the scans pin the poses.
 - **Floor mask** (`features.floor_mask_distance` of the build, 5 m; `docs/recording.md`). The
   floor nearer than this is hidden from the feature detector, in the build and in queries.
   In the URDF Maker warehouse 3 m and 5 m did equally well (relocalization success 9.5 and 9.6 % of

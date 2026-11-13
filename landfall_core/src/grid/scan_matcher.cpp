@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 namespace landfall
 {
@@ -109,6 +110,21 @@ double fineScore(
     sum += kernel(d.interpolated(p.x(), p.y()), inv_sigma);
   }
   return sum / static_cast<double>(endpoints.size()) - penalty;
+}
+
+// Log-likelihood of every beam at a pose: -log(1 + (d / sigma)^2) / 2 each (Cauchy errors).
+double logLikelihood(
+  const Distances & d, const std::vector<Vec2> & endpoints, const Pose2 & pose, double inv_sigma)
+{
+  const double c = std::cos(pose.yaw);
+  const double s = std::sin(pose.yaw);
+  double sum = 0.0;
+  for (const Vec2 & e : endpoints) {
+    const Vec2 p = transformPoint(pose, c, s, e);
+    const double t = d.interpolated(p.x(), p.y()) * inv_sigma;
+    sum -= 0.5 * std::log1p(t * t);
+  }
+  return sum;
 }
 
 double hitRatio(
@@ -224,32 +240,36 @@ ScanMatch matchScan(
     result.reason = "best fit on the edge of the search window";
     return result;
   }
-  Pose2 best{
-    guess.x + best_i * res, guess.y + best_j * res, guess.yaw + toRad(best_k * kCoarseYawStepDeg)};
-
   // --- Fine: two passes on the interpolated field, every beam -----------------------------------
-  for (const auto & [half_xy, step_xy, half_yaw_deg, step_yaw_deg] :
-       {std::array<double, 4>{res, 0.2 * res, 0.5, 0.1},
-        std::array<double, 4>{0.2 * res, 0.05 * res, 0.1, 0.025}}) {
-    const Pose2 center = best;
-    double best_fine = -1e9;
-    const int n_xy = static_cast<int>(std::lround(half_xy / step_xy));
-    const int n_yaw = static_cast<int>(std::lround(half_yaw_deg / step_yaw_deg));
-    for (int k = -n_yaw; k <= n_yaw; ++k) {
-      for (int j = -n_xy; j <= n_xy; ++j) {
-        for (int i = -n_xy; i <= n_xy; ++i) {
-          const Pose2 candidate{
-            center.x + i * step_xy, center.y + j * step_xy, center.yaw + toRad(k * step_yaw_deg)};
-          const double score = fineScore(d, endpoints, candidate, inv_sigma, penalty(candidate));
-          if (score > best_fine) {
-            best_fine = score;
-            best = candidate;
+  const auto refine = [&](Pose2 pose, bool pull_to_guess) {
+    for (const auto & [half_xy, step_xy, half_yaw_deg, step_yaw_deg] :
+         {std::array<double, 4>{res, 0.2 * res, 0.5, 0.1},
+          std::array<double, 4>{0.2 * res, 0.05 * res, 0.1, 0.025}}) {
+      const Pose2 center = pose;
+      double best_fine = -1e9;
+      const int n_xy = static_cast<int>(std::lround(half_xy / step_xy));
+      const int n_yaw = static_cast<int>(std::lround(half_yaw_deg / step_yaw_deg));
+      for (int k = -n_yaw; k <= n_yaw; ++k) {
+        for (int j = -n_xy; j <= n_xy; ++j) {
+          for (int i = -n_xy; i <= n_xy; ++i) {
+            const Pose2 candidate{
+              center.x + i * step_xy, center.y + j * step_xy, center.yaw + toRad(k * step_yaw_deg)};
+            const double score = fineScore(
+              d, endpoints, candidate, inv_sigma, pull_to_guess ? penalty(candidate) : 0.0);
+            if (score > best_fine) {
+              best_fine = score;
+              pose = candidate;
+            }
           }
         }
       }
     }
-  }
-  best.yaw = normalizeAngle(best.yaw);
+    pose.yaw = normalizeAngle(pose.yaw);
+    return pose;
+  };
+  const Pose2 best = refine(
+    {guess.x + best_i * res, guess.y + best_j * res, guess.yaw + toRad(best_k * kCoarseYawStepDeg)},
+    true);
   result.pose = best;
   result.hit_ratio = hitRatio(d, endpoints, best, params.hit_tolerance);
 
@@ -325,6 +345,66 @@ ScanMatch matchScan(
     result.covariance += spread / weight_sum;
   }
   result.covariance = 0.5 * (result.covariance + result.covariance.transpose());
+
+  // --- The best other place: separate maxima of the window, the best three refined -------------
+  {
+    const int side = 2 * cells + 1;
+    const auto at = [&](int i, int j, int k) {
+      return window
+        [(static_cast<std::size_t>(k + yaw_steps) * static_cast<std::size_t>(side) +
+          static_cast<std::size_t>(j + cells)) *
+           static_cast<std::size_t>(side) +
+         static_cast<std::size_t>(i + cells)]
+          .log_likelihood;
+    };
+    std::vector<std::pair<double, std::array<int, 3>>> peaks;
+    for (int k = -yaw_steps + 1; k < yaw_steps; ++k) {
+      for (int j = -cells + 1; j < cells; ++j) {
+        for (int i = -cells + 1; i < cells; ++i) {
+          if (res * std::hypot(i - best_i, j - best_j) < params.alternative_distance) {
+            continue;
+          }
+          const double value = at(i, j, k);
+          bool peak = true;
+          for (int dk = -1; dk <= 1 && peak; ++dk) {
+            for (int dj = -1; dj <= 1 && peak; ++dj) {
+              for (int di = -1; di <= 1 && peak; ++di) {
+                peak = (di == 0 && dj == 0 && dk == 0) || at(i + di, j + dj, k + dk) <= value;
+              }
+            }
+          }
+          if (peak) {
+            peaks.push_back({value, {i, j, k}});
+          }
+        }
+      }
+    }
+    constexpr std::size_t kRefinedPeaks = 3;
+    const std::size_t kept = std::min(peaks.size(), kRefinedPeaks);
+    std::partial_sort(
+      peaks.begin(), peaks.begin() + static_cast<std::ptrdiff_t>(kept), peaks.end(),
+      [](const auto & a, const auto & b) { return a.first > b.first; });
+    const double best_log_likelihood = logLikelihood(d, endpoints, best, inv_sigma);
+    double alternative_log_likelihood = -std::numeric_limits<double>::infinity();
+    for (std::size_t n = 0; n < kept; ++n) {
+      const auto & [i, j, k] = peaks[n].second;
+      const Pose2 candidate = refine(
+        {guess.x + i * res, guess.y + j * res, guess.yaw + toRad(k * kCoarseYawStepDeg)}, false);
+      if (std::hypot(candidate.x - best.x, candidate.y - best.y) < params.alternative_distance) {
+        continue;  // slid back into the best fit's peak
+      }
+      const double value = logLikelihood(d, endpoints, candidate, inv_sigma);
+      if (value > alternative_log_likelihood) {
+        alternative_log_likelihood = value;
+        result.alternative = candidate;
+      }
+    }
+    if (result.alternative) {
+      const double independent = std::min(
+        1.0, static_cast<double>(params.effective_beams) / static_cast<double>(endpoints.size()));
+      result.alternative_nats = independent * (best_log_likelihood - alternative_log_likelihood);
+    }
+  }
 
   if (result.hit_ratio < params.min_hit_ratio) {
     result.reason = "hit ratio " + std::to_string(result.hit_ratio) + " < " +

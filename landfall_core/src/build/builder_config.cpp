@@ -248,6 +248,7 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   poses.read("odometry", &b.poses.odometry);
   poses.read("odom_std_xy", &b.ba.odometry.std_xy);
   poses.read("odom_std_xy_per_m", &b.ba.odometry.std_xy_per_m);
+  poses.read("odom_std_xy_per_rad", &b.ba.odometry.std_xy_per_rad);
   poses.read("odom_std_yaw_deg", &b.ba.odometry.std_yaw_deg);
   poses.read("odom_std_yaw_per_rad", &b.ba.odometry.std_yaw_per_rad);
   poses.read("odom_max_step", &b.ba.odometry.max_step);
@@ -363,7 +364,7 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   const OdometryParams & odo = b.ba.odometry;
   require(
     odo.std_xy > 0.0 && odo.std_yaw_deg > 0.0 && odo.std_xy_per_m >= 0.0 &&
-      odo.std_yaw_per_rad >= 0.0 && odo.max_step > 0.0,
+      odo.std_xy_per_rad >= 0.0 && odo.std_yaw_per_rad >= 0.0 && odo.max_step > 0.0,
     "'poses.odom_std_*' must be positive (the per-metre and per-radian parts >= 0) and "
     "'poses.odom_max_step' positive");
   require(b.ba.prior_loss_scale > 0.0, "'poses.prior_loss_scale' must be positive");
@@ -437,6 +438,7 @@ std::string canonicalYaml(const BuildConfigFile & config)
     {"odom_max_step", number(b.ba.odometry.max_step)},
     {"odom_std_xy", number(b.ba.odometry.std_xy)},
     {"odom_std_xy_per_m", number(b.ba.odometry.std_xy_per_m)},
+    {"odom_std_xy_per_rad", number(b.ba.odometry.std_xy_per_rad)},
     {"odom_std_yaw_deg", number(b.ba.odometry.std_yaw_deg)},
     {"odom_std_yaw_per_rad", number(b.ba.odometry.std_yaw_per_rad)},
     {"odometry", flag(b.poses.odometry)},

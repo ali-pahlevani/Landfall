@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <limits>
@@ -56,6 +58,28 @@ constexpr int kThumbnailQuality = 80;
 constexpr double kAutoTriangulationFraction = 0.006;
 // The post-BA re-filter is this much tighter than the triangulation threshold.
 constexpr double kAutoRefilterFactor = 0.75;
+// A scan whose second place fits within this many nats (beams counted as effective_beams; a
+// likelihood ratio of e) can't tell the two apart; warn when this many of the matched keyframes do.
+constexpr double kAmbiguityNats = 1.0;
+constexpr double kAmbiguousShare = 0.05;
+// The odometry check uses steps between scan matches this precise (largest std of x/y), turns of
+// at least kCheckTurnDeg, and warns from kCheckTurns turns on.
+constexpr double kCheckScanStd = 0.05;
+// A floor mask hiding more of the image than this leaves the detector little to work with (a
+// camera tilted down at the floor): warned about.
+constexpr double kFloorMaskWarnShare = 0.6;
+constexpr double kCheckTurnDeg = 15.0;
+constexpr int kCheckTurns = 10;
+
+double median(std::vector<double> values)
+{
+  if (values.empty()) {
+    return 0.0;
+  }
+  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+  std::nth_element(values.begin(), middle, values.end());
+  return *middle;
+}
 
 // SplitMix64: decorrelated per-pair seeds from one build seed.
 uint64_t mixSeed(uint64_t seed, uint64_t a, uint64_t b)
@@ -344,6 +368,79 @@ BuildStats buildMap(
       flags[i] |= db::KeyframeRecord::kFlagScanMatched;
       ++stats.poses_scan_matched;
     }
+
+    // Scans that fit a second place almost as well (a wall the map has twice, repeating
+    // structure): along that direction the position rests on odometry and the recorded pose.
+    std::vector<double> separations;
+    for (std::size_t i = 0; i < n; ++i) {
+      const auto & m = matches[i];
+      if (!m || !m->valid || !m->alternative || m->alternative_nats >= kAmbiguityNats) {
+        continue;
+      }
+      flags[i] |= db::KeyframeRecord::kFlagScanAmbiguous;
+      separations.push_back(
+        std::hypot(m->alternative->x - m->pose.x, m->alternative->y - m->pose.y));
+    }
+    stats.poses_scan_ambiguous = static_cast<int>(separations.size());
+    if (!separations.empty()) {
+      stats.poses_ambiguity_median_m = median(separations);
+      stats.poses_ambiguity_max_m = *std::max_element(separations.begin(), separations.end());
+      if (
+        static_cast<double>(separations.size()) >=
+        kAmbiguousShare * static_cast<double>(stats.poses_scan_matched)) {
+        stats.warnings.push_back(
+          std::to_string(stats.poses_scan_ambiguous) +
+          " keyframe(s) have a scan that fits a second place almost as well, " +
+          std::to_string(static_cast<int>(std::lround(100.0 * stats.poses_ambiguity_median_m))) +
+          " cm away (median): a wall the map has twice, or repeating structure. Along that "
+          "direction their poses rest on odometry and are less certain (orange on the coverage "
+          "map); a map without the doubled walls fixes it");
+      }
+    }
+
+    // Odometry against the scan matches of consecutive keyframes: the error of a straight step
+    // (scan noise included) and what turning adds per radian (checkOdometry).
+    {
+      const auto precise = [&](std::size_t k) {
+        const auto & m = matches[k];
+        if (!m || !m->valid || (flags[k] & db::KeyframeRecord::kFlagScanAmbiguous) != 0) {
+          return false;
+        }
+        const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> xy(
+          m->covariance.topLeftCorner<2, 2>(), Eigen::EigenvaluesOnly);
+        return xy.eigenvalues().maxCoeff() <= kCheckScanStd * kCheckScanStd;
+      };
+      std::vector<OdometryStep> steps;
+      for (std::size_t i = 1; i < n; ++i) {
+        const BuildKeyframe & a = input.keyframes[i - 1];
+        const BuildKeyframe & b = input.keyframes[i];
+        if (a.session != b.session || !a.odom || !b.odom || !precise(i - 1) || !precise(i)) {
+          continue;
+        }
+        const Pose2 odom_step = between(*a.odom, *b.odom);
+        if (std::hypot(odom_step.x, odom_step.y) > config.ba.odometry.max_step) {
+          continue;  // a gap, not linked
+        }
+        steps.push_back({odom_step, between(matches[i - 1]->pose, matches[i]->pose)});
+      }
+      const OdometryCheck check = checkOdometry(steps, kCheckTurnDeg * M_PI / 180.0);
+      stats.odometry_straight_steps = check.straight_steps;
+      stats.odometry_straight_std_m = check.straight_std_m;
+      stats.odometry_turns = check.turns;
+      stats.odometry_turn_std_per_rad = check.turn_std_per_rad;
+      if (
+        config.poses.odometry && stats.odometry_turns >= kCheckTurns &&
+        stats.odometry_turn_std_per_rad > config.ba.odometry.std_xy_per_rad) {
+        char text[256];
+        std::snprintf(
+          text, sizeof(text),
+          "turning odometry errs about %.2f m per radian turned (from %d turns, against the scan "
+          "matches), more than poses.odom_std_xy_per_rad (%.2f): raise it, or the odometry of the "
+          "turns pulls keyframes off",
+          stats.odometry_turn_std_per_rad, stats.odometry_turns, config.ba.odometry.std_xy_per_rad);
+        stats.warnings.emplace_back(text);
+      }
+    }
     if (stats.poses_scan_unmatched > 0) {
       stats.warnings.push_back(
         std::to_string(stats.poses_scan_unmatched) +
@@ -452,6 +549,13 @@ BuildStats buildMap(
     if (!floor.empty()) {
       stats.floor_mask_hidden =
         1.0 - static_cast<double>(cv::countNonZero(floor)) / static_cast<double>(floor.total());
+    }
+    if (stats.floor_mask_hidden > kFloorMaskWarnShare) {
+      stats.warnings.push_back(
+        "the floor mask hides " +
+        std::to_string(static_cast<int>(std::lround(100.0 * stats.floor_mask_hidden))) +
+        " % of the image (features.floor_mask_distance): check the camera's tilt in TF, or lower "
+        "the distance for a camera that looks down at the floor");
     }
   }
   for (const auto & f : features) {
@@ -1012,6 +1116,13 @@ std::string toJson(const BuildStats & s)
     .field("poses_scan_unmatched", s.poses_scan_unmatched)
     .field("poses_scan_contradicted", s.poses_scan_contradicted)
     .field("poses_odometry_links", s.poses_odometry_links)
+    .field("poses_scan_ambiguous", s.poses_scan_ambiguous)
+    .field("poses_ambiguity_median_m", s.poses_ambiguity_median_m)
+    .field("poses_ambiguity_max_m", s.poses_ambiguity_max_m)
+    .field("odometry_straight_steps", s.odometry_straight_steps)
+    .field("odometry_straight_std_m", s.odometry_straight_std_m)
+    .field("odometry_turns", s.odometry_turns)
+    .field("odometry_turn_std_per_rad", s.odometry_turn_std_per_rad)
     .field("poses_mean_correction_m", s.poses_mean_correction_m)
     .field("poses_max_correction_m", s.poses_max_correction_m)
     .field("poses_max_correction_yaw_deg", s.poses_max_correction_yaw_deg);

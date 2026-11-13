@@ -17,9 +17,11 @@ status and lists the `NOT_READY` reasons with their fixes.
 | Symptom | Look at | Usual cause |
 |---|---|---|
 | Few landmarks, short tracks | the build report | too little overlap between keyframes, textureless walls, a wrong camera calibration |
-| `no features were found in any keyframe`, or few features per keyframe | the build report's "Features" line: how much of the image the floor mask hid | a camera that looks down at the floor: lower `features.floor_mask_distance`, or set 0 (`docs/recording.md`) |
+| `no features were found in any keyframe`, few features per keyframe, or the warning that the floor mask hides most of the image | the build report's "Features" line: how much of the image the floor mask hid | a camera that looks down at the floor: lower `features.floor_mask_distance`, or set 0 (`docs/recording.md`) |
 | Keyframes flagged at the BA bound | the build report's BA section | poses recorded while the localization was off; drop that stretch or re-record it |
 | `landfall build` refuses the map | its message | the map YAML or image differs from the one the recording localized on |
+| Warning: scans that fit a second place almost as well | the coverage map: orange keyframes | the map draws a wall twice there (a SLAM map's loop closure), or the structure repeats: relocalization there can be off by the distance it names. Fix the map (re-map that area, or erase the doubled wall) |
+| Warning: turning odometry errs more than `poses.odom_std_xy_per_rad` | the report's "Odometry against the scans" | the wheels slip in turns (skid steering): set `poses.odom_std_xy_per_rad` to the measured value (`docs/tuning.md`) |
 
 ## Relocalizing
 

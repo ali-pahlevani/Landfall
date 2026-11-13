@@ -373,6 +373,9 @@ int build(const std::vector<std::string> & argv)
             << "\n"
             << "  keyframe poses: " << stats.poses_scan_matched
             << " matched to the map with their scan"
+            << (stats.poses_scan_ambiguous > 0
+                  ? " (" + std::to_string(stats.poses_scan_ambiguous) + " also fit a second place)"
+                  : std::string())
             << (stats.poses_scan_unmatched > 0
                   ? " (" + std::to_string(stats.poses_scan_unmatched) + " didn't match)"
                   : std::string())

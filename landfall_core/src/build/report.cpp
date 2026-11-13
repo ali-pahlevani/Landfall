@@ -121,16 +121,20 @@ cv::Mat renderCoverage(
   }
   cv::addWeighted(overlay, 0.55, image, 0.45, 0.0, image);
 
-  // Keyframes: arrows along the heading, flagged ones in magenta.
+  // Keyframes: arrows along the heading; at the BA bound in magenta, with a scan that fits a
+  // second place in orange.
   for (const auto & k : keyframes) {
     const cv::Point2d from = toPixel(k.refined.x, k.refined.y);
     const cv::Point2d to = toPixel(
       k.refined.x + kArrowLength * std::cos(k.refined.yaw),
       k.refined.y + kArrowLength * std::sin(k.refined.yaw));
-    const bool flagged = (k.flags & db::KeyframeRecord::kFlagBaShiftAtBound) != 0;
-    cv::arrowedLine(
-      image, from, to, flagged ? cv::Scalar(255, 0, 255) : cv::Scalar(0, 0, 220), 1, cv::LINE_AA, 0,
-      0.3);
+    cv::Scalar color(0, 0, 220);
+    if ((k.flags & db::KeyframeRecord::kFlagBaShiftAtBound) != 0) {
+      color = cv::Scalar(255, 0, 255);
+    } else if ((k.flags & db::KeyframeRecord::kFlagScanAmbiguous) != 0) {
+      color = cv::Scalar(0, 140, 255);
+    }
+    cv::arrowedLine(image, from, to, color, 1, cv::LINE_AA, 0, 0.3);
   }
 
   const std::string legend = "keyframes " + std::to_string(summary.keyframes) + "  landmarks " +
@@ -301,6 +305,26 @@ MapReport makeReport(const db::Database & database)
           std::to_string(static_cast<int>(number(build, "poses_scan_contradicted"))) +
           " (their scan match was used instead) |\n";
     md += "| Odometry links | " + std::to_string(links) + " |\n";
+    if (build["poses_scan_ambiguous"]) {
+      const int ambiguous = static_cast<int>(number(build, "poses_scan_ambiguous"));
+      md += "| Scans that fit a second place almost as well | " + std::to_string(ambiguous) +
+            (ambiguous > 0 ? ", " + fixed(100.0 * number(build, "poses_ambiguity_median_m"), 0) +
+                               " cm away (median), at most " +
+                               fixed(100.0 * number(build, "poses_ambiguity_max_m"), 0) +
+                               " cm: a wall mapped twice, or repeating structure (orange on the "
+                               "coverage map)"
+                           : std::string()) +
+            " |\n";
+    }
+    if (build["odometry_straight_steps"]) {
+      md += "| Odometry against the scans | " +
+            std::to_string(static_cast<int>(number(build, "odometry_straight_steps"))) +
+            " straight steps: " + fixed(100.0 * number(build, "odometry_straight_std_m"), 1) +
+            " cm per axis (scan noise included); " +
+            std::to_string(static_cast<int>(number(build, "odometry_turns"))) +
+            " turns: " + fixed(number(build, "odometry_turn_std_per_rad"), 3) +
+            " m per radian turned |\n";
+    }
     md += "| Correction of the recorded poses | mean " +
           fixed(100.0 * number(build, "poses_mean_correction_m"), 1) + " cm, max " +
           fixed(100.0 * number(build, "poses_max_correction_m"), 1) + " cm, max yaw " +

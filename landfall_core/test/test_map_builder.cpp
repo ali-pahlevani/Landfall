@@ -57,11 +57,12 @@ struct Scenario
   std::vector<std::vector<int>> truth_ids;
 };
 
-Scenario makeScenario(int seed)
+// `path` replaces the loop when given.
+Scenario makeScenario(int seed, const std::vector<Pose2> & path = {})
 {
   Scenario s;
   s.room = landfall::test::makeRoom(4000, -3, -3, 13, 9, seed);
-  s.truth = landfall::test::loopBothWays(0, 0, 10, 6, 0.5);
+  s.truth = path.empty() ? landfall::test::loopBothWays(0, 0, 10, 6, 0.5) : path;
   const auto camera = landfall::test::syntheticCamera();
   const auto T_base_cam = landfall::test::baseToCamera();
   std::mt19937 rng(seed);
@@ -127,6 +128,42 @@ Scenario makeScenario(int seed)
     s.input.keyframes.push_back(keyframe);
   }
   return s;
+}
+
+// Scans from the true walls of the room [-3, 13] x [-3, 9]: a 1 cm grid whose walls lie at the
+// centres of the 5 cm map's innermost occupied cells, as in a map made from the same LiDAR.
+void addScans(const Scenario & s, BuildInput * input)
+{
+  landfall::OccupancyGrid surfaces;
+  surfaces.resolution = 0.01;
+  surfaces.origin = s.input.map.grid.origin;
+  surfaces.width = 2000;
+  surfaces.height = 1500;
+  surfaces.data.assign(std::size_t{2000} * 1500, landfall::kCellFree);
+  landfall::test::addRoomToGrid(&surfaces, -3.0 + 0.015, -3.0 + 0.015, 13.0 - 0.015, 9.0 - 0.015);
+  landfall::Pose3 T_base_laser = landfall::Pose3::Identity();
+  T_base_laser.translation() = Vec3(0.0, 0.0, 0.4);
+  for (std::size_t k = 0; k < s.truth.size(); ++k) {
+    input->keyframes[k].scan = landfall::test::simulateScan(
+      surfaces, landfall::toPose3(s.truth[k]), T_base_laser, static_cast<int>(k), 360, 10.0, 0.01);
+  }
+}
+
+// Odometry of the true motion with 3 mm noise per step.
+void addOdometry(const Scenario & s, BuildInput * input)
+{
+  std::mt19937 rng(7);
+  std::normal_distribution<double> step(0.0, 0.003);
+  Pose2 odom{2.0, -1.0, 0.5};
+  for (std::size_t k = 0; k < s.truth.size(); ++k) {
+    if (k > 0) {
+      Pose2 motion = landfall::between(s.truth[k - 1], s.truth[k]);
+      motion.x += step(rng);
+      motion.y += step(rng);
+      odom = landfall::compose(odom, motion);
+    }
+    input->keyframes[k].odom = odom;
+  }
 }
 
 landfall::BuildConfigFile config(int threads)
@@ -271,6 +308,62 @@ TEST(MapBuilder, SyntheticLoopBuildsAccurateDeterministicMap)
   EXPECT_TRUE(std::filesystem::exists(dir.file("report/report.json")));
 }
 
+TEST(MapBuilder, SelfChecksFindScansThatFitTwoPlaces)
+{
+  landfall::test::TempDir dir;
+  // The checks run on the scan matches, before the adjustment: skipped to save time.
+  landfall::BuildConfigFile checks = config(0);
+  checks.builder.ba.enabled = false;
+  // A map that draws every wall pinning x twice, 0.4 m apart (as a SLAM map can): every scan fits
+  // the true place and one 0.4 m along x alike. The builder flags those keyframes and warns.
+  {
+    Scenario s = makeScenario(41);
+    landfall::test::addRoomToGrid(&s.input.map.grid, -3.0, -3.0, 13.0, 9.0);
+    auto & grid = s.input.map.grid;
+    for (int row = 0; row < grid.height; ++row) {
+      for (int col = 0; col < grid.width; ++col) {
+        const Vec2 c = grid.cellCenter(col, row);
+        const bool wall_copy =
+          (std::abs(c.x() - (-3.0 + 0.4)) <= 0.05 || std::abs(c.x() - (13.0 + 0.4)) <= 0.05) &&
+          c.y() >= -3.05 && c.y() <= 9.05;
+        if (wall_copy) {
+          grid.data[static_cast<std::size_t>(row) * grid.width + col] = landfall::kCellOccupied;
+        }
+      }
+    }
+    BuildInput input = s.input;
+    addScans(s, &input);
+    addOdometry(s, &input);
+    // The first keyframe's camera looks 45 degrees down: the floor mask (measured there) hides all
+    // of its image, which the build warns about. The scans don't use the camera.
+    input.keyframes.front().T_base_cam = landfall::test::baseToCamera(deg(45.0));
+    const auto stats = landfall::buildMap(input, checks, dir.file("doubled.landfall.db"));
+    EXPECT_GT(stats.floor_mask_hidden, 0.99);
+    RecordProperty("doubled_ambiguous", stats.poses_scan_ambiguous);
+    RecordProperty("doubled_separation_m", std::to_string(stats.poses_ambiguity_median_m));
+    EXPECT_GT(stats.poses_scan_ambiguous, stats.poses_scan_matched / 2);
+    EXPECT_NEAR(stats.poses_ambiguity_median_m, 0.4, 0.05);
+    int warned = 0;
+    int floor_warned = 0;
+    for (const auto & w : stats.warnings) {
+      warned += w.find("fits a second place") != std::string::npos ? 1 : 0;
+      floor_warned += w.find("the floor mask hides") != std::string::npos ? 1 : 0;
+    }
+    EXPECT_EQ(warned, 1);
+    EXPECT_EQ(floor_warned, 1);
+    const auto db = landfall::db::Database::open(
+      dir.file("doubled.landfall.db"), landfall::db::Database::Access::kReadOnly);
+    int flagged = 0;
+    for (const auto & k : db.keyframes()) {
+      flagged += (k.flags & landfall::db::KeyframeRecord::kFlagScanAmbiguous) != 0 ? 1 : 0;
+    }
+    EXPECT_EQ(flagged, stats.poses_scan_ambiguous);
+    EXPECT_NE(
+      landfall::makeReport(db).markdown.find("| Scans that fit a second place almost as well | "),
+      std::string::npos);
+  }
+}
+
 TEST(MapBuilder, RejectsInvalidInput)
 {
   Scenario s = makeScenario(5);
@@ -351,6 +444,16 @@ TEST(MapBuilder, ScansAndOdometryCorrectDriftingPriors)
   EXPECT_EQ(fixed.poses_scan_unmatched, 1);
   // Every step is linked but the jump from the end of the first loop to the start of the second.
   EXPECT_EQ(fixed.poses_odometry_links, static_cast<int>(s.truth.size()) - 2);
+  // The self-checks stay quiet: the room's scans fit one place only, and the odometry (exact up to
+  // 3 mm) agrees with the scan matches on straight steps and in the corners.
+  EXPECT_EQ(fixed.poses_scan_ambiguous, 0);
+  EXPECT_GT(fixed.odometry_straight_steps, 100);
+  EXPECT_LT(fixed.odometry_straight_std_m, 0.03);
+  EXPECT_GE(fixed.odometry_turns, 4);
+  EXPECT_LT(fixed.odometry_turn_std_per_rad, 0.05);
+  RecordProperty(
+    "odometry_straight_std_mm", std::to_string(1000.0 * fixed.odometry_straight_std_m));
+  RecordProperty("odometry_turn_std_per_rad", std::to_string(fixed.odometry_turn_std_per_rad));
 
   // The scan matches alone, as the builder computes them.
   {

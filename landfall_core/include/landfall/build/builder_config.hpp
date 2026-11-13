@@ -65,10 +65,19 @@ struct KeyframePoseParams
   bool odometry = true;           ///< (poses.odometry) tie consecutive keyframes that have odometry
 };
 
+/// features.floor_mask_distance when the configuration doesn't set it, m: the floor nearer than
+/// this is hidden from the feature detector (features/floor_mask.hpp).
+inline constexpr double kDefaultFloorMaskDistance = 5.0;
+
+/// The local backend options a build starts from: floor_mask_distance at its default.
+BackendOptions defaultLocalOptions();
+
 struct BuilderConfig
 {
-  std::string local_backend = "orb";   ///< (backend.local)
-  BackendOptions local_options;        ///< (features.*) options of the local backend
+  std::string local_backend = "orb";  ///< (backend.local)
+  /// (features.*) options of the local backend. A backend registered from outside Landfall must
+  /// accept floor_mask_distance, or the option must be erased.
+  BackendOptions local_options = defaultLocalOptions();
   std::string matcher = "auto";        ///< (backend.matcher) auto = ratio or mnn by descriptor type
   BackendOptions matcher_options;      ///< (matching.*)
   std::string global_backend = "bow";  ///< (backend.global) bow, or a learned backend

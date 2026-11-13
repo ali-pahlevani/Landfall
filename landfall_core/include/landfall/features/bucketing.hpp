@@ -32,12 +32,17 @@ struct GridSize
 /// Index of the grid cell containing a pixel (clamped to the image).
 int gridCell(float x, float y, cv::Size image_size, const GridSize & grid);
 
+/// Each cell's share of `max_keypoints`: equal (at least 1), or with a detection `mask` in
+/// proportion to the pixels the mask leaves to the cell.
+std::vector<int> cellShares(
+  cv::Size image_size, const GridSize & grid, int max_keypoints, const cv::Mat & mask = cv::Mat());
+
 /// Keeps at most `max_keypoints`, spread over the grid: every cell first keeps its strongest
-/// keypoints up to an equal share, the leftover budget goes to the strongest remaining ones.
-/// Deterministic (ties broken by position). Uniform coverage conditions PnP well.
+/// keypoints up to its share (cellShares), the leftover budget goes to the strongest remaining
+/// ones. Deterministic (ties broken by position). Uniform coverage conditions PnP well.
 std::vector<cv::KeyPoint> bucketKeypoints(
   std::vector<cv::KeyPoint> keypoints, cv::Size image_size, const GridSize & grid,
-  int max_keypoints);
+  int max_keypoints, const cv::Mat & mask = cv::Mat());
 
 /// Fraction of grid cells that contain at least one of the pixels.
 double gridCoverage(const std::vector<Vec2> & pixels, cv::Size image_size, const GridSize & grid);

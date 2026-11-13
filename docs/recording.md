@@ -202,7 +202,10 @@ database):
 
 ```yaml
 backend: {local: orb, global: bow, matcher: auto}   # auto: ratio test (binary) or mutual NN (float)
-features: {max_keypoints: 2000, grid: [8, 6]}       # options of the local backend
+features:                                 # options of the local backend
+  max_keypoints: 2000
+  grid: [8, 6]
+  floor_mask_distance: 5.0                # hide the floor nearer than this from the detector, m
 matching: {ratio: 0.8}                              # options of the matcher
 vocab: {branching: 10, depth: 5}
 pairs:                                    # which keyframes are matched
@@ -274,6 +277,17 @@ gating: {...}                             # same keys and defaults as the record
 quality: {...}
 max_keyframes: 0
 ```
+
+**Floor mask.** The build hides the floor nearer than `features.floor_mask_distance` (5 m) from
+the feature detector, from each keyframe's camera height and tilt (TF): seen from a robot, the
+floor's texture changes shape with every step, so its keypoints rarely become landmarks, yet they
+take most of the keypoint budget. The database stores the setting with the local features, and the
+relocalizer hides the same floor in its queries (from the camera's TF at each image). In the URDF
+Maker warehouse (camera 0.33 m above the floor, 43 % of the image hidden) a recording gave 15,039
+landmarks instead of 8,701 and relocalized half as often again; the depot fixture (45 % hidden),
+1,232 instead of 940. The build report's "Features" line says how much of the image the mask hid.
+Set 0 to keep the floor: a camera that looks down at it, or floor markings you want as landmarks.
+Databases built before the option have no mask, and neither have their queries.
 
 **BA priors.** A keyframe matched to the map with its scan has the fused prior above. A keyframe
 without a scan keeps its recorded pose, weighed by its recorded covariance. If the localization

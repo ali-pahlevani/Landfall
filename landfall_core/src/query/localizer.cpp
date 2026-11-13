@@ -295,7 +295,7 @@ FrameResult Localizer::localize(const QueryFrame & frame)
       throw std::invalid_argument("Localizer: empty query image");
     }
     gray = toGray(frame.image);
-    extracted = map_->localFeatures().extract(gray);
+    extracted = map_->localFeatures().extract(gray, {&frame.camera, frame.T_base_cam});
   }
   const Features & features = frame.features ? *frame.features : extracted;
   result.num_features = static_cast<int>(features.keypoints.size());

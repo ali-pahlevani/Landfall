@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "landfall/features/floor_mask.hpp"
 #include "landfall/features/matchers.hpp"
 #include "landfall/features/orb.hpp"
 #include "landfall/features/sift.hpp"
@@ -133,6 +134,7 @@ void registerBuiltinBackends(BackendRegistry & registry)
     reader.read("fast_threshold", &p.fast_threshold);
     reader.read("min_fast_threshold", &p.min_fast_threshold);
     reader.readGrid("grid", &p.grid);
+    reader.read(kFloorMaskOption, &p.floor_mask_distance);
     reader.ignoreRuntimeOptions();
     reader.finish();
     return std::make_unique<OrbFeatures>(p);
@@ -146,6 +148,7 @@ void registerBuiltinBackends(BackendRegistry & registry)
     reader.read("sigma", &p.sigma);
     reader.read("octave_layers", &p.octave_layers);
     reader.readGrid("grid", &p.grid);
+    reader.read(kFloorMaskOption, &p.floor_mask_distance);
     reader.expect("normalization", "rootsift");
     reader.ignoreRuntimeOptions();
     reader.finish();

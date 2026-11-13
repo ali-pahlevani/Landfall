@@ -60,7 +60,9 @@ poses".
 - `backends`: rows for the local features (`local`, e.g. `orb`), the global descriptor (`global`,
   `bow`, whose config holds the vocabulary's SHA-256), the matcher (`matcher`) and the vocabulary
   (`vocabulary`, `vocab_tree`, whose blob is in `vocabulary`). A backend's `config` is its canonical
-  configuration; the relocalizer re-creates the backend from it.
+  configuration; the relocalizer re-creates the backend from it. The local backend's config holds
+  `floor_mask_distance` when the build hid the floor from the detector; queries then hide the same
+  floor (from the camera's TF at each image).
 - `local_features`: only the keypoints that observe a landmark (`db.prune_unobserved_features`),
   so `observations.keypoint_idx` indexes this reduced list.
 - `landmarks`: position, track length, mean reprojection error, largest ray angle, and the medoid

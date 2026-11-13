@@ -28,7 +28,8 @@ Choose them in the build configuration:
 
 ```yaml
 backend: {local: xfeat, global: eigenplaces, models_dir: /opt/landfall/models}
-features: {max_keypoints: 2048}  # xfeat options: model, max_keypoints, detection_threshold
+features: {max_keypoints: 2048}  # xfeat options: model, max_keypoints, detection_threshold,
+                                 #   floor_mask_distance (docs/recording.md)
 global: {}                       # eigenplaces / megaloc options: model, width, height
 ```
 

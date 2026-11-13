@@ -66,6 +66,25 @@ TEST(BuilderConfig, DefaultsMatchThePlan)
   EXPECT_EQ(c.gating.covariance, landfall::CovarianceGate::kWithoutScan);
   EXPECT_EQ(c.bag.pose_topic, "/amcl_pose");
   EXPECT_EQ(c.bag.frames.base, "base_footprint");
+  // The floor is hidden from the detector unless the configuration says otherwise.
+  EXPECT_EQ(c.builder.local_options, (landfall::BackendOptions{{"floor_mask_distance", "5"}}));
+  EXPECT_EQ(landfall::BuilderConfig().local_options, c.builder.local_options);
+}
+
+TEST(BuilderConfig, FloorMaskCanBeChangedOrTurnedOff)
+{
+  const auto options = [](const std::string & yaml) {
+    return landfall::parseBuildConfig(yaml).builder.local_options;
+  };
+  EXPECT_EQ(options("features: {floor_mask_distance: 0}").at("floor_mask_distance"), "0");
+  EXPECT_EQ(options("features: {floor_mask_distance: 2.5}").at("floor_mask_distance"), "2.5");
+  const auto other = options("features: {max_keypoints: 1000}");
+  EXPECT_EQ(other.at("floor_mask_distance"), "5");
+  EXPECT_EQ(other.at("max_keypoints"), "1000");
+  EXPECT_NE(
+    landfall::canonicalYaml(landfall::parseBuildConfig(""))
+      .find("features:\n  floor_mask_distance: \"5\"\n"),
+    std::string::npos);
 }
 
 TEST(BuilderConfig, ParsesEverySection)

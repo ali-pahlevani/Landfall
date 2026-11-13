@@ -37,6 +37,7 @@ add_library(landfall_core SHARED
   src/db/database.cpp
   src/db/migrations.cpp
   src/eval/trajectory.cpp
+  src/features/floor_mask.cpp
   src/features/matchers.cpp
   src/features/opencv_features.cpp
   src/features/retrieval.cpp

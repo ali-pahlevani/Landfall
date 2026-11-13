@@ -78,6 +78,10 @@ struct BuildStats
 {
   int keyframes = 0;
   int sessions = 0;
+  double mean_keypoints = 0.0;  ///< features extracted per keyframe
+  /// Fraction of the image the floor mask hides (features.floor_mask_distance), at the first
+  /// keyframe's camera pose.
+  double floor_mask_hidden = 0.0;
   int pairs_candidate = 0;
   int pairs_verified = 0;
   double mean_pair_inliers = 0.0;

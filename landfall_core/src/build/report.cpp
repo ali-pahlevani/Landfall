@@ -267,6 +267,13 @@ MapReport makeReport(const db::Database & database)
   md += "| Landmarks per keyframe | " + fixed(s.mean_landmarks_per_keyframe, 1) + " (" +
         fixed(100.0 * s.keyframes_with_100_landmarks, 1) + " % of keyframes see >= 100) |\n";
   md += "| Reprojection RMS | " + fixed(number(build, "reprojection_rms_px"), 3) + " px |\n";
+  if (build && build["mean_keypoints"]) {
+    const double hidden = number(build, "floor_mask_hidden");
+    md += "| Features | " + fixed(number(build, "mean_keypoints"), 0) + " per keyframe; " +
+          (hidden > 0.0 ? "the floor mask hid " + fixed(100.0 * hidden, 1) + " % of the image"
+                        : std::string("no floor mask")) +
+          " |\n";
+  }
   md += "| Heading coverage | " + fixed(100.0 * s.both_directions_fraction, 1) +
         " % of visited 1 m cells driven both ways; " + fixed(100.0 * s.heading_sector_fraction, 1) +
         " % of the 8 heading sectors seen per cell |\n";

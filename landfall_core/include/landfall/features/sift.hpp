@@ -29,6 +29,7 @@ struct SiftParams
   double sigma = 1.6;
   int octave_layers = 3;
   GridSize grid;
+  double floor_mask_distance = 0.0;  ///< m; hides the near floor (kFloorMaskOption), 0: off
 };
 
 /// SIFT (OpenCV; the patent expired in 2020) with grid bucketing and RootSIFT normalization
@@ -37,7 +38,7 @@ class SiftFeatures : public ILocalFeatures
 {
 public:
   explicit SiftFeatures(const SiftParams & params = SiftParams());
-  Features extract(const cv::Mat & gray) const override;
+  Features extract(const cv::Mat & gray, const ImageGeometry & geometry) const override;
   BackendId id() const override;
 
 private:

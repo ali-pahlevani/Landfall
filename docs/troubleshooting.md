@@ -17,6 +17,7 @@ status and lists the `NOT_READY` reasons with their fixes.
 | Symptom | Look at | Usual cause |
 |---|---|---|
 | Few landmarks, short tracks | the build report | too little overlap between keyframes, textureless walls, a wrong camera calibration |
+| `no features were found in any keyframe`, or few features per keyframe | the build report's "Features" line: how much of the image the floor mask hid | a camera that looks down at the floor: lower `features.floor_mask_distance`, or set 0 (`docs/recording.md`) |
 | Keyframes flagged at the BA bound | the build report's BA section | poses recorded while the localization was off; drop that stretch or re-record it |
 | `landfall build` refuses the map | its message | the map YAML or image differs from the one the recording localized on |
 

@@ -192,6 +192,16 @@ TEST(FixtureBuild, DepotFixtureBuildsAnAccurateDeterministicMap)
     dir.file("b.landfall.db"), landfall::db::Database::Access::kReadOnly);
   EXPECT_EQ(a.contentSha256(), b.contentSha256());
   EXPECT_EQ(a.meta("content_sha256").value_or(""), a.contentSha256());
+  // The floor near the robot was hidden from the detector, and the database says so: queries
+  // (test_fixture_query) hide it the same way.
+  int masked = 0;
+  for (const auto & backend : a.backends()) {
+    masked += backend.role == "local" &&
+                  backend.config.find("floor_mask_distance: 5\n") != std::string::npos
+                ? 1
+                : 0;
+  }
+  EXPECT_EQ(masked, 1);
 
   // Keyframe poses (recorded priors and after BA) against Gazebo's ground truth.
   const auto truth = groundTruth(kFixture + "/bag");

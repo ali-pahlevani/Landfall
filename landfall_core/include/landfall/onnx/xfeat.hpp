@@ -31,6 +31,7 @@ struct XFeatParams
   std::string model;                  ///< xfeat.onnx (landfall_tools/export/xfeat.py)
   int max_keypoints = 2048;           ///< best by score
   double detection_threshold = 0.05;  ///< on the keypoint heatmap (XFeat's default)
+  double floor_mask_distance = 0.0;   ///< m; hides the near floor (kFloorMaskOption), 0: off
   SessionOptions session;
 };
 
@@ -51,7 +52,11 @@ struct XFeatMaps
 /// descriptors sampled bicubically and L2-normalized. Sampling follows
 /// torch.nn.functional.grid_sample (align_corners=False, zero padding) on positions normalized by
 /// (width - 1, height - 1), like XFeat's InterpolateSparse2d. Keypoints are in model-input pixels.
-Features detectXFeat(const XFeatMaps & maps, int max_keypoints, double detection_threshold);
+/// Keypoints and descriptors from the network's maps. `mask` (8-bit, the maps' height x width,
+/// or empty): keypoints only where it is non-zero, before the best `max_keypoints` are chosen.
+Features detectXFeat(
+  const XFeatMaps & maps, int max_keypoints, double detection_threshold,
+  const cv::Mat & mask = cv::Mat());
 
 /// XFeat local features (verlab/accelerated_features, Apache-2.0) on ONNX Runtime: 64-D float
 /// descriptors, matched with `mnn`. The image is resized to a multiple of 32 like XFeat does, and
@@ -61,7 +66,7 @@ class XFeatFeatures : public ILocalFeatures
 public:
   /// Throws std::runtime_error if the model can't be loaded or doesn't have XFeat's outputs.
   explicit XFeatFeatures(const XFeatParams & params);
-  Features extract(const cv::Mat & gray) const override;
+  Features extract(const cv::Mat & gray, const ImageGeometry & geometry) const override;
   BackendId id() const override;
 
 private:

@@ -87,8 +87,9 @@ TEST(FixtureQuery, NonKeyframeImagesLocalizeAccuratelyAndNeverWrongly)
   // The map holds only this L-shaped stretch, so nothing looks alike: no ambiguity, no wrong pose.
   EXPECT_EQ(ambiguous, 0);
   EXPECT_EQ(wrong, 0);
-  // Measured 25 of 35 on Jazzy; the misses are on the L's short leg, where the database has three
-  // keyframes per direction and too few landmarks (a miss, never a wrong pose).
+  // Measured 27 of 35 on Humble and Jazzy with the floor mask (25 without); the misses are on the
+  // L's short leg, where the database has three keyframes per direction and too few landmarks (a
+  // miss, never a wrong pose).
   EXPECT_GE(accurate, 20);
   EXPECT_LT(worst_accurate, 0.10);
 }

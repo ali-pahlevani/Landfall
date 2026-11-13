@@ -21,7 +21,9 @@
 #include <filesystem>
 #include <numeric>
 #include <stdexcept>
+#include <string>
 
+#include "landfall/features/floor_mask.hpp"
 #include "landfall/util/sha256.hpp"
 #include "opencv2/imgproc.hpp"
 
@@ -90,7 +92,8 @@ std::array<float, 4> cubicWeights(float t)
 
 }  // namespace
 
-Features detectXFeat(const XFeatMaps & maps, int max_keypoints, double detection_threshold)
+Features detectXFeat(
+  const XFeatMaps & maps, int max_keypoints, double detection_threshold, const cv::Mat & mask)
 {
   const int h = maps.height;
   const int w = maps.width;
@@ -103,6 +106,9 @@ Features detectXFeat(const XFeatMaps & maps, int max_keypoints, double detection
     maps.is_max.size() != pixels || maps.reliability.size() != cells ||
     maps.descriptors.size() != cells * kDim) {
     throw std::invalid_argument("XFeat maps of inconsistent sizes");
+  }
+  if (!mask.empty() && (mask.rows != h || mask.cols != w || mask.type() != CV_8UC1)) {
+    throw std::invalid_argument("an XFeat detection mask must be 8-bit and of the maps' size");
   }
 
   // Non-maximum suppression and scores, in row-major order like torch.nonzero.
@@ -119,6 +125,9 @@ Features detectXFeat(const XFeatMaps & maps, int max_keypoints, double detection
       const std::size_t i =
         static_cast<std::size_t>(y) * static_cast<std::size_t>(w) + static_cast<std::size_t>(x);
       if (maps.is_max[i] == 0 || !(maps.heatmap[i] > threshold) || (x == 0 && y == 0)) {
+        continue;
+      }
+      if (!mask.empty() && mask.at<uint8_t>(y, x) == 0) {
         continue;
       }
       const auto px = static_cast<float>(x);
@@ -186,6 +195,9 @@ XFeatFeatures::XFeatFeatures(const XFeatParams & params) : params_(params)
   if (params_.max_keypoints < 1) {
     throw std::invalid_argument("xfeat: max_keypoints must be at least 1");
   }
+  if (!std::isfinite(params_.floor_mask_distance) || params_.floor_mask_distance < 0.0) {
+    throw std::invalid_argument(std::string("xfeat: ") + kFloorMaskOption + " must be >= 0");
+  }
   const auto sha = sha256File(params_.model);
   if (!sha) {
     throw std::runtime_error("xfeat: cannot read model " + params_.model);
@@ -207,11 +219,12 @@ XFeatFeatures::XFeatFeatures(const XFeatParams & params) : params_(params)
   }
 }
 
-Features XFeatFeatures::extract(const cv::Mat & gray) const
+Features XFeatFeatures::extract(const cv::Mat & gray, const ImageGeometry & geometry) const
 {
   if (gray.empty() || gray.type() != CV_8UC1) {
     throw std::invalid_argument("xfeat: expects an 8-bit grayscale image");
   }
+  cv::Mat mask = detectionMask("xfeat", params_.floor_mask_distance, gray.size(), geometry);
   // XFeat.preprocess_tensor: [0, 1] floats, resized (bilinear) to a multiple of 32.
   const int h = gray.rows / 32 * 32;
   const int w = gray.cols / 32 * 32;
@@ -235,7 +248,10 @@ Features XFeatFeatures::extract(const cv::Mat & gray) const
   maps.heatmap = std::move(outputs[static_cast<std::size_t>(output_index_[1])].values);
   maps.reliability = std::move(outputs[static_cast<std::size_t>(output_index_[2])].values);
   maps.is_max = std::move(outputs[static_cast<std::size_t>(output_index_[3])].flags);
-  Features features = detectXFeat(maps, params_.max_keypoints, params_.detection_threshold);
+  if (!mask.empty() && (h != gray.rows || w != gray.cols)) {
+    cv::resize(mask, mask, cv::Size(w, h), 0.0, 0.0, cv::INTER_NEAREST);
+  }
+  Features features = detectXFeat(maps, params_.max_keypoints, params_.detection_threshold, mask);
   const float rx = static_cast<float>(gray.cols) / static_cast<float>(w);
   const float ry = static_cast<float>(gray.rows) / static_cast<float>(h);
   for (auto & k : features.keypoints) {
@@ -254,9 +270,15 @@ BackendId XFeatFeatures::id() const
   id.version = "1";
   char threshold[32];
   std::snprintf(threshold, sizeof(threshold), "%.6g", params_.detection_threshold);
-  id.config = std::string("detection_threshold: ") + threshold +
-              "\nmax_keypoints: " + std::to_string(params_.max_keypoints) +
-              "\nmodel: " + std::filesystem::path(params_.model).filename().string() + "\n";
+  id.config = std::string("detection_threshold: ") + threshold + "\n";
+  // Only when set, so databases built before the option keep their configuration (sorted keys).
+  if (params_.floor_mask_distance > 0.0) {
+    char distance[32];
+    std::snprintf(distance, sizeof(distance), "%.17g", params_.floor_mask_distance);
+    id.config += std::string(kFloorMaskOption) + ": " + distance + "\n";
+  }
+  id.config += "max_keypoints: " + std::to_string(params_.max_keypoints) +
+               "\nmodel: " + std::filesystem::path(params_.model).filename().string() + "\n";
   id.model_sha256 = model_sha256_;
   return id;
 }

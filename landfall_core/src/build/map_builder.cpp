@@ -33,6 +33,7 @@
 #include "landfall/build/tracks.hpp"
 #include "landfall/db/codec.hpp"
 #include "landfall/db/database.hpp"
+#include "landfall/features/floor_mask.hpp"
 #include "landfall/features/retrieval.hpp"
 #include "landfall/geometry/two_view.hpp"
 #include "landfall/grid/likelihood_field.hpp"
@@ -428,7 +429,7 @@ BuildStats buildMap(
       if (k.features) {
         features[i] = *k.features;
       } else {
-        features[i] = extractor->extract(toGray(image));
+        features[i] = extractor->extract(toGray(image), {&camera.model, k.T_base_cam});
         thumbnails[i] = thumbnail(image);
       }
       if (learned_global) {
@@ -437,6 +438,22 @@ BuildStats buildMap(
     },
     [&](std::size_t done) { report(BuildStage::kFeatures, done, n); });
   const DescriptorType descriptor_type = features.front().type;
+  std::size_t keypoints = 0;
+  for (const auto & f : features) {
+    keypoints += f.keypoints.size();
+  }
+  stats.mean_keypoints = static_cast<double>(keypoints) / static_cast<double>(n);
+  {
+    double floor_distance = 0.0;  // validated by the backend
+    BackendOptionReader options(config.local_backend, config.local_options);
+    options.read(kFloorMaskOption, &floor_distance);
+    const cv::Mat floor =
+      floorMask(camera.model, input.keyframes.front().T_base_cam, floor_distance);
+    if (!floor.empty()) {
+      stats.floor_mask_hidden =
+        1.0 - static_cast<double>(cv::countNonZero(floor)) / static_cast<double>(floor.total());
+    }
+  }
   for (const auto & f : features) {
     if (f.type != descriptor_type) {
       throw std::runtime_error("keyframes have different descriptor types");
@@ -963,6 +980,8 @@ std::string toJson(const BuildStats & s)
   json.beginObject()
     .field("keyframes", s.keyframes)
     .field("sessions", s.sessions)
+    .field("mean_keypoints", s.mean_keypoints)
+    .field("floor_mask_hidden", s.floor_mask_hidden)
     .field("pairs_candidate", s.pairs_candidate)
     .field("pairs_verified", s.pairs_verified)
     .field("mean_pair_inliers", s.mean_pair_inliers)

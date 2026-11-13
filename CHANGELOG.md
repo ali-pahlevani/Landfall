@@ -186,6 +186,17 @@ All notable changes to this project are documented here. The format follows
   the scan is in a direction (std scan std² / `poses.recorded_std_xy`). On the URDF Maker warehouse
   route: 594 keyframes instead of 372, 8,698 landmarks instead of 5,376, relocalization success
   4.1 % -> 6.4 % of the 904 sweep frames (6.1 % with true poses), no wrong pose (live settings).
+- The feature detector no longer sees the floor near the robot (PLAN V58;
+  `features.floor_mask_distance`, 5 m unless set, 0 keeps the floor): the build hides the pixels
+  whose ray meets the floor nearer than that, from each keyframe's camera model and base -> camera
+  TF, and stores the distance with the local features, so queries hide the same floor. On the URDF
+  Maker warehouse route (fix 2's recording): 15,039 landmarks instead of 8,701, relocalization
+  success 6.4 % -> 9.6 % of the 904 sweep frames; with true keyframe poses 6.1 % -> 9.2 %, no
+  wrong pose. With AMCL's poses, 3 of the new successes are 0.51-0.52 m off, in the southern
+  aisles where the nearby keyframes are 0.45-0.55 m off (T-011). Databases built before keep
+  working without a mask; rebuild them to use it. The build report and `landfall build` give the
+  features per keyframe and how much of the image the mask hid.
+- `ILocalFeatures::extract` takes the image's camera and its pose on the robot (`ImageGeometry`).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.
   Format 1 folders still build.
 - The bundle adjustment's bounds around a scan-matched keyframe widen to 3 standard deviations of

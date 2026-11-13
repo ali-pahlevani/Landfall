@@ -163,7 +163,7 @@ void checkLocal(const std::string & model, const std::string & parity, int max_k
   params.max_keypoints = max_keypoints;
   const landfall::onnx::XFeatFeatures xfeat(params);
   for (const ParityImage & image : readParity(parity, 1)) {
-    const landfall::Features ours = xfeat.extract(image.pixels);
+    const landfall::Features ours = xfeat.extract(image.pixels, {});
     std::size_t matched = 0;
     double worst_cosine = 1.0;
     for (std::size_t i = 0; i < image.keypoints.size(); ++i) {

@@ -365,6 +365,12 @@ int build(const std::vector<std::string> & argv)
             << fixed(100.0 * stats.ba_max_shift_m, 2) << " cm / "
             << fixed(stats.ba_max_shift_yaw_deg, 2) << " deg, " << stats.ba_keyframes_at_bound
             << " at the bound\n"
+            << "  features: " << fixed(stats.mean_keypoints, 0) << " per keyframe, "
+            << (stats.floor_mask_hidden > 0.0
+                  ? "the floor mask hid " + fixed(100.0 * stats.floor_mask_hidden, 1) +
+                      " % of the image"
+                  : std::string("no floor mask"))
+            << "\n"
             << "  keyframe poses: " << stats.poses_scan_matched
             << " matched to the map with their scan"
             << (stats.poses_scan_unmatched > 0

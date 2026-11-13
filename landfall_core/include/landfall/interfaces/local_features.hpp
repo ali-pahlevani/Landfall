@@ -22,6 +22,8 @@
 namespace landfall
 {
 
+class CameraModel;
+
 /// Identifies a backend and its exact configuration. Stored in the database, so the relocalizer
 /// can refuse a database built with different backends.
 struct BackendId
@@ -35,14 +37,23 @@ struct BackendId
 /// SHA-256 of the canonical configuration.
 std::string configSha256(const BackendId & id);
 
+/// The camera an image was taken with and its pose on the robot at the image's stamp: what a
+/// backend needs to hide the floor (kFloorMaskOption, features/floor_mask.hpp).
+struct ImageGeometry
+{
+  const CameraModel * camera = nullptr;  ///< nullptr: unknown
+  Pose3 T_base_cam = Pose3::Identity();
+};
+
 /// Keypoint detector and descriptor. Implementations are immutable after construction and safe
 /// to call from several threads.
 class ILocalFeatures
 {
 public:
   virtual ~ILocalFeatures() = default;
-  /// Extracts features from an 8-bit grayscale image.
-  virtual Features extract(const cv::Mat & gray) const = 0;
+  /// Extracts features from an 8-bit grayscale image. Throws std::invalid_argument if the
+  /// backend hides the floor and `geometry` doesn't give the image's camera.
+  virtual Features extract(const cv::Mat & gray, const ImageGeometry & geometry) const = 0;
   virtual BackendId id() const = 0;
 };
 

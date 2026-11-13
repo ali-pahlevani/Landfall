@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "landfall/camera_model.hpp"
 #include "landfall/onnx/backends.hpp"
 #include "landfall/onnx/global_descriptor.hpp"
 #include "landfall/onnx/session.hpp"
@@ -191,6 +192,25 @@ TEST(XFeatPostprocessing, KeepsTheBestScoredMaxima)
   EXPECT_THROW(landfall::onnx::detectXFeat(emptyMaps(60, 96), 10, 0.05), std::invalid_argument);
 }
 
+TEST(XFeatPostprocessing, SkipsMaskedMaxima)
+{
+  XFeatMaps m = emptyMaps(64, 96);
+  setHeat(&m, 40, 24, 0.5F);
+  setHeat(&m, 70, 40, 0.8F);
+  setHeat(&m, 10, 50, 0.3F);
+  computeIsMax(&m);
+  cv::Mat mask(64, 96, CV_8UC1, cv::Scalar(255));
+  mask(cv::Rect(60, 30, 20, 20)).setTo(0);  // hides the best one, (70, 40)
+  const Features best = landfall::onnx::detectXFeat(m, 1, 0.05, mask);
+  ASSERT_EQ(best.keypoints.size(), 1U);  // the budget goes to the best unmasked one
+  EXPECT_FLOAT_EQ(best.keypoints[0].x, 40.0F);
+  EXPECT_FLOAT_EQ(best.keypoints[0].y, 24.0F);
+  EXPECT_EQ(landfall::onnx::detectXFeat(m, 10, 0.05, mask).keypoints.size(), 2U);
+  EXPECT_THROW(
+    landfall::onnx::detectXFeat(m, 10, 0.05, cv::Mat(32, 32, CV_8UC1, cv::Scalar(255))),
+    std::invalid_argument);
+}
+
 TEST(XFeatPostprocessing, SamplesDescriptorsLikeGridSample)
 {
   // Channel 0 is the column of the 12 x 8 map, channel 1 is 1: a descriptor's ratio d0 / d1 is the
@@ -228,7 +248,7 @@ TEST(XFeatFeatures, ExtractsWithTheSyntheticModel)
   cv::rectangle(gray, cv::Rect(39, 29, 3, 3), cv::Scalar(255), cv::FILLED);
   cv::rectangle(gray, cv::Rect(74, 49, 3, 3), cv::Scalar(160), cv::FILLED);
   cv::GaussianBlur(gray, gray, cv::Size(5, 5), 1.0);
-  const Features f = xfeat.extract(gray);
+  const Features f = xfeat.extract(gray, {});
   ASSERT_EQ(f.keypoints.size(), 2U);
   EXPECT_NEAR(f.keypoints[0].x, 40.0F, 1.5F);  // brighter blob first
   EXPECT_NEAR(f.keypoints[0].y, 30.0F, 1.5F);
@@ -243,11 +263,42 @@ TEST(XFeatFeatures, ExtractsWithTheSyntheticModel)
   EXPECT_EQ(
     id.config, "detection_threshold: 0.05\nmax_keypoints: 10\nmodel: synthetic_xfeat.onnx\n");
   EXPECT_EQ(id.model_sha256, *landfall::sha256File(p.model));
-  EXPECT_THROW(xfeat.extract(cv::Mat(20, 20, CV_8UC1, cv::Scalar(0))), std::invalid_argument);
-  EXPECT_THROW(xfeat.extract(cv::Mat(64, 64, CV_8UC3, cv::Scalar(0))), std::invalid_argument);
+  EXPECT_THROW(xfeat.extract(cv::Mat(20, 20, CV_8UC1, cv::Scalar(0)), {}), std::invalid_argument);
+  EXPECT_THROW(xfeat.extract(cv::Mat(64, 64, CV_8UC3, cv::Scalar(0)), {}), std::invalid_argument);
   // Another model's outputs are refused.
   p.model = model("synthetic_global.onnx");
   EXPECT_THROW(XFeatFeatures{p}, std::runtime_error);
+}
+
+TEST(XFeatFeatures, HidesTheFloor)
+{
+  XFeatParams p;
+  p.model = model("synthetic_xfeat.onnx");
+  p.max_keypoints = 10;
+  p.floor_mask_distance = 5.0;
+  const XFeatFeatures xfeat(p);
+  cv::Mat gray(70, 100, CV_8UC1, cv::Scalar(0));
+  cv::rectangle(gray, cv::Rect(39, 29, 3, 3), cv::Scalar(255), cv::FILLED);
+  cv::rectangle(gray, cv::Rect(74, 49, 3, 3), cv::Scalar(160), cv::FILLED);
+  cv::GaussianBlur(gray, gray, cv::Size(5, 5), 1.0);
+  // A level camera 0.5 m up: the floor within 5 m starts 50 * 0.5 / 5 = 5 rows below the
+  // horizon (row 35), a little lower to the sides; the blob at row 50 is on it.
+  const landfall::CameraModel camera(
+    100, 70, 50.0, 50.0, 50.0, 35.0, landfall::DistortionModel::kNone, {});
+  landfall::Pose3 T_base_cam = landfall::Pose3::Identity();
+  T_base_cam.linear() << 0, 0, 1, -1, 0, 0, 0, -1, 0;
+  T_base_cam.translation() = landfall::Vec3(0.2, 0.0, 0.5);
+  const Features f = xfeat.extract(gray, {&camera, T_base_cam});
+  ASSERT_EQ(f.keypoints.size(), 1U);
+  EXPECT_NEAR(f.keypoints[0].x, 40.0F, 1.5F);
+  EXPECT_NEAR(f.keypoints[0].y, 30.0F, 1.5F);
+  EXPECT_EQ(
+    xfeat.id().config,
+    "detection_threshold: 0.05\nfloor_mask_distance: 5\nmax_keypoints: 10\n"
+    "model: synthetic_xfeat.onnx\n");
+  EXPECT_THROW(xfeat.extract(gray, {}), std::invalid_argument);  // the camera is needed
+  p.floor_mask_distance = -1.0;
+  EXPECT_THROW(XFeatFeatures{p}, std::invalid_argument);
 }
 
 TEST(OnnxGlobalDescriptor, FeedsTheModelRgbNormalizedAndResized)

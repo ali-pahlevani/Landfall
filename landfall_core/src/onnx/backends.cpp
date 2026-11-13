@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "landfall/features/floor_mask.hpp"
 #include "landfall/onnx/global_descriptor.hpp"
 #include "landfall/onnx/xfeat.hpp"
 
@@ -81,6 +82,7 @@ void registerBackends(BackendRegistry & registry)
     p.model = modelPath(reader, "xfeat.onnx");
     reader.read("max_keypoints", &p.max_keypoints);
     reader.read("detection_threshold", &p.detection_threshold);
+    reader.read(kFloorMaskOption, &p.floor_mask_distance);
     p.session = sessionOptions(reader, "xfeat");
     reader.finish();
     return std::make_unique<XFeatFeatures>(p);

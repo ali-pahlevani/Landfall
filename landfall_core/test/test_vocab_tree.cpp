@@ -82,7 +82,7 @@ TEST(VocabularyTree, BowRecallOnSyntheticPlaces)
   std::vector<Features> database;
   cv::Mat all;
   for (int p = 0; p < kPlaces; ++p) {
-    database.push_back(orb.extract(placeImage(1000 + p)));
+    database.push_back(orb.extract(placeImage(1000 + p), {}));
     all.push_back(database.back().descriptors);
   }
   landfall::VocabularyParams params;
@@ -102,7 +102,7 @@ TEST(VocabularyTree, BowRecallOnSyntheticPlaces)
 
   int correct = 0;
   for (int p = 0; p < kPlaces; ++p) {
-    const Features query = orb.extract(revisit(placeImage(1000 + p), 77 + p));
+    const Features query = orb.extract(revisit(placeImage(1000 + p), 77 + p), {});
     const auto top = index.search(bow.compute(cv::Mat(), &query), 1);
     correct += !top.empty() && top[0].id == p ? 1 : 0;
   }

@@ -52,6 +52,27 @@ TEST(BackendRegistry, BuiltinBackendsRecreateFromTheirStoredConfig)
   EXPECT_EQ(landfall::defaultMatcherFor(landfall::DescriptorType::kFloat32), "mnn");
 }
 
+TEST(BackendRegistry, FloorMaskIsStoredOnlyWhenSet)
+{
+  BackendRegistry registry;
+  landfall::registerBuiltinBackends(registry);
+  for (const std::string name : {"orb", "sift"}) {
+    // Off: the configuration of databases built before the option existed.
+    const auto plain = registry.createLocalFeatures(name, {})->id();
+    EXPECT_EQ(plain.config.find("floor_mask"), std::string::npos);
+    EXPECT_EQ(
+      registry.createLocalFeatures(name, {{"floor_mask_distance", "0"}})->id().config,
+      plain.config);
+    const auto masked = registry.createLocalFeatures(name, {{"floor_mask_distance", "4.5"}})->id();
+    EXPECT_NE(masked.config.find("floor_mask_distance: 4.5\n"), std::string::npos);
+    EXPECT_EQ(
+      registry.createLocalFeatures(name, landfall::parseBackendConfig(masked.config))->id().config,
+      masked.config);
+    EXPECT_THROW(
+      registry.createLocalFeatures(name, {{"floor_mask_distance", "-1"}}), std::invalid_argument);
+  }
+}
+
 TEST(BackendRegistry, RejectsUnknownNamesOptionsAndValues)
 {
   BackendRegistry registry;

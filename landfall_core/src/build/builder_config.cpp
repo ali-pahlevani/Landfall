@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "landfall/features/floor_mask.hpp"
 #include "landfall/geometry/gravity.hpp"
 
 namespace landfall
@@ -146,6 +147,13 @@ std::string flag(bool value) { return value ? "true" : "false"; }
 
 }  // namespace
 
+BackendOptions defaultLocalOptions()
+{
+  char distance[32];
+  std::snprintf(distance, sizeof(distance), "%g", kDefaultFloorMaskDistance);
+  return {{kFloorMaskOption, distance}};
+}
+
 BuildConfigFile parseBuildConfig(const std::string & yaml_text)
 {
   BuildConfigFile config;
@@ -170,7 +178,9 @@ BuildConfigFile parseBuildConfig(const std::string & yaml_text)
   backend.read("models_dir", &b.models_dir);
   backend.read("execution_provider", &b.execution_provider);
   backend.finish();
-  b.local_options = top.options("features");
+  for (const auto & [key, value] : top.options("features")) {
+    b.local_options[key] = value;
+  }
   b.matcher_options = top.options("matching");
   b.global_options = top.options("global");
 

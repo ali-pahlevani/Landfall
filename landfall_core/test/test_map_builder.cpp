@@ -264,6 +264,8 @@ TEST(MapBuilder, SyntheticLoopBuildsAccurateDeterministicMap)
   EXPECT_NEAR(report.summary.heading_sector_fraction, 0.25, 0.05);
   EXPECT_NE(
     report.markdown.find("| Landmarks | " + std::to_string(stats.landmarks)), std::string::npos);
+  EXPECT_GT(stats.mean_keypoints, 0.0);
+  EXPECT_NE(report.markdown.find("| Features | "), std::string::npos);
   landfall::writeReport(report, dir.file("report"));
   EXPECT_TRUE(std::filesystem::exists(dir.file("report/coverage.png")));
   EXPECT_TRUE(std::filesystem::exists(dir.file("report/report.json")));

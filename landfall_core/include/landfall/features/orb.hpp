@@ -30,6 +30,7 @@ struct OrbParams
   int fast_threshold = 20;
   int min_fast_threshold = 7;  ///< retried in cells that got less than half their share
   GridSize grid;
+  double floor_mask_distance = 0.0;  ///< m; hides the near floor (kFloorMaskOption), 0: off
 };
 
 /// ORB (OpenCV, Harris-ranked FAST + rBRIEF, 256-bit) with grid bucketing as in ORB-SLAM.
@@ -37,7 +38,7 @@ class OrbFeatures : public ILocalFeatures
 {
 public:
   explicit OrbFeatures(const OrbParams & params = OrbParams());
-  Features extract(const cv::Mat & gray) const override;
+  Features extract(const cv::Mat & gray, const ImageGeometry & geometry) const override;
   BackendId id() const override;
 
 private:

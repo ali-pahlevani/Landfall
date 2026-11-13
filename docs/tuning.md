@@ -33,6 +33,12 @@ poses before what it does to successes. All parameters are listed in `docs/param
   the map's cells (5 cm). Few contradictions don't prove good poses: where one scan fits two
   positions equally (a wall the map has twice, repeating shelf legs), the localization and the
   scan can agree on the wrong one (`docs/recording.md`, "Limit").
+- **Floor mask** (`features.floor_mask_distance` of the build, 5 m; `docs/recording.md`). The
+  floor nearer than this is hidden from the feature detector, in the build and in queries.
+  In the URDF Maker warehouse 3 m and 5 m did equally well (relocalization success 9.5 and 9.6 % of
+  the sweep frames, 6.4 % without the mask), 7.6 m and 12 m less (9.0 and 8.1 %; farther masks
+  also hide the bottoms of nearby shelves). Lower it, or set 0, if the build report says the mask
+  hides most of the image (a camera looking down at the floor).
 - **Speed gate** (`gating.max_linear_speed`, `gating.max_angular_speed`). It bounds the error that
   image and odometry timing leave in the keyframe poses; with a measured `image.time_offset` it can
   be relaxed a little.

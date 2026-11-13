@@ -14,12 +14,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <opencv2/features2d.hpp>
 #include <set>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "../config_text.hpp"
 #include "landfall/features/bucketing.hpp"
+#include "landfall/features/floor_mask.hpp"
 #include "landfall/features/orb.hpp"
 #include "landfall/features/sift.hpp"
 #include "landfall/util/sha256.hpp"
@@ -68,6 +72,20 @@ std::string gridText(const GridSize & grid)
   return std::to_string(grid.cols) + "x" + std::to_string(grid.rows);
 }
 
+/// The pixels of a grid cell (row-major index).
+cv::Rect cellRect(int cell, cv::Size image_size, const GridSize & grid)
+{
+  const int col = cell % grid.cols;
+  const int row = cell / grid.cols;
+  const int x0 = col * image_size.width / grid.cols;
+  const int x1 = (col + 1) * image_size.width / grid.cols;
+  const int y0 = row * image_size.height / grid.rows;
+  const int y1 = (row + 1) * image_size.height / grid.rows;
+  return {x0, y0, x1 - x0, y1 - y0};
+}
+
+bool validFloorDistance(double distance) { return std::isfinite(distance) && distance >= 0.0; }
+
 }  // namespace
 
 std::string configSha256(const BackendId & id)
@@ -88,9 +106,34 @@ int gridCell(float x, float y, cv::Size image_size, const GridSize & grid)
   return row * grid.cols + col;
 }
 
+std::vector<int> cellShares(
+  cv::Size image_size, const GridSize & grid, int max_keypoints, const cv::Mat & mask)
+{
+  const int cells = grid.cols * grid.rows;
+  if (mask.empty()) {
+    return std::vector<int>(cells, std::max(1, max_keypoints / cells));
+  }
+  if (mask.size() != image_size || mask.type() != CV_8UC1) {
+    throw std::invalid_argument("a detection mask must be 8-bit and of the image's size");
+  }
+  std::vector<int64_t> open(cells, 0);
+  int64_t total = 0;
+  for (int cell = 0; cell < cells; ++cell) {
+    open[cell] = cv::countNonZero(mask(cellRect(cell, image_size, grid)));
+    total += open[cell];
+  }
+  std::vector<int> shares(cells, 0);
+  if (total > 0) {
+    for (int cell = 0; cell < cells; ++cell) {
+      shares[cell] = static_cast<int>(static_cast<int64_t>(max_keypoints) * open[cell] / total);
+    }
+  }
+  return shares;
+}
+
 std::vector<cv::KeyPoint> bucketKeypoints(
   std::vector<cv::KeyPoint> keypoints, cv::Size image_size, const GridSize & grid,
-  int max_keypoints)
+  int max_keypoints, const cv::Mat & mask)
 {
   std::sort(keypoints.begin(), keypoints.end(), stronger);
   if (max_keypoints <= 0) {
@@ -100,7 +143,7 @@ std::vector<cv::KeyPoint> bucketKeypoints(
     return keypoints;
   }
   const int cells = grid.cols * grid.rows;
-  const int share = std::max(1, max_keypoints / cells);
+  const std::vector<int> share = cellShares(image_size, grid, max_keypoints, mask);
   std::vector<int> per_cell(cells, 0);
   std::vector<char> taken(keypoints.size(), 0);
   std::vector<cv::KeyPoint> result;
@@ -108,7 +151,7 @@ std::vector<cv::KeyPoint> bucketKeypoints(
   for (std::size_t i = 0;
        i < keypoints.size() && result.size() < static_cast<std::size_t>(max_keypoints); ++i) {
     const int cell = gridCell(keypoints[i].pt.x, keypoints[i].pt.y, image_size, grid);
-    if (per_cell[cell] < share) {
+    if (per_cell[cell] < share[cell]) {
       ++per_cell[cell];
       taken[i] = 1;
       result.push_back(keypoints[i]);
@@ -137,14 +180,16 @@ OrbFeatures::OrbFeatures(const OrbParams & params) : params_(params)
 {
   if (
     params_.max_keypoints <= 0 || params_.levels <= 0 || params_.grid.cols <= 0 ||
-    params_.grid.rows <= 0 || params_.scale_factor <= 1.0 || params_.oversample < 1.0) {
+    params_.grid.rows <= 0 || params_.scale_factor <= 1.0 || params_.oversample < 1.0 ||
+    !validFloorDistance(params_.floor_mask_distance)) {
     throw std::invalid_argument("invalid ORB parameters");
   }
 }
 
-Features OrbFeatures::extract(const cv::Mat & gray) const
+Features OrbFeatures::extract(const cv::Mat & gray, const ImageGeometry & geometry) const
 {
   requireGray(gray);
+  const cv::Mat floor = detectionMask("orb", params_.floor_mask_distance, gray.size(), geometry);
   const int detect_count =
     static_cast<int>(std::lround(params_.max_keypoints * params_.oversample));
   const auto make_orb = [&](int fast_threshold) {
@@ -154,11 +199,13 @@ Features OrbFeatures::extract(const cv::Mat & gray) const
   };
   const auto orb = make_orb(params_.fast_threshold);
   std::vector<cv::KeyPoint> keypoints;
-  orb->detect(gray, keypoints);
+  orb->detect(gray, keypoints, floor);
 
-  // Low-texture cells: detect again there with the lower FAST threshold, as ORB-SLAM does.
+  // Low-texture cells: detect again there with the lower FAST threshold, as ORB-SLAM does. Cells
+  // the floor mask covers have no share.
   const int cells = params_.grid.cols * params_.grid.rows;
-  const int share = std::max(1, params_.max_keypoints / cells);
+  const std::vector<int> share =
+    cellShares(gray.size(), params_.grid, params_.max_keypoints, floor);
   std::vector<int> per_cell(cells, 0);
   for (const auto & k : keypoints) {
     ++per_cell[gridCell(k.pt.x, k.pt.y, gray.size(), params_.grid)];
@@ -166,17 +213,14 @@ Features OrbFeatures::extract(const cv::Mat & gray) const
   cv::Mat mask = cv::Mat::zeros(gray.size(), CV_8UC1);
   std::vector<char> weak(cells, 0);
   for (int cell = 0; cell < cells; ++cell) {
-    if (per_cell[cell] * 2 >= share) {
+    if (per_cell[cell] * 2 >= share[cell]) {
       continue;
     }
     weak[cell] = 1;
-    const int col = cell % params_.grid.cols;
-    const int row = cell / params_.grid.cols;
-    const int x0 = col * gray.cols / params_.grid.cols;
-    const int x1 = (col + 1) * gray.cols / params_.grid.cols;
-    const int y0 = row * gray.rows / params_.grid.rows;
-    const int y1 = (row + 1) * gray.rows / params_.grid.rows;
-    mask(cv::Rect(x0, y0, x1 - x0, y1 - y0)).setTo(255);
+    mask(cellRect(cell, gray.size(), params_.grid)).setTo(255);
+  }
+  if (!floor.empty()) {
+    cv::bitwise_and(mask, floor, mask);
   }
   if (params_.min_fast_threshold < params_.fast_threshold && cv::countNonZero(mask) > 0) {
     std::vector<cv::KeyPoint> extra;
@@ -192,7 +236,7 @@ Features OrbFeatures::extract(const cv::Mat & gray) const
   }
 
   keypoints =
-    bucketKeypoints(std::move(keypoints), gray.size(), params_.grid, params_.max_keypoints);
+    bucketKeypoints(std::move(keypoints), gray.size(), params_.grid, params_.max_keypoints, floor);
   cv::Mat descriptors;
   orb->compute(gray, keypoints, descriptors);
   return toFeatures(keypoints, descriptors, DescriptorType::kBinary);
@@ -208,25 +252,32 @@ BackendId OrbFeatures::id() const
     .add("fast_threshold", params_.fast_threshold)
     .add("min_fast_threshold", params_.min_fast_threshold)
     .add("grid", gridText(params_.grid));
+  // Only when set, so databases built before the option keep their configuration.
+  if (params_.floor_mask_distance > 0.0) {
+    config.add(kFloorMaskOption, params_.floor_mask_distance);
+  }
   return {"orb", "1", config.str(), ""};
 }
 
 SiftFeatures::SiftFeatures(const SiftParams & params) : params_(params)
 {
-  if (params_.max_keypoints <= 0 || params_.grid.cols <= 0 || params_.grid.rows <= 0) {
+  if (
+    params_.max_keypoints <= 0 || params_.grid.cols <= 0 || params_.grid.rows <= 0 ||
+    !validFloorDistance(params_.floor_mask_distance)) {
     throw std::invalid_argument("invalid SIFT parameters");
   }
 }
 
-Features SiftFeatures::extract(const cv::Mat & gray) const
+Features SiftFeatures::extract(const cv::Mat & gray, const ImageGeometry & geometry) const
 {
   requireGray(gray);
+  const cv::Mat floor = detectionMask("sift", params_.floor_mask_distance, gray.size(), geometry);
   const auto sift = cv::SIFT::create(
     0, params_.octave_layers, params_.contrast_threshold, params_.edge_threshold, params_.sigma);
   std::vector<cv::KeyPoint> keypoints;
-  sift->detect(gray, keypoints);
+  sift->detect(gray, keypoints, floor);
   keypoints =
-    bucketKeypoints(std::move(keypoints), gray.size(), params_.grid, params_.max_keypoints);
+    bucketKeypoints(std::move(keypoints), gray.size(), params_.grid, params_.max_keypoints, floor);
   cv::Mat descriptors;
   sift->compute(gray, keypoints, descriptors);
   // RootSIFT: L1-normalize, then square root; the rows end up with unit L2 norm.
@@ -255,6 +306,9 @@ BackendId SiftFeatures::id() const
     .add("octave_layers", params_.octave_layers)
     .add("grid", gridText(params_.grid))
     .add("normalization", std::string("rootsift"));
+  if (params_.floor_mask_distance > 0.0) {
+    config.add(kFloorMaskOption, params_.floor_mask_distance);
+  }
   return {"sift", "1", config.str(), ""};
 }
 

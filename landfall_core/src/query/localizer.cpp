@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "landfall/geometry/floor_refinement.hpp"
 #include "landfall/grid/scan_matcher.hpp"
 
 namespace landfall
@@ -274,6 +275,36 @@ Hypothesis Localizer::solvePlace(
     (is_inlier[i] != 0 ? h.inlier_pixels : h.outlier_pixels).push_back(pixels[i]);
   }
 
+  // The pose's last refinement (plan §7.8): on the floor, the base's height and tilt held near
+  // what the floor and gravity say (on a ramp only its tilt: the floor's height there isn't
+  // known). Free, the covariance is taken at the PnP solution. The sanity check still measures the
+  // height and tilt of the free solution.
+  FloorPrior prior;
+  prior.T_base_cam = frame.T_base_cam;
+  prior.gravity_base = frame.gravity.gravity_base;
+  FloorRefinementOptions refinement;
+  refinement.focal_px = options.focal_px;
+  refinement.threshold_px = options.threshold_px;
+  if (params_.refine_on_floor) {
+    prior.height_std = frame.gravity.on_ramp ? 0.0 : params_.floor_height_std;
+    prior.tilt_std = toRad(params_.floor_tilt_std_deg);
+  } else {
+    refinement.max_iterations = 0;
+  }
+  const FloorRefinement refined = refineOnFloor(
+    correspondences.normalized, correspondences.points, solution->inliers,
+    h.T_map_cam * frame.T_base_cam.inverse(), prior, refinement);
+  if (!refined.valid) {
+    h.rejection = "the inliers fix no pose (their geometry is degenerate)";
+    return h;
+  }
+  const double map_std_yaw = toRad(params_.map_std_yaw_deg);
+  h.covariance = params_.vision_std_scale * params_.vision_std_scale * refined.covariance;
+  h.covariance.diagonal() += Vec3(
+    params_.map_std_xy * params_.map_std_xy, params_.map_std_xy * params_.map_std_xy,
+    map_std_yaw * map_std_yaw);
+  h.noise_px = refined.noise_px;
+
   SanityParams sanity = params_.sanity;
   sanity.min_inliers = min_inliers;
   if (sanity.max_mean_reprojection_px <= 0.0) {
@@ -282,6 +313,7 @@ Hypothesis Localizer::solvePlace(
   SanityInput input;
   input.T_map_cam = h.T_map_cam;
   input.T_base_cam = frame.T_base_cam;
+  input.pose = refined.pose;
   input.gravity = frame.gravity;
   input.num_correspondences = h.correspondences;
   input.inlier_pixels = h.inlier_pixels;
@@ -437,6 +469,7 @@ FrameResult Localizer::localize(const QueryFrame & frame)
   if (!result.clusters.empty()) {
     result.best = result.clusters.front().members.front();
     result.pose = result.clusters.front().pose;
+    result.covariance = result.hypotheses[static_cast<std::size_t>(result.best)].covariance;
   }
   if (
     !result.ambiguity.ambiguous && result.best >= 0 && check_scan && projected &&
@@ -484,6 +517,7 @@ FrameResult Localizer::localize(const QueryFrame & frame)
     winner.rejection = reason.str();
     result.best = -1;
     result.pose.reset();
+    result.covariance = Mat3::Zero();
   }
   result.timings.solve_s = watch.lap();
   result.timings.total_s = total.lap();

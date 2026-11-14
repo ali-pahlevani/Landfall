@@ -60,8 +60,14 @@ AMCL parameters that suit relocalization:
 | `set_initial_pose` | `false` | the relocalizer gives the first pose; a configured pose would be applied first |
 | `always_reset_initial_pose` | `true` | after a restart, AMCL waits for a new pose instead of reusing the last one |
 
-The relocalizer publishes `/initialpose` with the standard deviations of `output.std_xy` and
-`output.std_yaw_deg` (0.25 m, 5°), from which AMCL spreads its particles and converges. The pose is
+The relocalizer publishes `/initialpose` with the pose's own covariance: typically 2.5-4 cm and
+0.2-0.25°, longer along the view where the landmarks are far (`docs/relocalization.md`, *The
+published covariance*; `output.covariance: fixed` publishes `output.std_xy` and
+`output.std_yaw_deg`, 0.25 m and 5°, instead). AMCL draws its particles from it (x, y, their
+correlation and yaw). AMCL from Lyrical on (Nav2 1.5) rejects a pose whose covariance has a
+negative entry, a negative correlation too ("Received initialpose message is malformed.
+Rejecting."), so the relocalizer publishes a cover without negative entries on every distribution:
+negatively correlated pairs lose their correlation and get wider variances instead. The pose is
 stamped with the latest odometry the relocalizer has; when AMCL's transforms are a few milliseconds
 older, AMCL warns "Failed to transform initial pose in time" and sets the pose as given, which is
 right: the relocalizer has already moved it to that odometry (`output.compensate_motion`).

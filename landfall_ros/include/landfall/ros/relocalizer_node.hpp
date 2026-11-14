@@ -148,6 +148,7 @@ private:
     double timeout = 10.0;
     int num_frames = 3;
     double min_frame_interval = 0.3;
+    bool estimated_covariance = true;  ///< output.covariance estimated (else fixed)
     double std_xy = 0.25;
     double std_yaw_deg = 5.0;
     bool compensate_motion = true;

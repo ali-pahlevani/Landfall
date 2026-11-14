@@ -39,6 +39,7 @@
 #include "test_utils.hpp"
 
 using landfall::Features;
+using landfall::Mat3;
 using landfall::Pose2;
 using landfall::Pose3;
 using landfall::Vec2;
@@ -310,6 +311,51 @@ TEST_F(LocalizerTest, LocalizesPosesBetweenKeyframes)
   EXPECT_EQ(localized, 32);
   EXPECT_LT(worst_position, 0.05);
   EXPECT_LT(worst_yaw, deg(0.5));
+}
+
+TEST_F(LocalizerTest, PosesComeWithTheirCovariance)
+{
+  // Every pose carries the covariance of its x, y and yaw: what its inliers fix, widened, plus the
+  // map's own error (2.5 cm, 0.2 deg by default); the true pose lies inside its 95 % region. The free
+  // refinement keeps the PnP solution's pose and gives a covariance too; the floor moves the pose
+  // by millimetres here, where the extrinsics are exact.
+  landfall::LocalizerParams free_params;
+  free_params.refine_on_floor = false;
+  landfall::Localizer on_floor(landfall::LocalizationMap::load(*db_path_), {});
+  landfall::Localizer free(landfall::LocalizationMap::load(*db_path_), free_params);
+  const auto path = landfall::test::loopBothWays(0, 0, 10, 6, 1.0);
+  int checked = 0;
+  for (std::size_t k = 0; k < path.size(); k += 4) {
+    const Pose2 truth = landfall::compose(path[k], {0.5, 0.1, deg(3.0)});
+    const auto frame = query(*world_, truth, 2000 + static_cast<int>(k));
+    const auto a = on_floor.localize(frame);
+    const auto b = free.localize(frame);
+    if (!a.pose || !b.pose) {
+      continue;
+    }
+    ++checked;
+    const Mat3 & c = a.covariance;
+    EXPECT_TRUE(c.isApprox(c.transpose())) << k;
+    EXPECT_GE(c(0, 0), 0.025 * 0.025) << k;
+    EXPECT_GE(c(1, 1), 0.025 * 0.025) << k;
+    EXPECT_GE(c(2, 2), std::pow(deg(0.2), 2)) << k;
+    EXPECT_LT(std::sqrt(c(0, 0) + c(1, 1)), 0.1) << k;
+    const Vec3 e(
+      a.pose->x - truth.x, a.pose->y - truth.y, landfall::normalizeAngle(a.pose->yaw - truth.yaw));
+    EXPECT_LE(e.dot(c.ldlt().solve(e)), 7.815) << k;
+    const auto & winner = a.hypotheses[static_cast<std::size_t>(a.best)];
+    EXPECT_TRUE(winner.covariance.isApprox(c)) << k;
+    EXPECT_GT(winner.noise_px, 0.0) << k;
+
+    const auto & h = b.hypotheses[static_cast<std::size_t>(b.best)];
+    const Pose2 pnp = landfall::toPose2(h.sanity.T_map_base);
+    EXPECT_NEAR(h.pose.x, pnp.x, 1e-9) << k;
+    EXPECT_NEAR(h.pose.y, pnp.y, 1e-9) << k;
+    EXPECT_NEAR(h.pose.yaw, pnp.yaw, 1e-9) << k;
+    EXPECT_GT(b.covariance.determinant(), 0.0) << k;
+    EXPECT_LT(landfall::translationDistance(*a.pose, *b.pose), 0.01) << k;
+  }
+  EXPECT_GE(checked, 12);
 }
 
 TEST_F(LocalizerTest, UnknownPlaceIsNoMatch)

@@ -63,7 +63,9 @@ frame goes through these steps:
 1. Extract features. Retrieve the `query.top_k` most similar keyframes and group them into places,
    by shared landmarks or by camera proximity.
 2. Match each place 2D–3D, then solve the pose: upright LO-RANSAC with the gravity from the IMU or
-   the flat floor, falling back to P3P.
+   the flat floor, falling back to P3P. Refine it on the floor (`pnp.refinement`): its x, y and yaw,
+   with the base's height and tilt held near what the floor and gravity say, and the covariance of
+   the three (*The published covariance* below).
 3. Run the sanity checks (`sanity.*`): inliers, inlier ratio, reprojection error, image coverage,
    base height and tilt, and a free map cell under the base. A pose needs `sanity.min_inliers` (40)
    inliers, or `sanity.min_inliers_unique` (20) where the LiDAR scan tells the place apart (step
@@ -87,11 +89,36 @@ The decision:
 - Frames that disagree with the odometry between them by more than
   `consistency.max_translation_error` or `consistency.max_rotation_error_deg` give
   **`REJECTED_CONSISTENCY`**.
-- Otherwise the request succeeds. The pose is moved to the latest odometry
-  (`output.compensate_motion`) and published with σ = `output.std_xy` and `output.std_yaw_deg`.
+- Otherwise the request succeeds. The frames' poses are fused, moved to the latest odometry
+  (`output.compensate_motion`) and published with their covariance.
 
 Every threshold except the structural parameters can change at runtime with `ros2 param set` and
 applies to the next request ([parameters.md](parameters.md)).
+
+**The published covariance.** AMCL draws its particles from the covariance that comes with the pose,
+so it should say how far off the pose may be: too wide, and AMCL has to narrow a cloud the pose
+didn't need; too narrow, and the right place may lie outside the cloud. Each frame's pose comes from
+a last refinement of its x, y and yaw on the inliers, with the base's height (0 ±
+`pnp.floor_height_std`, 3 cm; not on a ramp) and tilt (gravity's ± `pnp.floor_tilt_std_deg`, 1°)
+held softly: a camera whose real pitch differs from the URDF by a degree still fits. The covariance
+of x, y and yaw comes from that solution: the inliers' geometry and their reprojection noise. It is
+long along the view where the landmarks are far and in a narrow cone, as looking down a corridor.
+That alone claims too much: the landmarks share the map's errors (the keyframe poses they were
+triangulated from), which don't average out. So it is widened by `output.vision_std_scale` (2) and
+the map's own error is added (`output.map_std_xy`, 2.5 cm; `output.map_std_yaw_deg`, 0.2°). The
+frames of a request are fused by covariance intersection: each counts where it is sure, and the
+result stays consistent however much their errors are shared (frames of one view give one frame's
+covariance, not a third of it). The covariance moves with the pose to the latest odometry, without
+odometry's own error over those seconds (nothing while the robot stands; T-014). Nav2's AMCL from
+Lyrical on (Nav2 1.5) rejects a pose whose covariance has a negative entry, a negative correlation
+too ("Received initialpose message is malformed"), so the relocalizer publishes a cover without
+them, on every distribution: where two of x, y and yaw are negatively correlated, it drops their
+correlation and widens both variances by 1 + |ρ|, the smallest axis-aligned ellipse around theirs.
+It is never narrower than the estimate. In simulation 80-87 % of the poses had a negative entry;
+the cover's long axis was a median 2-6 % longer, at most 43 %. A typical published pose says
+2.5-4 cm and 0.2-0.25°, where the fixed values before (`output.covariance: fixed`, with
+`output.std_xy` 0.25 m and `output.std_yaw_deg` 5°) said 25 cm and 5°. `pnp.refinement: free` keeps
+the PnP solution as it is (6 DoF), with a covariance taken there.
 
 ## The LiDAR check
 
@@ -111,8 +138,9 @@ and lays its beams on the occupancy map at the pose. Beams outside `range_min` a
 People and pallets that weren't mapped make beams *short*. Those are misses, never violations, and
 up to 15 % of them are tolerated. A wrong pose makes beams end in the middle of mapped free space or
 pass through mapped walls. By default the published pose stays vision's; `scan_check.refine_pose`
-publishes the best pose of the window instead. In the depot simulation, that was less accurate than
-vision: a median error of 2.1 and 1.9 cm in the two directions, against 1.3 and 1.1 cm.
+publishes the best pose of the window instead, with vision's covariance (the window's own error
+isn't estimated). In the depot simulation, that was less accurate than vision: a median error of
+2.1 and 1.9 cm in the two directions, against 1.3 and 1.1 cm.
 
 With an IMU on a ramp, beams are projected with the IMU's tilt, and beams that would hit the floor
 are dropped.
@@ -279,8 +307,12 @@ it, not at exposure, so poses are looked up a few tens of milliseconds late. Set
 - `--set` changes a threshold, using the node parameter's name.
 
 The scan check uses the bag's `bag.scan_topic` (default `/scan`) from the build configuration. It
-writes one CSV row per request. `evaluate_poses --queries` scores those rows against a simulator's
-ground truth:
+writes one CSV row per request, with the pose's estimated covariance (`cov_xx`, `cov_xy`,
+`cov_xyaw`, `cov_yy`, `cov_yyaw`, `cov_yawyaw`: m², m·rad, rad²; the node publishes its cover
+without negative entries, never narrower) and the last frame's reprojection noise (`noise_px`).
+`evaluate_poses --queries` scores those rows against a simulator's ground truth, and the covariance
+too: the share of errors inside its 95 % region (about 95 % when it is honest) and their normalized
+squared errors. `--errors` writes every scored pose with its error and covariance:
 
 ```bash
 landfall query site.landfall.db --bag other_session_bag --config build.yaml \
@@ -316,6 +348,25 @@ bags with scans and odometry), single-frame requests: run 1 → run 2, 438 of 44
 the scan-matched databases realize, (8.030, 0.041, 0.105°) from the world, which differs by 2.3 cm
 from the one fitted to AMCL's poses (8.015, 0.023, 0.105°, as used above); against that one the
 medians are 2.8 cm and 2.6 cm.
+
+The estimated covariance (PLAN V62, 2026-11-14), on single frames against the truth: in the depot
+(875 poses, errors median 2.7-2.8 cm, p95 4.5-4.9 cm in the AMCL-fitted frame), 99.0 % of the
+positions and 98.6 % of the yaws lay inside its 95 % region (99.9 % of the positions in the
+databases' frame); in the warehouse (249 poses, errors median 3.1 cm, p90 8.0 cm, a map with
+doubled walls), 96.4 % and 98.8 %. It said 2.7 / 2.5 cm and 3.6 / 2.8 cm (median long and short
+axes) and 0.21° and 0.22°. The published cover without negative entries held 99.1 % and 98.9 % in
+the depot and 96.8 % and 99.6 % in the warehouse, at 2.7 / 2.6 cm and 3.9 / 3.0 cm and 0.22° and
+0.24°. Before the widening and the map's error, the refinement's own
+covariance held only 4.5 % (23 % in the databases' frame) and 33 % of the positions. The floor
+refinement moved the poses little in either simulation, whose extrinsics are exact: depot 98.7 and
+98.6 % success (98.7 and 98.2 % free), warehouse 249 right instead of 247 (median 3.13 cm either
+way). Of the 1,791 requests (904 in the warehouse, 887 in the depot), the refinement changed 6, 5
+of them into a success; `free` reproduces V61 exactly (no request differs). In the kidnap
+benchmark (M7's database, random placements, poses fused from three frames), 117 of 126 published
+positions (92.9 %) lay inside the 95 % ellipse (published as estimated: the run came before the
+cover); the 9 outside were 9 to 17 cm off, mostly at
+places where V61's poses had been as far off, and AMCL ended 0.0 to 1.4 cm from the truth after
+them (`docs/benchmark.md`).
 
 The depot looks the same in its two halves when rotated 180° about the world origin. With vision
 alone (M3), 19 to 20 frames per direction were ambiguous, and 1 of 156 three-frame requests

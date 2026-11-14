@@ -15,6 +15,7 @@
 #include "landfall/ros/relocalizer_node.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -225,6 +226,23 @@ void RelocalizerNode::declareParameters()
   declare_parameter(
     "pnp.success_prob", 0.9999, describe("RANSAC confidence", 0.9, 0.999999, kDynamic));
   declare_parameter(
+    "pnp.refinement", "floor",
+    describe(
+      "Last refinement of a pose: floor (x, y and yaw; the base's height and tilt held near the "
+      "floor and gravity) or free (6 DoF)",
+      kDynamic));
+  declare_parameter(
+    "pnp.floor_height_std", 0.03,
+    describe(
+      "How well the base's height above the floor is known (pnp.refinement floor), metres", 0.001,
+      1.0, kDynamic));
+  declare_parameter(
+    "pnp.floor_tilt_std_deg", 1.0,
+    describe(
+      "How well the base's tilt is known from gravity: the IMU's, or a flat floor's "
+      "(pnp.refinement floor), degrees",
+      0.05, 30.0, kDynamic));
+  declare_parameter(
     "sanity.min_inliers", 40, describeInt("Fewest PnP inliers", 6, 10000, kDynamic));
   declare_parameter(
     "sanity.min_inliers_unique", 20,
@@ -281,11 +299,38 @@ void RelocalizerNode::declareParameters()
       "best one's makes the result AMBIGUOUS; 0: any such place",
       0.0, 1.0, kDynamic));
   declare_parameter(
+    "output.covariance", "estimated",
+    describe(
+      "Covariance of the published pose: estimated (from the pose's solution, plus the map's "
+      "error) or fixed (output.std_xy, output.std_yaw_deg)",
+      kDynamic));
+  declare_parameter(
     "output.std_xy", 0.25,
-    describe("Standard deviation in x and y of the published pose, metres", 0.01, 5.0, kDynamic));
+    describe(
+      "Standard deviation in x and y of the published pose with output.covariance fixed, metres",
+      0.01, 5.0, kDynamic));
   declare_parameter(
     "output.std_yaw_deg", 5.0,
-    describe("Standard deviation in yaw of the published pose, degrees", 0.1, 90.0, kDynamic));
+    describe(
+      "Standard deviation in yaw of the published pose with output.covariance fixed, degrees", 0.1,
+      90.0, kDynamic));
+  declare_parameter(
+    "output.vision_std_scale", 2.0,
+    describe(
+      "Widens what a pose's inliers fix (their landmarks share the map's errors) in the estimated "
+      "covariance",
+      1.0, 10.0, kDynamic));
+  declare_parameter(
+    "output.map_std_xy", 0.025,
+    describe(
+      "The map's own error in x and y (its keyframe poses and landmarks), added to the estimated "
+      "covariance, metres",
+      0.0, 5.0, kDynamic));
+  declare_parameter(
+    "output.map_std_yaw_deg", 0.2,
+    describe(
+      "The map's own error in yaw, added to the estimated covariance, degrees", 0.0, 90.0,
+      kDynamic));
   declare_parameter(
     "output.compensate_motion", true,
     describe("Move the pose to the latest odometry before publishing", kDynamic));
@@ -475,6 +520,12 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   l.pnp_threshold_px = get_parameter("pnp.max_reproj_error_px").as_double();
   l.pnp_max_iterations = static_cast<int>(get_parameter("pnp.max_iterations").as_int());
   l.pnp_success_prob = get_parameter("pnp.success_prob").as_double();
+  l.refine_on_floor = get_parameter("pnp.refinement").as_string() != "free";  // validated on set
+  l.floor_height_std = get_parameter("pnp.floor_height_std").as_double();
+  l.floor_tilt_std_deg = get_parameter("pnp.floor_tilt_std_deg").as_double();
+  l.vision_std_scale = get_parameter("output.vision_std_scale").as_double();
+  l.map_std_xy = get_parameter("output.map_std_xy").as_double();
+  l.map_std_yaw_deg = get_parameter("output.map_std_yaw_deg").as_double();
   l.sanity.min_inliers = static_cast<int>(get_parameter("sanity.min_inliers").as_int());
   l.sanity.min_inliers_unique =
     static_cast<int>(get_parameter("sanity.min_inliers_unique").as_int());
@@ -531,6 +582,8 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   t.timeout = get_parameter("query.timeout").as_double();
   t.num_frames = static_cast<int>(get_parameter("consistency.num_frames").as_int());
   t.min_frame_interval = get_parameter("consistency.min_frame_interval").as_double();
+  t.estimated_covariance =
+    get_parameter("output.covariance").as_string() != "fixed";  // validated on set
   t.std_xy = get_parameter("output.std_xy").as_double();
   t.std_yaw_deg = get_parameter("output.std_yaw_deg").as_double();
   t.compensate_motion = get_parameter("output.compensate_motion").as_bool();
@@ -551,6 +604,19 @@ rcl_interfaces::msg::SetParametersResult RelocalizerNode::validateParameters(
       !parsePnpStrategy(p.as_string())) {
       result.successful = false;
       result.reason = "pnp.solver must be one of: upright, p3p, upright_then_p3p, opencv";
+    }
+    const bool text = p.get_type() == rclcpp::ParameterType::PARAMETER_STRING;
+    if (
+      text && p.get_name() == "pnp.refinement" && p.as_string() != "floor" &&
+      p.as_string() != "free") {
+      result.successful = false;
+      result.reason = "pnp.refinement must be floor or free";
+    }
+    if (
+      text && p.get_name() == "output.covariance" && p.as_string() != "estimated" &&
+      p.as_string() != "fixed") {
+      result.successful = false;
+      result.reason = "output.covariance must be estimated or fixed";
     }
   }
   return result;
@@ -1524,7 +1590,7 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
     outcome.scan_elsewhere = result_frame.scan_alternative.has_value();
     outcome.scan_twin = result_frame.twin_ambiguous;
     if (result_frame.pose && !outcome.ambiguous) {
-      outcome.estimate = FrameEstimate{*result_frame.pose, odom_T_base};
+      outcome.estimate = FrameEstimate{*result_frame.pose, odom_T_base, result_frame.covariance};
       ++valid;
       valid_frames.push_back(result_frame);
       valid_stamps.push_back(image.stamp_ns);
@@ -1637,6 +1703,15 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
     // decide() returns the pose at the last valid frame; move it to the latest odometry.
     Pose2 pose = *decision.pose;
     int64_t stamp_ns = valid_stamps.back();
+    // Estimated: what the frames' solutions fix (long along the view where the landmarks are
+    // far) and the map's error. Fixed: the configured circle.
+    const double fixed_yaw = t.std_yaw_deg * M_PI / 180.0;
+    Mat3 covariance =
+      Vec3(t.std_xy * t.std_xy, t.std_xy * t.std_xy, fixed_yaw * fixed_yaw).asDiagonal();
+    const bool estimated = t.estimated_covariance && decision.covariance.has_value();
+    if (estimated) {
+      covariance = *decision.covariance;
+    }
     if (t.compensate_motion) {
       try {
         const auto latest = tf_buffer_->lookupTransform(
@@ -1648,21 +1723,31 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
             break;
           }
         }
-        pose = propagate(pose, odom_at_last, toPose2(toPose3(latest.transform)));
+        const Pose2 odom_now = toPose2(toPose3(latest.transform));
+        if (estimated) {
+          covariance = propagateCovariance(covariance, pose, odom_at_last, odom_now);
+        }
+        pose = propagate(pose, odom_at_last, odom_now);
         stamp_ns = toNanoseconds(latest.header.stamp);
       } catch (const tf2::TransformException & e) {
         RCLCPP_WARN(get_logger(), "no current odometry to compensate motion: %s", e.what());
       }
     }
+    // Nav2's AMCL from Lyrical on rejects a covariance with a negative entry ("malformed"), a
+    // negative correlation too: publish a cover without them.
+    covariance = coverWithoutNegativeEntries(covariance);
     geometry_msgs::msg::PoseWithCovarianceStamped msg;
     msg.header.frame_id = settings_.frame_global;
     msg.header.stamp = toStamp(stamp_ns);
     msg.pose.pose = toPoseMsg(landfall::toPose3(pose));
-    const double var_xy = t.std_xy * t.std_xy;
-    const double std_yaw = t.std_yaw_deg * M_PI / 180.0;
-    msg.pose.covariance[0] = var_xy;
-    msg.pose.covariance[7] = var_xy;
-    msg.pose.covariance[35] = std_yaw * std_yaw;
+    // x, y and yaw in the 6x6 row-major covariance (x, y, z, roll, pitch, yaw).
+    const std::array<std::size_t, 3> index = {0, 1, 5};
+    for (std::size_t a = 0; a < 3; ++a) {
+      for (std::size_t b = 0; b < 3; ++b) {
+        msg.pose.covariance[6 * index[a] + index[b]] =
+          covariance(static_cast<int>(a), static_cast<int>(b));
+      }
+    }
     result.pose = msg;
     result.message = "localized at " + poseText(pose) + " from " +
                      std::to_string(decision.frames_used) + " frames";
@@ -1835,6 +1920,14 @@ void RelocalizerNode::dump(
         .value(frame.pose->y)
         .value(frame.pose->yaw);
       json.endArray();
+      // x, y, yaw; row-major
+      json.key("covariance").beginArray();
+      for (int a = 0; a < 3; ++a) {
+        for (int b = 0; b < 3; ++b) {
+          json.value(frame.covariance(a, b));
+        }
+      }
+      json.endArray();
     }
     json.key("hypotheses").beginArray();
     for (const auto & h : frame.hypotheses) {
@@ -1844,7 +1937,7 @@ void RelocalizerNode::dump(
         .field("inliers", h.sanity.num_inliers)
         .field("rejection", h.rejection);
       if (h.solved) {
-        json.field("twin_support", h.twin_support);
+        json.field("twin_support", h.twin_support).field("noise_px", h.noise_px);
       }
       if (h.scan_checked) {
         json.field("scan_hit_ratio", h.scan.score.hit_ratio)

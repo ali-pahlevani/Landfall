@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <Eigen/Eigenvalues>
 #include <random>
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 
 using landfall::FrameEstimate;
 using landfall::FrameOutcome;
+using landfall::Mat3;
 using landfall::Pose2;
 using landfall::Pose3;
 using landfall::Stage;
@@ -79,7 +81,7 @@ FrameOutcome validFrame(const Pose2 & map_T_base, const Pose2 & odom_T_base)
 {
   FrameOutcome frame;
   frame.deepest_stage = Stage::kScanPassed;
-  frame.estimate = FrameEstimate{map_T_base, odom_T_base};
+  frame.estimate = FrameEstimate{map_T_base, odom_T_base, std::nullopt};
   return frame;
 }
 
@@ -212,10 +214,11 @@ TEST(Consistency, PropagationAndPairwiseAgreement)
   std::vector<FrameEstimate> frames;
   for (int i = 0; i < 3; ++i) {
     const Pose2 odom{0.05 * i, 0.0, 0.3 * i};
-    frames.push_back({landfall::compose(map_T_odom, odom), odom});
+    frames.push_back({landfall::compose(map_T_odom, odom), odom, std::nullopt});
   }
   auto result = landfall::checkConsistency(frames, landfall::ConsistencyParams());
   EXPECT_TRUE(result.consistent);
+  EXPECT_FALSE(result.covariance.has_value());
   EXPECT_LT(result.max_translation_error, 1e-9);
   const Pose2 expected = landfall::compose(map_T_odom, frames.back().odom_T_base);
   EXPECT_NEAR(landfall::translationDistance(result.fused, expected), 0.0, 1e-9);
@@ -224,6 +227,119 @@ TEST(Consistency, PropagationAndPairwiseAgreement)
   result = landfall::checkConsistency(frames, landfall::ConsistencyParams());
   EXPECT_FALSE(result.consistent);
   EXPECT_NEAR(result.max_translation_error, 0.3, 1e-9);
+}
+
+TEST(Consistency, CarriesTheCovarianceThroughOdometry)
+{
+  // Facing +y, 1 m forward: a heading error of e moves the pose by e sideways, along -x.
+  const Mat3 heading_only = Vec3(0.0, 0.0, 0.01).asDiagonal();
+  const Mat3 moved = landfall::propagateCovariance(
+    heading_only, {0.0, 0.0, M_PI / 2}, {0.0, 0.0, 0.0}, {1.0, 0.0, 0.0});
+  EXPECT_NEAR(moved(0, 0), 0.01, 1e-12);
+  EXPECT_NEAR(moved(1, 1), 0.0, 1e-12);
+  EXPECT_NEAR(moved(0, 2), -0.01, 1e-12);
+  EXPECT_NEAR(moved(2, 2), 0.01, 1e-12);
+  // Standing still changes nothing.
+  const Mat3 any = (Mat3() << 0.04, 0.01, 0.001, 0.01, 0.02, 0.0, 0.001, 0.0, 0.003).finished();
+  EXPECT_TRUE(landfall::propagateCovariance(any, {3.0, 1.0, 0.4}, {2.0, 2.0, 1.0}, {2.0, 2.0, 1.0})
+                .isApprox(any, 1e-12));
+  // Exactly symmetric, as the published message must be.
+  const Mat3 turned =
+    landfall::propagateCovariance(any, {3.0, 1.0, 0.4}, {2.0, 2.0, 1.0}, {2.7, 1.1, 1.9});
+  EXPECT_EQ(turned(0, 1), turned(1, 0));
+  EXPECT_EQ(turned(0, 2), turned(2, 0));
+  EXPECT_EQ(turned(1, 2), turned(2, 1));
+}
+
+TEST(Consistency, CoversACovarianceWithoutNegativeEntries)
+{
+  // Nothing negative: unchanged.
+  const Mat3 positive =
+    (Mat3() << 0.04, 0.01, 0.001, 0.01, 0.02, 0.0, 0.001, 0.0, 0.003).finished();
+  EXPECT_TRUE(landfall::coverWithoutNegativeEntries(positive) == positive);
+
+  // x and y correlated by -0.6: the correlation goes, both variances grow by 1.6 (the smallest
+  // axis-aligned ellipse around theirs), yaw stays.
+  const Mat3 tilted = (Mat3() << 4.0, -1.2, 0.0, -1.2, 1.0, 0.0, 0.0, 0.0, 0.5).finished();
+  const Mat3 upright = landfall::coverWithoutNegativeEntries(tilted);
+  EXPECT_NEAR(upright(0, 0), 6.4, 1e-12);
+  EXPECT_NEAR(upright(1, 1), 1.6, 1e-12);
+  EXPECT_EQ(upright(0, 1), 0.0);
+  EXPECT_EQ(upright(1, 0), 0.0);
+  EXPECT_EQ(upright(2, 2), 0.5);
+
+  // Any covariance: no negative entry, exactly symmetric, never narrower (the difference is
+  // positive semidefinite), the positive correlations kept.
+  std::mt19937 rng(7);
+  std::normal_distribution<double> normal(0.0, 1.0);
+  for (int trial = 0; trial < 1000; ++trial) {
+    Mat3 a;
+    for (int k = 0; k < 9; ++k) {
+      a(k / 3, k % 3) = normal(rng) * (k % 3 == 2 ? 0.01 : 0.05);
+    }
+    const Mat3 product = a * a.transpose() + Vec3(1e-6, 1e-6, 1e-8).asDiagonal().toDenseMatrix();
+    const Mat3 c = 0.5 * (product + product.transpose());
+    const Mat3 cover = landfall::coverWithoutNegativeEntries(c);
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        ASSERT_GE(cover(i, j), 0.0) << c;
+        ASSERT_EQ(cover(i, j), cover(j, i)) << c;
+        if (i != j && c(i, j) >= 0.0) {
+          ASSERT_EQ(cover(i, j), c(i, j)) << c;
+        }
+      }
+    }
+    const Eigen::SelfAdjointEigenSolver<Mat3> difference(cover - c);
+    ASSERT_GE(difference.eigenvalues().minCoeff(), -1e-12 * c.trace()) << c;
+  }
+}
+
+TEST(Consistency, FusesFramesByWhatTheyFix)
+{
+  const Pose2 map_T_odom{1.0, 2.0, 0.0};
+  const Pose2 odom{0.0, 0.0, 0.0};
+  const Mat3 round = Vec3(0.02 * 0.02, 0.02 * 0.02, 1e-4).asDiagonal();
+  // Two frames of the same view and the same covariance: their errors may be the same, so the
+  // fused pose is their mean and its covariance stays theirs (it doesn't shrink by half).
+  std::vector<FrameEstimate> frames = {
+    {{1.01, 2.0, 0.0}, odom, round}, {{0.99, 2.0, 0.0}, odom, round}};
+  auto result = landfall::checkConsistency(frames, landfall::ConsistencyParams());
+  ASSERT_TRUE(result.covariance.has_value());
+  EXPECT_NEAR(result.fused.x, 1.0, 1e-12);
+  EXPECT_TRUE(result.covariance->isApprox(round, 1e-12));
+
+  // One frame fixes x well and y poorly, the other the reverse: each counts where it is sure, and
+  // the result is surer than either in both.
+  const Mat3 sure_x = Vec3(0.01 * 0.01, 0.10 * 0.10, 1e-4).asDiagonal();
+  const Mat3 sure_y = Vec3(0.10 * 0.10, 0.01 * 0.01, 1e-4).asDiagonal();
+  frames = {{{1.00, 2.08, 0.0}, odom, sure_x}, {{1.08, 2.00, 0.0}, odom, sure_y}};
+  result = landfall::checkConsistency(frames, landfall::ConsistencyParams());
+  ASSERT_TRUE(result.covariance.has_value());
+  EXPECT_NEAR(result.fused.x, 1.0, 0.002);
+  EXPECT_NEAR(result.fused.y, 2.0, 0.002);
+  EXPECT_LT((*result.covariance)(0, 0), 0.10 * 0.10);
+  EXPECT_LT((*result.covariance)(1, 1), 0.10 * 0.10);
+  EXPECT_GT((*result.covariance)(0, 0), 0.01 * 0.01);  // each counts half: less sure than sure_x
+
+  // A frame without a covariance: the plain mean, without one.
+  frames[1].covariance.reset();
+  result = landfall::checkConsistency(frames, landfall::ConsistencyParams());
+  EXPECT_FALSE(result.covariance.has_value());
+  EXPECT_NEAR(result.fused.x, 1.04, 1e-12);
+
+  // The decision passes it on.
+  landfall::DecisionInput input;
+  input.required_frames = 2;
+  for (const Mat3 & c : {sure_x, sure_y}) {
+    FrameOutcome frame;
+    frame.deepest_stage = Stage::kScanPassed;
+    frame.estimate = FrameEstimate{landfall::compose(map_T_odom, odom), odom, c};
+    input.frames.push_back(frame);
+  }
+  const auto decision = landfall::decide(input, landfall::ConsistencyParams());
+  ASSERT_EQ(decision.status, Status::kSuccess);
+  ASSERT_TRUE(decision.covariance.has_value());
+  EXPECT_TRUE(decision.covariance->isApprox(*decision.consistency.covariance));
 }
 
 TEST(Decision, CoversEveryStatus)

@@ -26,13 +26,19 @@
 //
 // For `landfall query` results it scores every request with the --world-to-map transform alone (a
 // fit would absorb the errors being measured): success within 0.25 m / 5 deg, wrong pose beyond
-// 0.5 m or 10 deg (plan §11, M3 and M7).
+// 0.5 m or 10 deg (plan §11, M3 and M7). Where the results carry the pose's covariance (cov_*
+// columns) it also says how honest that is: the share of errors inside its 95 % region. --errors
+// writes every scored pose with its error and covariance.
 
+#include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -151,9 +157,62 @@ std::vector<std::string> splitCsv(const std::string & line)
   return fields;
 }
 
+// Errors against a pose's covariance: inside its 95 % region (chi-square 2: 5.99 for x and y;
+// 1.96 standard deviations for yaw; chi-square 3: 7.81 for all three) and the normalized squared
+// errors, which average 2, 1 and 3 when the covariance is honest.
+struct CovarianceCheck
+{
+  std::size_t poses = 0;
+  std::size_t position_inside = 0;
+  std::size_t yaw_inside = 0;
+  std::size_t all_inside = 0;
+  double position_nees = 0.0;
+  double yaw_nees = 0.0;
+  double all_nees = 0.0;
+  std::vector<double> major;  ///< m, the x-y ellipse's long axis
+  std::vector<double> minor;
+  std::vector<double> yaw_std;  ///< rad
+
+  void add(const landfall::Vec3 & e, const landfall::Mat3 & c)
+  {
+    const Eigen::Matrix2d xy = c.topLeftCorner<2, 2>();
+    const double position = e.head<2>().dot(xy.ldlt().solve(e.head<2>()));
+    const double yaw = e.z() * e.z() / c(2, 2);
+    const double all = e.dot(c.ldlt().solve(e));
+    ++poses;
+    position_inside += position <= 5.991 ? 1 : 0;
+    yaw_inside += yaw <= 1.96 * 1.96 ? 1 : 0;
+    all_inside += all <= 7.815 ? 1 : 0;
+    position_nees += position;
+    yaw_nees += yaw;
+    all_nees += all;
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> axes(xy);
+    minor.push_back(std::sqrt(std::max(0.0, axes.eigenvalues()(0))));
+    major.push_back(std::sqrt(std::max(0.0, axes.eigenvalues()(1))));
+    yaw_std.push_back(std::sqrt(std::max(0.0, c(2, 2))));
+  }
+
+  void print() const
+  {
+    if (poses == 0) {
+      return;
+    }
+    const auto n = static_cast<double>(poses);
+    const auto share = [n](std::size_t k) { return 100.0 * static_cast<double>(k) / n; };
+    std::printf(
+      "  covariance (%zu poses): inside its 95 %% region: position %.1f %%, yaw %.1f %%, all %.1f "
+      "%%; mean normalized squared error %.2f (of 2), %.2f (of 1), %.2f (of 3)\n",
+      poses, share(position_inside), share(yaw_inside), share(all_inside), position_nees / n,
+      yaw_nees / n, all_nees / n);
+    printStats("std major", landfall::eval::errorStats(major), 100.0, "cm");
+    printStats("std minor", landfall::eval::errorStats(minor), 100.0, "cm");
+    printStats("std yaw", landfall::eval::errorStats(yaw_std), 180.0 / M_PI, "deg");
+  }
+};
+
 void evaluateQueries(
   const std::string & path, const landfall::eval::Trajectory & truth, int64_t max_gap_ns,
-  const Pose2 & world_to_map)
+  const Pose2 & world_to_map, std::ofstream * errors)
 {
   std::ifstream file(path);
   if (!file) {
@@ -170,6 +229,21 @@ void evaluateQueries(
     }
     throw std::runtime_error("query results lack column " + name);
   };
+  const auto optional_column = [&header](const std::string & name) -> std::optional<std::size_t> {
+    const auto it = std::find(header.begin(), header.end(), name);
+    if (it == header.end()) {
+      return std::nullopt;
+    }
+    return static_cast<std::size_t>(it - header.begin());
+  };
+  // x-x, x-y, x-yaw, y-y, y-yaw, yaw-yaw (`landfall query` since PLAN V62)
+  std::vector<std::size_t> c_cov;
+  for (const char * name : {"cov_xx", "cov_xy", "cov_xyaw", "cov_yy", "cov_yyaw", "cov_yawyaw"}) {
+    if (const auto c = optional_column(name)) {
+      c_cov.push_back(*c);
+    }
+  }
+  const std::size_t c_request = column("request");
   const std::size_t c_status = column("status");
   const std::size_t c_stamp = column("pose_stamp_ns");
   const std::size_t c_x = column("x");
@@ -183,6 +257,7 @@ void evaluateQueries(
   std::map<std::string, std::size_t> statuses;
   std::vector<double> position;
   std::vector<double> yaw;
+  CovarianceCheck covariance;
   while (std::getline(file, line)) {
     const auto f = splitCsv(line);
     if (f.size() < header.size() - 1) {
@@ -208,6 +283,28 @@ void evaluateQueries(
     yaw.push_back(e_yaw);
     accurate += e_position <= 0.25 && deg(e_yaw) <= 5.0 ? 1 : 0;
     wrong += e_position > 0.5 || deg(e_yaw) > 10.0 ? 1 : 0;
+    const landfall::Vec3 e(
+      got.x - expected.x, got.y - expected.y, landfall::normalizeAngle(got.yaw - expected.yaw));
+    std::optional<landfall::Mat3> c;
+    if (c_cov.size() == 6 && !f[c_cov[0]].empty()) {
+      const auto v = [&f, &c_cov](std::size_t i) { return std::stod(f[c_cov[i]]); };
+      c = (landfall::Mat3() << v(0), v(1), v(2), v(1), v(3), v(4), v(2), v(4), v(5)).finished();
+      covariance.add(e, *c);
+    }
+    if (errors != nullptr) {
+      *errors << path << "," << f[c_request] << "," << stamp << "," << got.x << "," << got.y << ","
+              << got.yaw << "," << expected.x << "," << expected.y << "," << expected.yaw << ","
+              << e.x() << "," << e.y() << "," << e.z();
+      for (int i = 0; i < 6; ++i) {
+        *errors << ",";
+        if (c) {
+          const int row = i < 3 ? 0 : (i < 5 ? 1 : 2);
+          const int col = i < 3 ? i : (i < 5 ? i - 2 : 2);
+          *errors << (*c)(row, col);
+        }
+      }
+      *errors << "\n";
+    }
   }
   std::printf("queries %s: %zu requests;", path.c_str(), requests);
   for (const auto & [status, count] : statuses) {
@@ -226,6 +323,7 @@ void evaluateQueries(
     printStats("position", landfall::eval::errorStats(position), 100.0, "cm");
     printStats("yaw", landfall::eval::errorStats(yaw), 180.0 / M_PI, "deg");
   }
+  covariance.print();
 }
 
 }  // namespace
@@ -241,6 +339,7 @@ int main(int argc, char ** argv)
   std::vector<std::string> staging;
   std::vector<std::string> databases;
   std::vector<std::string> queries;
+  std::string errors_path;
   Pose2 nominal{8.0, 0.0, 0.0};
   // Longest ground-truth gap to interpolate across (fixtures thin it out to 10 Hz).
   int64_t max_gap_ns = 250'000'000;
@@ -267,6 +366,8 @@ int main(int argc, char ** argv)
         databases.push_back(next());
       } else if (a == "--queries") {
         queries.push_back(next());
+      } else if (a == "--errors") {
+        errors_path = next();
       } else if (a == "--max-gap") {
         max_gap_ns = static_cast<int64_t>(std::stod(next()) * 1e9);
       } else if (a == "--world-to-map") {
@@ -285,7 +386,7 @@ int main(int argc, char ** argv)
       << "evaluate_poses: " << e.what()
       << "\nusage: evaluate_poses --bag BAG [--gt-topic T] [--gt-child F]\n"
          "         [--world-to-map X Y YAW_DEG] [--max-gap S] [--staging DIR]... [--db DB]...\n"
-         "         [--amcl-topic T] [--queries CSV]...\n";
+         "         [--amcl-topic T] [--queries CSV]... [--errors OUT.csv]\n";
     return 2;
   }
 
@@ -373,8 +474,18 @@ int main(int argc, char ** argv)
     if (!amcl_topic.empty()) {
       evaluate("AMCL " + amcl_topic, amcl, truth, max_gap_ns, nominal, true);
     }
+    std::ofstream errors;
+    if (!errors_path.empty()) {
+      errors.open(errors_path);
+      if (!errors) {
+        throw std::runtime_error("cannot write " + errors_path);
+      }
+      errors.precision(9);
+      errors << "queries,request,stamp_ns,x,y,yaw,truth_x,truth_y,truth_yaw,error_x,error_y,"
+                "error_yaw,cov_xx,cov_xy,cov_xyaw,cov_yy,cov_yyaw,cov_yawyaw\n";
+    }
     for (const auto & path : queries) {
-      evaluateQueries(path, truth, max_gap_ns, nominal);
+      evaluateQueries(path, truth, max_gap_ns, nominal, errors_path.empty() ? nullptr : &errors);
     }
   } catch (const std::exception & e) {
     std::cerr << "evaluate_poses: error: " << e.what() << "\n";

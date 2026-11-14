@@ -30,7 +30,7 @@ SanityResult checkSanity(
   }
   SanityResult r;
   r.T_map_base = input.T_map_cam * input.T_base_cam.inverse();
-  r.pose = toPose2(r.T_map_base);
+  r.pose = input.pose.value_or(toPose2(r.T_map_base));
   r.num_inliers = static_cast<int>(input.inlier_pixels.size());
   r.inlier_ratio = input.num_correspondences > 0
                      ? static_cast<double>(r.num_inliers) / input.num_correspondences

@@ -385,16 +385,37 @@ TEST_F(RelocalizerNodeTest, LocalizesPublishesAndDryRuns)
   EXPECT_EQ(result.pose.header.frame_id, "map");
   h.spinFor(std::chrono::milliseconds(300));
   ASSERT_EQ(h.poses.size(), 1U);
-  EXPECT_EQ(h.poses.front().pose.covariance[0], 0.25 * 0.25);
   expectNearTruth(h.poses.front(), 0.25, 5.0);
+  // The estimated covariance: x, y and yaw, symmetric, at least the map's error (2.5 cm, 0.2 deg),
+  // and centimetres rather than the fixed 25 cm from landmarks a few metres away. No entry negative:
+  // Nav2's AMCL from Lyrical on rejects the pose otherwise.
+  const auto & c = h.poses.front().pose.covariance;
+  EXPECT_EQ(c[1], c[6]);
+  EXPECT_EQ(c[5], c[30]);
+  EXPECT_EQ(c[11], c[31]);
+  for (const double entry : c) {
+    EXPECT_GE(entry, 0.0);
+  }
+  EXPECT_GE(c[0], 0.025 * 0.025);
+  EXPECT_GE(c[7], 0.025 * 0.025);
+  EXPECT_GE(c[35], std::pow(0.2 * M_PI / 180.0, 2));
+  EXPECT_LT(c[0] + c[7], 2.0 * 0.1 * 0.1);
+  EXPECT_LT(c[35], std::pow(2.0 * M_PI / 180.0, 2));
+  EXPECT_GT(c[0] * c[7] - c[1] * c[1], 0.0);
+  EXPECT_EQ(c[14] + c[21] + c[28], 0.0);  // z, roll and pitch aren't estimated
   ASSERT_FALSE(h.statuses.empty());
   EXPECT_EQ(h.statuses.back().status, Result::SUCCESS);
 
-  // A dry run runs every check and publishes nothing.
+  // A dry run runs every check and publishes nothing; with output.covariance fixed its pose has
+  // the configured circle.
+  ASSERT_TRUE(h.node->set_parameter(rclcpp::Parameter("output.covariance", "fixed")).successful);
   const Result dry = h.call(2, true, 30);
   ASSERT_EQ(dry.status, Result::SUCCESS) << dry.message;
   EXPECT_FALSE(dry.published);
   expectNearTruth(dry.pose, 0.25, 5.0);
+  EXPECT_EQ(dry.pose.pose.covariance[0], 0.25 * 0.25);
+  EXPECT_EQ(dry.pose.pose.covariance[1], 0.0);
+  EXPECT_DOUBLE_EQ(dry.pose.pose.covariance[35], std::pow(5.0 * M_PI / 180.0, 2));
   h.spinFor(std::chrono::milliseconds(300));
   EXPECT_EQ(h.poses.size(), 1U);
 }
@@ -794,6 +815,10 @@ TEST_F(RelocalizerNodeTest, ValidatesParameters)
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("sanity.min_inliers", 2)).successful);
   EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("pnp.solver", "p3p")).successful);
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("pnp.solver", "epnp")).successful);
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("pnp.refinement", "free")).successful);
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("pnp.refinement", "planar")).successful);
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("output.covariance", "fixed")).successful);
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("output.covariance", "large")).successful);
   // Structural parameters are read-only.
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("database_path", "/tmp/x.db")).successful);
   EXPECT_EQ(node->shutdown().id(), State::PRIMARY_STATE_FINALIZED);

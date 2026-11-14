@@ -73,6 +73,8 @@ struct Decision
   Status status = Status::kNoMatch;
   std::string message;
   std::optional<Pose2> pose;  ///< map_T_base at the last valid frame; SUCCESS only
+  /// Of `pose` (x, y, yaw), when every frame came with one (ConsistencyResult::covariance).
+  std::optional<Mat3> covariance;
   ConsistencyResult consistency;
   int frames_used = 0;
 };

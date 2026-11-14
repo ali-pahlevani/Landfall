@@ -70,7 +70,19 @@ struct LocalizerParams
   ScanCheckMode scan_mode = ScanCheckMode::kRequired;
   ScanCheckParams scan;
   bool refine_with_scan = false;  ///< use the scan check's best pose of its search window
-  int threads = 0;                ///< places solved in parallel; 0: hardware concurrency
+  /// The pose's last refinement (plan §7.8, V62): on the floor (x, y and yaw; the base's height
+  /// and tilt held near the floor and gravity within the two deviations below), or free (6 DoF).
+  bool refine_on_floor = true;
+  double floor_height_std = 0.03;   ///< m
+  double floor_tilt_std_deg = 1.0;  ///< deg
+  /// A pose's covariance: its refinement's, widened by this factor (the inliers' landmarks share
+  /// the map's errors, so they fix the pose less than their reprojection noise says), plus the
+  /// map's own error (its keyframe poses and landmarks). Calibrated on the warehouse and depot
+  /// simulations (V62).
+  double vision_std_scale = 2.0;
+  double map_std_xy = 0.025;     ///< m
+  double map_std_yaw_deg = 0.2;  ///< deg
+  int threads = 0;               ///< places solved in parallel; 0: hardware concurrency
 };
 
 /// One query image with what the robot knew at its stamp.
@@ -103,7 +115,14 @@ struct Hypothesis
   SanityResult sanity;  ///< metrics; valid when solved
   bool scan_checked = false;
   ScanCheckResult scan;  ///< valid when scan_checked
-  Pose2 pose;            ///< base pose: the sanity check's, refined by the scan check if enabled
+  /// Base pose: the floor refinement's (LocalizerParams::refine_on_floor) or the free PnP
+  /// solution's, replaced by the scan check's best if scan_check.refine_pose.
+  Pose2 pose;
+  /// Of `pose` (x, y, yaw): the refinement's, from the inliers' geometry and reprojection noise,
+  /// plus the map's own error (LocalizerParams::map_std_xy, map_std_yaw_deg). Still the vision
+  /// pose's when scan_check.refine_pose replaces it: the scan's best pose has none of its own.
+  Mat3 covariance = Mat3::Zero();
+  double noise_px = 0.0;  ///< reprojection noise of the inliers, estimated at the pose
   std::vector<Vec2> inlier_pixels;
   std::vector<Vec2> outlier_pixels;
   int cluster = -1;  ///< index into FrameResult::clusters for valid hypotheses
@@ -152,6 +171,7 @@ struct FrameResult
   /// cluster has fewer than sanity.min_inliers inliers and the scan doesn't tell its pose apart:
   /// it is refused (its hypothesis says why), as is `best`.
   std::optional<Pose2> pose;
+  Mat3 covariance = Mat3::Zero();  ///< of `pose`, when set (its hypothesis')
   /// Where the scan fits better than at that pose (scan_check.check_alternatives): the place
   /// vision found is then one of two that look alike, and the frame is ambiguous.
   std::optional<ScanAlternative> scan_alternative;

@@ -67,13 +67,20 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `matching.ratio` | double | `0.8` | [0.5, 1] | at runtime | Lowe ratio for binary descriptors (with a mutual check) |
 | `output.amcl_node` | string | `"amcl"` |  | at startup | AMCL node that must be active before publishing; empty: don't check |
 | `output.compensate_motion` | bool | `true` |  | at runtime | Move the pose to the latest odometry before publishing |
+| `output.covariance` | string | `"estimated"` |  | at runtime | Covariance of the published pose: estimated (from the pose's solution, plus the map's error) or fixed (output.std_xy, output.std_yaw_deg) |
+| `output.map_std_xy` | double | `0.025` | [0, 5] | at runtime | The map's own error in x and y (its keyframe poses and landmarks), added to the estimated covariance, metres |
+| `output.map_std_yaw_deg` | double | `0.2` | [0, 90] | at runtime | The map's own error in yaw, added to the estimated covariance, degrees |
 | `output.mode` | string | `"topic"` |  | at startup | topic (publish output.topic) or service (call AMCL's output.service) |
 | `output.service` | string | `"/set_initial_pose"` |  | at startup | nav2_msgs/srv/SetInitialPose service |
-| `output.std_xy` | double | `0.25` | [0.01, 5] | at runtime | Standard deviation in x and y of the published pose, metres |
-| `output.std_yaw_deg` | double | `5` | [0.1, 90] | at runtime | Standard deviation in yaw of the published pose, degrees |
+| `output.std_xy` | double | `0.25` | [0.01, 5] | at runtime | Standard deviation in x and y of the published pose with output.covariance fixed, metres |
+| `output.std_yaw_deg` | double | `5` | [0.1, 90] | at runtime | Standard deviation in yaw of the published pose with output.covariance fixed, degrees |
 | `output.topic` | string | `"/initialpose"` |  | at startup | geometry_msgs/PoseWithCovarianceStamped topic |
+| `output.vision_std_scale` | double | `2` | [1, 10] | at runtime | Widens what a pose's inliers fix (their landmarks share the map's errors) in the estimated covariance |
+| `pnp.floor_height_std` | double | `0.03` | [0.001, 1] | at runtime | How well the base's height above the floor is known (pnp.refinement floor), metres |
+| `pnp.floor_tilt_std_deg` | double | `1` | [0.05, 30] | at runtime | How well the base's tilt is known from gravity: the IMU's, or a flat floor's (pnp.refinement floor), degrees |
 | `pnp.max_iterations` | integer | `10000` | [100, 1000000] | at runtime | RANSAC iterations |
 | `pnp.max_reproj_error_px` | double | `0` | [0, 50] | at runtime | RANSAC inlier threshold in pixels; 0: 1 % of the image width |
+| `pnp.refinement` | string | `"floor"` |  | at runtime | Last refinement of a pose: floor (x, y and yaw; the base's height and tilt held near the floor and gravity) or free (6 DoF) |
 | `pnp.solver` | string | `"upright_then_p3p"` |  | at runtime | upright, p3p, upright_then_p3p or opencv |
 | `pnp.success_prob` | double | `0.9999` | [0.9, 0.999999] | at runtime | RANSAC confidence |
 | `query.timeout` | double | `10` | [1, 120] | at runtime | Seconds for a whole request, frame collection included |

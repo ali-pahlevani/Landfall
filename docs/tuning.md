@@ -117,6 +117,32 @@ poses before what it does to successes. All parameters are listed in `docs/param
   repeated structure (boxes, shelving) adds many wrong 2D–3D matches around a right pose; in the
   warehouse 0.25 refused 28 right poses that 0.1 kept, and no wrong one passed.
 
+## The published pose and covariance
+
+- **Floor refinement** (`pnp.refinement`, floor; `pnp.floor_height_std`, 3 cm;
+  `pnp.floor_tilt_std_deg`, 1°). The base's height and tilt are held near the floor and gravity
+  within these. Widen them for a robot that rocks (a forklift braking with a load) or a floor that
+  isn't flat; with an IMU the tilt is the IMU's. `free` keeps the 6-DoF PnP solution, as before
+  PLAN V62. The sanity checks measure the free solution's height and tilt either way; the LiDAR
+  check and the clustering take the refined pose, which in simulation changed 6 of 1,791
+  requests (5 into a success).
+- **Covariance** (`output.covariance`, estimated; `output.vision_std_scale`, 2; `output.map_std_xy`,
+  2.5 cm; `output.map_std_yaw_deg`, 0.2°). Honest when about 95 % of the errors lie inside its 95 %
+  region. These defaults held 96.4 % of the positions in the warehouse (a map with walls drawn
+  twice), 99.0 % in the depot (a clean map, where they are about a quarter wider than the errors)
+  and 92.9 % in the depot's kidnap benchmark (random placements; most errors outside it came with
+  particular places, as before V62). The published cover without negative entries, which Nav2's AMCL
+  on Lyrical requires, is a little wider (96.8 and 99.1 %); the estimate is what to tune. Measure
+  your own: replay a recording with ground truth through `landfall query` and score it with
+  `evaluate_poses` (it prints that share), or compare the shadow log's poses with a localization you
+  trust. Raise `output.map_std_xy` if fewer errors fall inside (a less accurate map, camera or time
+  stamps), lower it if nearly all do and the ellipses are much larger than the errors.
+  `output.vision_std_scale` widens what the landmarks fix: it matters for poses from far or few
+  landmarks, whose errors grow with it. `fixed` publishes `output.std_xy` and `output.std_yaw_deg`
+  (25 cm, 5°), as before V62: wide enough for any pose that passes, but the same for every pose. In
+  the depot benchmark AMCL ended as close to the truth from either (a median 1 cm,
+  `docs/benchmark.md`), also after the poses that lay outside their estimated ellipse.
+
 ## Triggers and monitors
 
 - **Auto trigger** (`auto_trigger.*`): fires when the localization reports itself uncertain for

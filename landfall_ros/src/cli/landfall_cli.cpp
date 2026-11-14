@@ -181,6 +181,14 @@ std::string fixed(double value, int decimals)
   return buffer;
 }
 
+// Four significant digits at any scale (covariances span many orders of magnitude).
+std::string scientific(double value)
+{
+  char buffer[64];
+  std::snprintf(buffer, sizeof(buffer), "%.4g", value);
+  return buffer;
+}
+
 void printCounts(const std::string & what, const landfall::GateCounts & c)
 {
   std::cerr << "  " << what << ": " << c.frames_seen << " frames, " << c.keyframes
@@ -569,6 +577,21 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
     l.pnp_max_iterations = static_cast<int>(number());
   } else if (name == "pnp.success_prob") {
     l.pnp_success_prob = number();
+  } else if (name == "pnp.refinement") {
+    if (value != "floor" && value != "free") {
+      throw UsageError("--set pnp.refinement: floor or free");
+    }
+    l.refine_on_floor = value == "floor";
+  } else if (name == "pnp.floor_height_std") {
+    l.floor_height_std = number();
+  } else if (name == "pnp.floor_tilt_std_deg") {
+    l.floor_tilt_std_deg = number();
+  } else if (name == "output.vision_std_scale") {
+    l.vision_std_scale = number();
+  } else if (name == "output.map_std_xy") {
+    l.map_std_xy = number();
+  } else if (name == "output.map_std_yaw_deg") {
+    l.map_std_yaw_deg = number();
   } else if (name == "sanity.min_inliers") {
     l.sanity.min_inliers = static_cast<int>(number());
   } else if (name == "sanity.min_inliers_unique") {
@@ -737,7 +760,8 @@ int query(const std::vector<std::string> & argv)
          "consistency_m,consistency_deg,scan_hit_ratio,scan_violation_ratio,features,places,"
          "best_x,best_y,best_yaw,best_score,"
          "runner_up_x,runner_up_y,runner_up_yaw,runner_up_score,message,rejection,"
-         "alternative_gap,twin_distance,twin_nats,twin_support,unique\n";
+         "alternative_gap,twin_distance,twin_nats,twin_support,unique,"
+         "cov_xx,cov_xy,cov_xyaw,cov_yy,cov_yyaw,cov_yawyaw,noise_px\n";
 
   std::map<std::string, int> statuses;
   std::vector<double> frame_seconds;
@@ -812,7 +836,22 @@ int query(const std::vector<std::string> & argv)
         r.last_frame.hypotheses[static_cast<std::size_t>(clusters.front().members.front())];
       csv << fixed(best.twin_support, 3) << ",";
     }
-    csv << (u.twin_checked ? (u.unique ? "1" : "0") : "") << "\n";
+    csv << (u.twin_checked ? (u.unique ? "1" : "0") : "") << ",";
+    // The pose's estimated covariance (x, y, yaw: m², m·rad, rad²; the node publishes it without
+    // its negative correlations, coverWithoutNegativeEntries), and the reprojection noise of the
+    // last valid frame's winner.
+    if (decision.pose && decision.covariance) {
+      const landfall::Mat3 & c = *decision.covariance;
+      csv << scientific(c(0, 0)) << "," << scientific(c(0, 1)) << "," << scientific(c(0, 2)) << ","
+          << scientific(c(1, 1)) << "," << scientific(c(1, 2)) << "," << scientific(c(2, 2)) << ",";
+    } else {
+      csv << ",,,,,,";
+    }
+    if (decision.pose && !r.valid_frames.empty() && r.valid_frames.back().best >= 0) {
+      const auto & frame = r.valid_frames.back();
+      csv << fixed(frame.hypotheses[static_cast<std::size_t>(frame.best)].noise_px, 2);
+    }
+    csv << "\n";
   };
 
   const auto counts = landfall::ros::queryBagImages(
@@ -833,7 +872,7 @@ int query(const std::vector<std::string> & argv)
       outcome.scan_elsewhere = result.scan_alternative.has_value();
       outcome.scan_twin = result.twin_ambiguous;
       if (result.pose && !outcome.ambiguous) {
-        outcome.estimate = landfall::FrameEstimate{*result.pose, odom_T_base};
+        outcome.estimate = landfall::FrameEstimate{*result.pose, odom_T_base, result.covariance};
         current->valid_stamps.push_back(stamp);
         current->valid_frames.push_back(result);
       }

@@ -198,6 +198,36 @@ database. The tables are `summarize_benchmark`'s output; the runner's CSV files 
   Six and eight placements turned from misses into successes, none the other way. The nominal
   and lighting rows weren't re-run. The result files are in
   [`landfall_benchmark/results/seed2027_v61/`](../landfall_benchmark/results/seed2027_v61/).
+- **Since PLAN V62** (2026-11-14) each pose is refined on the floor and published with a
+  covariance estimated for it, instead of a fixed 25 cm and 5° (`docs/relocalization.md`). The same
+  two conditions, re-run the same way:
+
+  | Scenario | Method | Placements | Success | Wrong (95 % upper bound) | Inaccurate | Miss | First heading | Time to localize (median / p90) | Published error (median) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | added_objects (classical) | landfall | 100 | 50.0 % | 0 (3.6 %) | 0.0 % | 50.0 % | 22.0 % | 5.9 s / 16.5 s | 3.8 cm |
+  | crates_removed (classical) | landfall | 100 | 76.0 % | 0 (3.6 %) | 0.0 % | 24.0 % | 33.0 % | 5.9 s / 21.7 s | 3.1 cm |
+
+  Four placements changed outcome, all of them at a fifth to eighth heading: with the goods, two
+  successes became misses; with the crates removed, one turned each way. The simulation doesn't
+  repeat itself exactly: 30 and 28 placements went through other statuses over their headings
+  than in the V61 run. At one of the four, the heading that succeeded in the V61 run found no match
+  this time, which happens before the refinement runs. On recorded frames, where the input is the
+  same, the refinement changed 6 of 1,791 requests, 5 of them into a success
+  (`docs/relocalization.md`).
+
+  117 of the 126 published poses (92.9 %) lay inside their covariance's 95 % ellipse, whose long
+  axis had a median standard deviation of 3.8 cm (yaw 0.25°). These runs published the estimate
+  as it was; since then the relocalizer publishes it without negative correlations, which Nav2's
+  AMCL on Lyrical rejects, and that only widens it (`docs/relocalization.md`, *The published
+  covariance*). The 9 outside were 9 to 17 cm off,
+  against standard deviations of 3 to 5 cm. At 7 of those placements the V61 run's pose was as far
+  off (9 to 18 cm), so the error comes with the place, from the database's map there, which a
+  covariance estimated from one pose's landmarks doesn't see (T-013). AMCL starts its particles
+  from the published covariance; it ended as close to the truth as with the fixed one: a median
+  1.0 and 0.9 cm after converging, against 1.1 and 0.7 cm in the V61 run (where both runs
+  succeeded, more than 5 mm closer at 15 and 15 placements, farther at 7 and 16). After the 9 poses
+  outside their ellipse it ended 0.0 to 1.4 cm off. The result files are in
+  [`landfall_benchmark/results/seed2027_v62/`](../landfall_benchmark/results/seed2027_v62/).
 - **Runs.** Two runs were interrupted when the host went down and resumed at the next placement
   (`first_placement`) with the same build, models and database: `learned_cpu` nominal after
   placement 8, `learned_cpu` lighting after placement 21. The runner's startup fallback (above)
@@ -218,6 +248,7 @@ One row per placement; poses in the `map` frame, angles in degrees, empty where 
 | `prior_*` | the localization's pose when the robot was put there (where it believed it was) |
 | `outcome`, `attempts`, `status`, `message` | success, wrong, inaccurate or miss; the requests made (headings); the last request's status and message. AMCL: `CLAIMS_POSE` or `UNCERTAIN`; watchdog: `NOT_DETECTED` when it published nothing |
 | `published`, `published_*`, `published_error_*` | the published pose, and its error against the ground truth at its stamp |
+| `published_std_m`, `published_std_deg`, `published_error_sigma` | the published covariance: the long axis of its x-y ellipse and its yaw (standard deviations), and the position error in its standard deviations (inside its 95 % ellipse up to 2.45; since PLAN V62) |
 | `truth_drift_*` | how far the robot moved between settling and the published pose's stamp |
 | `amcl_*` | AMCL's estimate after the turn that lets it converge (Landfall, watchdog) or after its two turns (AMCL), its reported standard deviation and its error |
 | `time_to_localize_s`, `detection_s` | from the first request to the pose (Landfall, AMCL); from the kidnap to the watchdog's relocalization |

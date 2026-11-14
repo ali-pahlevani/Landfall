@@ -60,7 +60,7 @@ learned backends are in use (`docs/models.md`).
 | `registry.hpp`, `backend_options.hpp`, `interfaces/` | the backends' interfaces and their explicit registry (classical built in, ONNX registered by `landfall_core_onnx`) |
 | `features/` | ORB and SIFT with grid bucketing, the vocabulary tree (bag of words), retrieval, matchers |
 | `onnx/` | XFeat, EigenPlaces and MegaLoc on ONNX Runtime |
-| `geometry/` | PoseLib's solvers (upright 2-point with gravity, P3P) in LO-RANSAC, two-view verification, gravity |
+| `geometry/` | PoseLib's solvers (upright 2-point with gravity, P3P) in LO-RANSAC, the refinement on the floor and its covariance, two-view verification, gravity |
 | `build/` | pair selection, tracks, triangulation, the pose-prior bundle adjustment, the build report |
 | `db/` | the SQLite schema, migrations, blob codecs |
 | `grid/` | the map loader (nav2_map_server's rules), the likelihood field, the scan verifier and its search for other places the scan fits |
@@ -70,12 +70,13 @@ learned backends are in use (`docs/models.md`).
 | `util/` | SHA-256, JSON, a thread pool |
 
 The query pipeline per frame (`query/localizer.hpp`): retrieve the top keyframes, group them into
-places, match each place's landmarks, solve, check the pose (sanity), check it against the scan,
+places, match each place's landmarks, solve, refine the pose on the floor with its covariance
+(`geometry/floor_refinement.hpp`), check the pose (sanity), check it against the scan,
 cluster the hypotheses and decide whether the frame is ambiguous: two places pass, the scan fits
 another place of the map clearly better than the winner's, or the winner's inliers came mostly from
 keyframes the build couldn't place (their scans fitted a second place). A winner with fewer than
 `sanity.min_inliers` inliers stands only where the scan fits nowhere else nearly as well.
-`query/decision.hpp` then decides a request from its frames.
+`query/decision.hpp` then decides a request from its frames and fuses their poses and covariances.
 
 ## The relocalizer node
 

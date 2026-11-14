@@ -15,6 +15,7 @@
 #ifndef LANDFALL_QUERY_SANITY_HPP_
 #define LANDFALL_QUERY_SANITY_HPP_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,9 +47,11 @@ struct SanityParams
 /// One solved hypothesis, in the terms the checks need.
 struct SanityInput
 {
-  Pose3 T_map_cam = Pose3::Identity();   ///< from PnP
+  Pose3 T_map_cam = Pose3::Identity();   ///< from PnP (free): its height and tilt are checked
   Pose3 T_base_cam = Pose3::Identity();  ///< extrinsics at the image stamp
-  GravityEstimate gravity;               ///< gravity in the base frame and ramp state
+  /// The base pose the hypothesis gives (the floor refinement's); unset: T_map_cam's projection.
+  std::optional<Pose2> pose;
+  GravityEstimate gravity;  ///< gravity in the base frame and ramp state
   int num_correspondences = 0;
   std::vector<Vec2> inlier_pixels;
   double mean_reprojection_px = 0.0;
@@ -58,9 +61,9 @@ struct SanityInput
 struct SanityResult
 {
   bool passed = false;
-  std::string reason;  ///< first failed check; empty when passed
-  Pose3 T_map_base = Pose3::Identity();
-  Pose2 pose;  ///< planar projection of T_map_base
+  std::string reason;                    ///< first failed check; empty when passed
+  Pose3 T_map_base = Pose3::Identity();  ///< from T_map_cam
+  Pose2 pose;  ///< SanityInput::pose, else the planar projection of T_map_base
   int num_inliers = 0;
   double inlier_ratio = 0.0;
   double mean_reprojection_px = 0.0;

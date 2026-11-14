@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <vector>
 
 namespace landfall
 {
@@ -24,6 +25,51 @@ namespace landfall
 Pose2 propagate(const Pose2 & map_T_base_then, const Pose2 & odom_then, const Pose2 & odom_now)
 {
   return compose(map_T_base_then, between(odom_then, odom_now));
+}
+
+Mat3 propagateCovariance(
+  const Mat3 & covariance, const Pose2 & map_T_base_then, const Pose2 & odom_then,
+  const Pose2 & odom_now)
+{
+  // d(then ⊕ motion) / d(then): the motion, turned into the map frame, swings with the heading.
+  const Pose2 motion = between(odom_then, odom_now);
+  const double c = std::cos(map_T_base_then.yaw);
+  const double s = std::sin(map_T_base_then.yaw);
+  Mat3 J = Mat3::Identity();
+  J(0, 2) = -s * motion.x - c * motion.y;
+  J(1, 2) = c * motion.x - s * motion.y;
+  // The product's two halves can round apart in the last bit (they did with GCC 13).
+  const Mat3 moved = J * covariance * J.transpose();
+  return 0.5 * (moved + moved.transpose());
+}
+
+Mat3 coverWithoutNegativeEntries(const Mat3 & covariance)
+{
+  const Mat3 symmetric = 0.5 * (covariance + covariance.transpose());
+  Mat3 cover = symmetric;
+  for (int i = 0; i < 3; ++i) {
+    for (int j = i + 1; j < 3; ++j) {
+      const double correlation = symmetric(i, j);
+      if (correlation >= 0.0) {
+        continue;
+      }
+      // Adding [r v_i, |c|; |c|, r v_j] with r = |c| / sqrt(v_i v_j) = |rho| (determinant 0, so
+      // positive semidefinite) cancels the correlation c at the least area; the sum over the pairs
+      // stays positive semidefinite. Without variances to scale by, |c| on both does it too.
+      const double scale = std::sqrt(symmetric(i, i) * symmetric(j, j));
+      if (scale > 0.0) {
+        const double ratio = -correlation / scale;
+        cover(i, i) += ratio * symmetric(i, i);
+        cover(j, j) += ratio * symmetric(j, j);
+      } else {
+        cover(i, i) -= correlation;
+        cover(j, j) -= correlation;
+      }
+      cover(i, j) = 0.0;
+      cover(j, i) = 0.0;
+    }
+  }
+  return cover;
 }
 
 ConsistencyResult checkConsistency(
@@ -44,21 +90,54 @@ ConsistencyResult checkConsistency(
         rotationDistance(predicted, frames[j].map_T_base) * 180.0 / M_PI);
     }
   }
-  // Mean of every estimate moved to the last frame (circular mean for the heading).
+  // Every estimate moved to the last frame.
   const Pose2 & odom_last = frames.back().odom_T_base;
-  double x = 0.0;
-  double y = 0.0;
-  double s = 0.0;
-  double c = 0.0;
+  std::vector<Pose2> poses;
+  std::vector<Mat3> covariances;
   for (const auto & frame : frames) {
-    const Pose2 p = propagate(frame.map_T_base, frame.odom_T_base, odom_last);
-    x += p.x;
-    y += p.y;
-    s += std::sin(p.yaw);
-    c += std::cos(p.yaw);
+    poses.push_back(propagate(frame.map_T_base, frame.odom_T_base, odom_last));
+    if (frame.covariance) {
+      covariances.push_back(
+        propagateCovariance(*frame.covariance, frame.map_T_base, frame.odom_T_base, odom_last));
+    }
   }
   const auto n = static_cast<double>(frames.size());
-  result.fused = {x / n, y / n, std::atan2(s, c)};
+  if (covariances.size() == frames.size()) {
+    // Covariance intersection with equal weights: the frames share their landmarks and so their
+    // errors, by an unknown amount; this fusion stays consistent whatever it is (frames of one
+    // view, alike, give one frame's covariance, not a third of it), and weighs each frame by what
+    // it fixes, e.g. along a corridor.
+    Mat3 information = Mat3::Zero();
+    Vec3 weighted = Vec3::Zero();
+    const Pose2 & reference = poses.front();
+    for (std::size_t i = 0; i < poses.size(); ++i) {
+      const Mat3 frame_information = covariances[i].inverse() / n;
+      const Vec3 offset(
+        poses[i].x - reference.x, poses[i].y - reference.y,
+        normalizeAngle(poses[i].yaw - reference.yaw));
+      information += frame_information;
+      weighted += frame_information * offset;
+    }
+    const Mat3 covariance = information.inverse();
+    const Vec3 offset = covariance * weighted;
+    result.fused = {
+      reference.x + offset.x(), reference.y + offset.y(),
+      normalizeAngle(reference.yaw + offset.z())};
+    result.covariance = 0.5 * (covariance + covariance.transpose());
+  } else {
+    // The mean (circular for the heading).
+    double x = 0.0;
+    double y = 0.0;
+    double s = 0.0;
+    double c = 0.0;
+    for (const Pose2 & p : poses) {
+      x += p.x;
+      y += p.y;
+      s += std::sin(p.yaw);
+      c += std::cos(p.yaw);
+    }
+    result.fused = {x / n, y / n, std::atan2(s, c)};
+  }
   result.consistent = result.max_translation_error <= params.max_translation_error &&
                       result.max_rotation_error_deg <= params.max_rotation_error_deg;
   return result;
@@ -147,6 +226,7 @@ Decision decide(const DecisionInput & input, const ConsistencyParams & consisten
   }
   decision.status = Status::kSuccess;
   decision.pose = decision.consistency.fused;
+  decision.covariance = decision.consistency.covariance;
   return decision;
 }
 

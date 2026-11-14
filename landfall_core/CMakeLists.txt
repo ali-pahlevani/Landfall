@@ -42,6 +42,7 @@ add_library(landfall_core SHARED
   src/features/opencv_features.cpp
   src/features/retrieval.cpp
   src/features/vocab_tree.cpp
+  src/geometry/floor_refinement.cpp
   src/geometry/gravity.cpp
   src/geometry/pnp.cpp
   src/geometry/two_view.cpp
@@ -176,6 +177,7 @@ if(BUILD_TESTING)
   landfall_core_test(test_features TIMEOUT 300)
   landfall_core_test(test_vocab_tree TIMEOUT 300)
   landfall_core_test(test_pnp TIMEOUT 600)
+  landfall_core_test(test_floor_refinement)
   landfall_core_test(test_triangulation TIMEOUT 300 LIBRARIES landfall_core_build)
   landfall_core_test(test_query)
   landfall_core_test(test_thread_pool)

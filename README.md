@@ -29,23 +29,31 @@ places, the same in every row, without its localization knowing, and has to get 
 |---|---|---|---|
 | as mapped | **93 %**, 0 wrong | 78 %, 0 wrong | 6 %, **83 wrong** |
 | other light | 91 %, 0 wrong | 77 %, 0 wrong | |
-| nine stacks of goods the map doesn't have | 52 %\*, 0 wrong | 44 %, 0 wrong | 6 %, 83 wrong |
+| nine stacks of goods the map doesn't have | 50 %\*, 0 wrong | 44 %, 0 wrong | 6 %, 83 wrong |
 | crate stacks gone that the map still has | 76 %\*, 0 wrong | | 8 %, 82 wrong |
 
 A success leaves AMCL within 0.25 m and 5° of the truth; a wrong pose is one published (or, for
 AMCL, claimed) more than 0.5 m or 10° off. The rest are misses: no pose, and the robot knows it is
-lost. Landfall published no wrong pose in its 1,000 placements (for one run of 100, the 95 % upper
+lost. Landfall published no wrong pose in its 1,200 placements (for one run of 100, the 95 % upper
 bound of the wrong-pose rate is 3.6 %). Changes the map doesn't have cost successes: the LiDAR
 check refuses poses where the scan no longer fits the map.
 
-\* Re-run (2026-11-14) after the relocalizer started accepting fewer inliers where the LiDAR scan
-tells the place apart (PLAN V61): 46 and 68 % before. The other rows are from M7 (2026-11-08/09).
+\* Re-run (2026-11-14) with the current relocalizer. Since PLAN V61 it accepts fewer inliers where
+the LiDAR scan tells the place apart (46 and 68 % before). Since V62 it refines each pose on the
+floor and publishes the pose's own covariance (52 and 76 % between V61 and V62; with the goods, two
+placements that had needed five and eight headings turned into misses, see
+[`docs/benchmark.md`](docs/benchmark.md)). The other rows are from M7 (2026-11-08/09).
 
 - **Time:** a median 6 s with `classical`, looking around from up to eight headings; 36 % of the
   placements in under a second. About 50 ms per camera frame on a laptop CPU, LiDAR checks
   included.
 - **Kidnap watchdog**, with nothing asked: 85 % of the kidnaps noticed and undone within 90 s
   (median 39 s), no wrong pose, no needless relocalization in 43 minutes.
+- **Covariance:** each pose is published with a covariance estimated for it instead of a fixed
+  25 cm and 5°. In the two re-run rows (\*), its standard deviations had a median of 3.8 cm and
+  0.25°, and 117 of the 126 published poses lay inside their 95 % ellipse. (Since then it is
+  published without negative correlations, which Nav2's AMCL on Lyrical rejects; that only widens
+  it.)
 - **Offline**, images of one recording against another's database: 95 to 99 % of the requests
   succeed, with a median error of 1 to 2 cm
   ([`docs/relocalization.md`](docs/relocalization.md#accuracy-so-far-simulation-m4-re-run-in-m5-and-m7)).
@@ -62,7 +70,8 @@ All of this is simulation; validation on a real robot comes before v1.0.0.
    bundle adjustment. One SQLite file, bound to the occupancy map by its hashes.
 3. **Relocalize** on request (a service, at startup, when AMCL is uncertain, or the kidnap
    watchdog): retrieve similar keyframes, match landmarks, solve the camera pose with gravity, then
-   check it (sanity, LiDAR, ambiguity, odometry consistency) and hand it to AMCL.
+   check it (sanity, LiDAR, ambiguity, odometry consistency) and hand it to AMCL with its
+   covariance.
 4. **Navigate**: Nav2's behavior tree relocalizes before navigating when AMCL is uncertain, and as
    its first recovery.
 

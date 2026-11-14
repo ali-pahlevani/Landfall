@@ -233,6 +233,28 @@ All notable changes to this project are documented here. The format follows
   cross-session requests unchanged (98.7 and 98.2 %, no wrong pose); in the kidnap benchmark,
   unmapped goods 46 -> 52 % and removed crates 68 -> 76 %, no wrong pose
   (`landfall_benchmark/results/seed2027_v61/`).
+- The relocalizer publishes a covariance estimated for each pose instead of a fixed 25 cm and 5°,
+  and refines each pose on the floor (PLAN V62). The last refinement fits the base's x, y and yaw to
+  the inliers with its height and tilt held near the floor and gravity (`pnp.refinement` floor,
+  `pnp.floor_height_std` 3 cm, `pnp.floor_tilt_std_deg` 1°; `free` keeps the PnP solution). The
+  covariance comes from that solution (the inliers' geometry and reprojection noise), widened by
+  `output.vision_std_scale` (2), plus the map's own error (`output.map_std_xy` 2.5 cm,
+  `output.map_std_yaw_deg` 0.2°); a request's frames are fused by covariance intersection
+  (`output.covariance` estimated; `fixed` publishes `output.std_xy` and `output.std_yaw_deg` as
+  before). It is published as a cover without negative entries, because Nav2's AMCL on Lyrical
+  rejects a negative correlation as malformed: a negatively correlated pair loses its correlation
+  and both variances grow by 1 + |ρ|, never narrower than the estimate. `landfall query` writes the
+  estimate (`cov_*`, `noise_px`), `evaluate_poses` scores it against the truth (`--errors` writes
+  every pose's error), the kidnap runner records the published one (`published_std_m`,
+  `published_std_deg`, `published_error_sigma`). Against the truth, 96.4 % of the warehouse's and
+  99.0 % of the depot's position errors lay inside the estimate's 95 % region (the published cover:
+  96.8 and 99.1 %), at 3.6 / 2.8 cm and 2.7 / 2.5 cm (median long / short axis) and 0.2°; success
+  and accuracy didn't change (warehouse 249 right instead of 247, depot 98.7 and 98.6 %, no wrong
+  pose). In the kidnap benchmark, unmapped goods 52 -> 50 % and removed crates 76 -> 76 %, no wrong
+  pose (the four placements that changed did so at their fifth to eighth heading); 92.9 % of the
+  published positions inside the 95 % ellipse (published as estimated: the run came before the
+  cover); AMCL after converging as close as with the fixed covariance
+  (`landfall_benchmark/results/seed2027_v62/`).
 - CI: the Docker images retry their network steps (apt update and downloads, rosdep update and
   install).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.

@@ -29,6 +29,8 @@
 //   ros2 run landfall_benchmark kidnap_runner --ros-args --params-file SCENARIO.yaml
 //     -p method:=landfall -p label:="nominal (classical)" -p output:=results.csv
 
+#include <Eigen/Cholesky>
+#include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -128,6 +130,11 @@ struct Row
   std::optional<Pose2> published;
   double published_error_m = NAN;
   double published_error_deg = NAN;
+  // The published covariance: its x-y ellipse's long axis and yaw (standard deviations), and the
+  // position error in its standard deviations (inside its 95 % ellipse up to 2.45).
+  double published_std_m = NAN;
+  double published_std_deg = NAN;
+  double published_error_sigma = NAN;
   // How far the robot moved between the settled teleport and the published pose's stamp (turns
   // between attempts, or sliding that odometry doesn't see).
   double truth_drift_m = NAN;
@@ -147,7 +154,8 @@ std::string csvHeader()
 {
   return "label,method,index,x,y,yaw_deg,keyframe_distance_m,heading_difference_deg,prior_x,"
          "prior_y,prior_yaw_deg,outcome,attempts,status,published,published_x,published_y,"
-         "published_yaw_deg,published_error_m,published_error_deg,truth_drift_m,truth_drift_deg,"
+         "published_yaw_deg,published_error_m,published_error_deg,published_std_m,"
+         "published_std_deg,published_error_sigma,truth_drift_m,truth_drift_deg,"
          "amcl_x,amcl_y,amcl_yaw_deg,amcl_std_xy,amcl_error_m,amcl_error_deg,time_to_localize_s,"
          "detection_s,false_relocalizations,observed_s,elapsed_s,message";
 }
@@ -182,7 +190,9 @@ std::string csvLine(const Row & r)
     o << ",,,";
   }
   o << number(r.published_error_m, 4) << "," << number(r.published_error_deg, 3) << ","
-    << number(r.truth_drift_m, 4) << "," << number(r.truth_drift_deg, 3) << ",";
+    << number(r.published_std_m, 4) << "," << number(r.published_std_deg, 3) << ","
+    << number(r.published_error_sigma, 2) << "," << number(r.truth_drift_m, 4) << ","
+    << number(r.truth_drift_deg, 3) << ",";
   if (r.amcl) {
     o << fixed(r.amcl->pose.x, 3) << "," << fixed(r.amcl->pose.y, 3) << ","
       << fixed(deg(r.amcl->pose.yaw), 2) << "," << fixed(r.amcl->std_xy, 4) << ",";
@@ -618,9 +628,21 @@ private:
   void recordPublished(Row & row, const Result & result)
   {
     row.published = landfall::toPose2(landfall::ros::toPose3(result.pose.pose.pose));
+    const landfall::Mat3 covariance = landfall::ros::planarCovariance(result.pose.pose.covariance);
+    const Eigen::Matrix2d xy = covariance.topLeftCorner<2, 2>();
+    const Eigen::SelfAdjointEigenSolver<Eigen::Matrix2d> axes(xy);
+    const bool definite = axes.eigenvalues()(0) > 0.0;
+    if (definite) {
+      row.published_std_m = std::sqrt(axes.eigenvalues()(1));
+    }
+    row.published_std_deg = deg(std::sqrt(std::max(0.0, covariance(2, 2))));
     if (const auto truth = truthAt(landfall::ros::toNanoseconds(result.pose.header.stamp))) {
       row.published_error_m = landfall::translationDistance(*row.published, *truth);
       row.published_error_deg = deg(landfall::rotationDistance(*row.published, *truth));
+      if (definite) {
+        const Eigen::Vector2d e(row.published->x - truth->x, row.published->y - truth->y);
+        row.published_error_sigma = std::sqrt(e.dot(xy.ldlt().solve(e)));
+      }
       if (settled_) {
         row.truth_drift_m = landfall::translationDistance(*settled_, *truth);
         row.truth_drift_deg = deg(landfall::rotationDistance(*settled_, *truth));

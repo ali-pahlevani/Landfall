@@ -35,6 +35,7 @@ status and lists the `NOT_READY` reasons with their fixes.
 | `REJECTED_SCAN_CHECK` | the scan doesn't fit the map at the pose: objects the map has are gone (beams see through them), objects the map doesn't have stand within a few metres (goods, pallets: too many short beams), the map is outdated, the scan topic or laser frame is wrong, scan and image clocks differ | `evaluate_scan_check` on a recording; update the map; `scan_check.topic`, `scan_check.max_time_offset` |
 | `REJECTED_CONSISTENCY` | the frames disagree with odometry: wheels slip while turning, or the frames saw different places | fuse the IMU's yaw rate (`docs/sensors.md`); `consistency.max_rotation_error_deg` |
 | `REJECTED_SANITY` | height, tilt, inliers or coverage out of range | wrong extrinsics (the extrinsics monitor reports a camera that moved), a camera on a moving part without its joint in TF |
+| `REJECTED_SANITY` with `the inliers fix no pose (their geometry is degenerate)` | the inliers lie so that no pose fits them better than another (e.g. all on one line of sight) | nothing to change: another frame or heading usually has better ones |
 | `BUSY` | another request runs | the behavior tree node asks again; the startup relocalization may still run |
 
 A pose is published but AMCL doesn't take it:
@@ -43,6 +44,12 @@ A pose is published but AMCL doesn't take it:
   use `always_reset_initial_pose: true` with the startup relocalization.
 - AMCL's warning "Failed to transform initial pose in time" is harmless: it sets the pose as given
   (`docs/nav2_integration.md`).
+
+AMCL takes the pose and then settles a few decimetres away: its particles came from the published
+covariance (`docs/relocalization.md`, *The published covariance*). If the place it settles is the
+right one, the covariance was too narrow for this map: measure it (`docs/tuning.md`) and raise
+`output.map_std_xy`, or publish the fixed values (`output.covariance: fixed`). If AMCL drifts off
+a right pose, look at its own parameters (motion noise, laser model) first.
 
 ## Nav2
 

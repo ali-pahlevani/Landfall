@@ -81,11 +81,11 @@ poses before what it does to successes. All parameters are listed in `docs/param
   must be at least one map cell. Objects that the map doesn't have make short readings (misses),
   which the hit ratio tolerates up to 15 %; objects the map has and the scene lost make beams
   violate the map, and the check refuses. Both cost successes, not wrong poses: in the kidnap
-  benchmark, nine stacks of goods off the map halved the successes (93 to 46 %), almost all through
-  this check, as a stack within about 3 m blocks enough beams, and removed crate stacks cut them to
-  68 % (`docs/benchmark.md`). Where goods stand off the map, measure the true poses' hit ratios on
-  your own recordings before lowering the limit: in the depot, 0.80 already let 9 wrong poses
-  through.
+  benchmark, nine stacks of goods off the map halved the successes (93 to 46 %, 52 % since PLAN
+  V61), almost all through this check, as a stack within about 3 m blocks enough beams, and removed
+  crate stacks cut them to 68 % (76 %; `docs/benchmark.md`). Where goods stand off the map,
+  measure the true poses' hit ratios on your own recordings before lowering the limit: in the
+  depot, 0.80 already let 9 wrong poses through.
 - **Scan alternatives** (`scan_check.check_alternatives`, `scan_check.alternative_margin`, 0.01).
   After a pose passes, the scan is fitted everywhere else; a place it fits better by the margin
   makes the frame `AMBIGUOUS`. In the depot no other place fitted better than the true pose at any
@@ -99,9 +99,23 @@ poses before what it does to successes. All parameters are listed in `docs/param
 - **Ambiguity** (`ambiguity.max_score_ratio`, 0). Any second place that passes every check, the
   LiDAR included, makes the frame `AMBIGUOUS`, whatever its score: in the depot's mirrored halves
   the wrong place out-scored the right one in 8 of 20 ambiguous frames. Leave it at 0.
+- **What the scan tells apart** (`sanity.min_inliers_unique`, 20; `scan_check.unique_margin`,
+  0.05; `scan_check.max_twin_support`, 0.5; `docs/relocalization.md`). A pose with 20 to 39
+  inliers stands only where every other place fits the scan at least the margin worse and no place
+  within 1 m fits almost as well. In the URDF Maker warehouse that took single requests from 22.8 to
+  27.3 % with no wrong pose; 20 inliers without the condition gave 30.1 % and 4 wrong poses, one
+  6.6 m off along a repeating wall. Set `sanity.min_inliers_unique` to 40 to need 40 inliers
+  everywhere. The weakest right poses there had gaps of 0.05 and more; a smaller margin also accepts
+  places the LiDAR barely tells apart. `scan_check.max_twin_support` refuses poses that rest on
+  keyframes the build flagged (`fits a second place` warning): there the poses with at most half
+  of their inliers from them were at most 22 cm off (median 3.5 cm), those with 90 % or more up to
+  0.56 m (median 26 cm). Raising it gains poses in such aisles and risks half-metre errors; fixing
+  the map's doubled walls gains them safely.
 - **Sanity** (`sanity.*`). The height and tilt limits assume the extrinsics are right: a camera
   that moved on its mount makes requests fail here (the extrinsics monitor reports it). The inlier
-  limits (`sanity.min_inliers`, 40) apply to every backend.
+  limits (`sanity.min_inliers`, 40) apply to every backend. `sanity.min_inlier_ratio` is 0.1:
+  repeated structure (boxes, shelving) adds many wrong 2D–3D matches around a right pose; in the
+  warehouse 0.25 refused 28 right poses that 0.1 kept, and no wrong one passed.
 
 ## Triggers and monitors
 

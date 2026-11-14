@@ -96,6 +96,9 @@ struct Hypothesis
   std::string rejection;  ///< why it stopped; empty for a valid hypothesis
   bool solved = false;
   PnpMethod method = PnpMethod::kP3P;
+  /// Share of the inliers matched in keyframes whose scan fitted a second place within 1 m (the
+  /// build's kFlagScanAmbiguous): their landmarks are as uncertain along it.
+  double twin_support = 0.0;
   Pose3 T_map_cam = Pose3::Identity();
   SanityResult sanity;  ///< metrics; valid when solved
   bool scan_checked = false;
@@ -104,6 +107,26 @@ struct Hypothesis
   std::vector<Vec2> inlier_pixels;
   std::vector<Vec2> outlier_pixels;
   int cluster = -1;  ///< index into FrameResult::clusters for valid hypotheses
+};
+
+/// What the LiDAR scan tells apart at the winning pose (scan_check.check_alternatives): the
+/// relocalizer's acceptance depends on it (plan §7.12).
+struct ScanUniqueness
+{
+  bool measured = false;
+  /// scanFit at the pose less at the best place beyond 1 m or 30 degrees (bestAlternative); 1
+  /// without such a place.
+  double alternative_gap = 1.0;
+  /// The test within 1 m ran: it decides only for poses with fewer than sanity.min_inliers inliers.
+  bool twin_checked = false;
+  /// Within 1 m (matchScan's window): the scan fits best at least 15 cm from the pose, or a second
+  /// place fits within 1 nat of the best. Along that direction the scan can't vouch for the pose.
+  bool twin = false;
+  double twin_distance = 0.0;  ///< m from the pose to the other fit (0 without one)
+  /// How much worse the other fit is than the pose's (negative: better), in matchScan's nats.
+  double twin_nats = 0.0;
+  /// alternative_gap >= scan_check.unique_margin, and the twin test ran and found none.
+  bool unique = false;
 };
 
 struct FrameTimings
@@ -125,11 +148,18 @@ struct FrameResult
   /// disabled).
   bool scan_checked = false;
   Stage deepest_stage = Stage::kRetrieved;
-  /// Base pose of the best valid cluster (also set when ambiguous, for diagnostics).
+  /// Base pose of the best valid cluster (also set when ambiguous, for diagnostics). Unset when the
+  /// cluster has fewer than sanity.min_inliers inliers and the scan doesn't tell its pose apart:
+  /// it is refused (its hypothesis says why), as is `best`.
   std::optional<Pose2> pose;
   /// Where the scan fits better than at that pose (scan_check.check_alternatives): the place
   /// vision found is then one of two that look alike, and the frame is ambiguous.
   std::optional<ScanAlternative> scan_alternative;
+  /// What the scan tells apart at the best valid cluster's pose (also when it is then refused).
+  ScanUniqueness uniqueness;
+  /// Ambiguous because the pose rests on landmarks of keyframes whose scans fitted a second place
+  /// within 1 m (scan_check.max_twin_support).
+  bool twin_ambiguous = false;
   int best = -1;  ///< index of the winning hypothesis, -1 without a valid one
   FrameTimings timings;
 };
@@ -183,6 +213,11 @@ private:
   Hypothesis solvePlace(
     const Place & place, const QueryFrame & frame, const Features & features, bool check_scan,
     const ProjectedScan * scan) const;
+  /// What the scan tells apart at the winner's pose, given the best place beyond 1 m; the test
+  /// within 1 m only with `near` (about 40 ms).
+  ScanUniqueness measureUniqueness(
+    const ProjectedScan & scan, const Hypothesis & winner, const ScanAlternative & alternative,
+    bool near) const;
 
   std::shared_ptr<const LocalizationMap> map_;
   LocalizerParams params_;

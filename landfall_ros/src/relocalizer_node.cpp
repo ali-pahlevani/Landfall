@@ -227,7 +227,14 @@ void RelocalizerNode::declareParameters()
   declare_parameter(
     "sanity.min_inliers", 40, describeInt("Fewest PnP inliers", 6, 10000, kDynamic));
   declare_parameter(
-    "sanity.min_inlier_ratio", 0.25, describe("Smallest inlier ratio", 0.0, 1.0, kDynamic));
+    "sanity.min_inliers_unique", 20,
+    describeInt(
+      "Fewest PnP inliers where the LiDAR scan fits nowhere else nearly as well "
+      "(scan_check.unique_margin, no place within 1 m almost as good); above sanity.min_inliers "
+      "it is sanity.min_inliers",
+      6, 10000, kDynamic));
+  declare_parameter(
+    "sanity.min_inlier_ratio", 0.1, describe("Smallest inlier ratio", 0.0, 1.0, kDynamic));
   declare_parameter(
     "sanity.max_mean_reproj_error_px", 0.0,
     describe(
@@ -329,6 +336,18 @@ void RelocalizerNode::declareParameters()
       "How much better (hit ratio less violation ratio) the scan must fit elsewhere to make a "
       "pose ambiguous",
       0.0, 0.5, kDynamic));
+  declare_parameter(
+    "scan_check.unique_margin", 0.05,
+    describe(
+      "How much worse (hit ratio less violation ratio) the scan must fit at every other place for "
+      "sanity.min_inliers_unique inliers to suffice",
+      0.0, 1.0, kDynamic));
+  declare_parameter(
+    "scan_check.max_twin_support", 0.5,
+    describe(
+      "A pose whose inliers come for more than this share from keyframes whose scans fitted a "
+      "second place within 1 m (the build's flag) is AMBIGUOUS; 1: never",
+      0.0, 1.0, kDynamic));
   declare_parameter(
     "scan_check.refine_pose", false,
     describe(
@@ -457,6 +476,8 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   l.pnp_max_iterations = static_cast<int>(get_parameter("pnp.max_iterations").as_int());
   l.pnp_success_prob = get_parameter("pnp.success_prob").as_double();
   l.sanity.min_inliers = static_cast<int>(get_parameter("sanity.min_inliers").as_int());
+  l.sanity.min_inliers_unique =
+    static_cast<int>(get_parameter("sanity.min_inliers_unique").as_int());
   l.sanity.min_inlier_ratio = get_parameter("sanity.min_inlier_ratio").as_double();
   l.sanity.max_mean_reprojection_px = get_parameter("sanity.max_mean_reproj_error_px").as_double();
   l.sanity.max_height_error = get_parameter("sanity.max_height_error").as_double();
@@ -480,6 +501,8 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   l.refine_with_scan = get_parameter("scan_check.refine_pose").as_bool();
   l.scan.check_alternatives = get_parameter("scan_check.check_alternatives").as_bool();
   l.scan.alternative_margin = get_parameter("scan_check.alternative_margin").as_double();
+  l.scan.unique_margin = get_parameter("scan_check.unique_margin").as_double();
+  l.scan.max_twin_support = get_parameter("scan_check.max_twin_support").as_double();
   t.scan_max_time_offset = get_parameter("scan_check.max_time_offset").as_double();
   t.auto_trigger.max_std_xy = get_parameter("auto_trigger.max_std_xy").as_double();
   t.auto_trigger.max_std_yaw_deg = get_parameter("auto_trigger.max_std_yaw_deg").as_double();
@@ -1499,6 +1522,7 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
     outcome.deepest_stage = result_frame.deepest_stage;
     outcome.ambiguous = result_frame.ambiguity.ambiguous;
     outcome.scan_elsewhere = result_frame.scan_alternative.has_value();
+    outcome.scan_twin = result_frame.twin_ambiguous;
     if (result_frame.pose && !outcome.ambiguous) {
       outcome.estimate = FrameEstimate{*result_frame.pose, odom_T_base};
       ++valid;
@@ -1792,7 +1816,18 @@ void RelocalizerNode::dump(
       .field("deepest_stage", static_cast<int>(frame.deepest_stage))
       .field("ambiguous", frame.ambiguity.ambiguous)
       .field("ambiguity_ratio", frame.ambiguity.score_ratio)
+      .field("twin_ambiguous", frame.twin_ambiguous)
       .field("seconds", frame.timings.total_s);
+    // What the scan told apart at the best place (scan_check.check_alternatives).
+    if (frame.uniqueness.measured) {
+      json.field("alternative_gap", frame.uniqueness.alternative_gap);
+      if (frame.uniqueness.twin_checked) {
+        json.field("twin", frame.uniqueness.twin)
+          .field("twin_distance", frame.uniqueness.twin_distance)
+          .field("twin_nats", frame.uniqueness.twin_nats)
+          .field("unique", frame.uniqueness.unique);
+      }
+    }
     if (frame.pose) {
       json.key("pose")
         .beginArray()
@@ -1808,6 +1843,9 @@ void RelocalizerNode::dump(
         .field("correspondences", h.correspondences)
         .field("inliers", h.sanity.num_inliers)
         .field("rejection", h.rejection);
+      if (h.solved) {
+        json.field("twin_support", h.twin_support);
+      }
       if (h.scan_checked) {
         json.field("scan_hit_ratio", h.scan.score.hit_ratio)
           .field("scan_violation_ratio", h.scan.score.violation_ratio);

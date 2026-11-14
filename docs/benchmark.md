@@ -185,6 +185,19 @@ database. The tables are `summarize_benchmark`'s output; the runner's CSV files 
 - **Removed crates** (`crates_removed`, the stress test): 68 %, without a wrong pose. At 23 of the
   25 placements found in the nominal world and missed here, the LiDAR check refused a pose vision
   found: beams pass where the map still has the crates.
+- **Since PLAN V61** (2026-11-14) the relocalizer accepts 20 to 39 inliers where the LiDAR scan
+  fits nowhere else nearly as well, and an inlier ratio down to 0.1 (`docs/relocalization.md`).
+  The two conditions where vision found least, re-run with the same database, placements and
+  build otherwise:
+
+  | Scenario | Method | Placements | Success | Wrong (95 % upper bound) | Inaccurate | Miss | First heading | Time to localize (median / p90) | Published error (median) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | added_objects (classical) | landfall | 100 | 52.0 % | 0 (3.6 %) | 0.0 % | 48.0 % | 22.0 % | 6.0 s / 16.6 s | 3.6 cm |
+  | crates_removed (classical) | landfall | 100 | 76.0 % | 0 (3.6 %) | 0.0 % | 24.0 % | 31.0 % | 6.0 s / 26.9 s | 3.1 cm |
+
+  Six and eight placements turned from misses into successes, none the other way. The nominal
+  and lighting rows weren't re-run. The result files are in
+  [`landfall_benchmark/results/seed2027_v61/`](../landfall_benchmark/results/seed2027_v61/).
 - **Runs.** Two runs were interrupted when the host went down and resumed at the next placement
   (`first_placement`) with the same build, models and database: `learned_cpu` nominal after
   placement 8, `learned_cpu` lighting after placement 21. The runner's startup fallback (above)

@@ -43,6 +43,7 @@ struct MapKeyframe
   int64_t id = 0;
   Pose2 pose;  ///< base pose after the build's BA
   Pose3 T_map_cam = Pose3::Identity();
+  uint32_t flags = 0;  ///< db::KeyframeRecord::kFlag*: what the build found about the pose
 };
 
 /// A keyframe's stored local features and the landmark each one observes.

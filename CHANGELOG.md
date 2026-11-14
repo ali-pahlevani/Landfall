@@ -220,6 +220,19 @@ All notable changes to this project are documented here. The format follows
   look-around 48 -> 85 of 113 places, median error 5.2 -> 3.4 cm. In the aisles where the map draws
   walls twice the keyframes stay up to 0.57 m off (T-011), and two requests there were 0.52 and
   0.56 m off.
+- The relocalizer accepts fewer inliers where the LiDAR scan tells the place apart, and refuses
+  poses that rest on keyframes the build couldn't place (PLAN V61). A pose with
+  `sanity.min_inliers_unique` (20) to 39 inliers stands where every other place fits the scan at
+  least `scan_check.unique_margin` (0.05) worse and no place within 1 m fits almost as well. A pose
+  whose inliers come for more than `scan_check.max_twin_support` (0.5) from keyframes whose scans
+  fitted a second place within 1 m (the build's flag) is `AMBIGUOUS`. `sanity.min_inlier_ratio` is
+  0.1 (was 0.25). `landfall query` writes what the scan told apart (`alternative_gap`,
+  `twin_distance`, `twin_nats`, `twin_support`, `unique`). On the URDF Maker warehouse: single
+  requests 22.8 -> 27.3 %, wrong poses 2 -> 0, median error 3.4 -> 3.1 cm, look-around 85 -> 75
+  of 113 places (in the aisles with doubled walls 26 -> 14); in the depot simulation's
+  cross-session requests unchanged (98.7 and 98.2 %, no wrong pose); in the kidnap benchmark,
+  unmapped goods 46 -> 52 % and removed crates 68 -> 76 %, no wrong pose
+  (`landfall_benchmark/results/seed2027_v61/`).
 - CI: the Docker images retry their network steps (apt update and downloads, rosdep update and
   install).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.

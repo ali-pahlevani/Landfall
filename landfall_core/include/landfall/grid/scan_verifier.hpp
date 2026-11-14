@@ -43,6 +43,14 @@ struct ScanCheckParams
   /// at least alternative_margin better (scanFit) at another place, the pose is ambiguous.
   bool check_alternatives = true;
   double alternative_margin = 0.01;
+  /// The scan tells a pose apart when every other place fits at least unique_margin worse
+  /// (scanFit) and no place within 1 m fits almost as well (a twin, Localizer's ScanUniqueness):
+  /// then sanity.min_inliers_unique inliers suffice.
+  double unique_margin = 0.05;
+  /// A pose whose inliers come for more than this share from keyframes the build flagged (their
+  /// scans fitted a second place within 1 m, so along it their poses rest on odometry) is
+  /// ambiguous. 1: never.
+  double max_twin_support = 0.5;
 };
 
 /// A sensor_msgs/LaserScan with the laser pose in the base frame.

@@ -65,6 +65,8 @@ struct ScanMatch
   /// 0 the scan can't tell the two apart (it may even be negative: the best is the best mean fit,
   /// with a pull to the guess on ties).
   double alternative_nats = 0.0;
+  /// How much worse the guess itself fits than the best, in the same nats (set with the best).
+  double guess_nats = 0.0;
 };
 
 /// Matches scan endpoints (base frame, e.g. ProjectedScan::endpoints) to the map around `guess`:

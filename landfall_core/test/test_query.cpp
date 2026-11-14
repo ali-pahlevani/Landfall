@@ -123,7 +123,7 @@ TEST(Sanity, EachCheckRejects)
   expect_reason(input, "inliers <");
 
   input = goodInput(base);
-  input.num_correspondences = 1000;
+  input.num_correspondences = 2000;  // 100 inliers: 0.05, below sanity.min_inlier_ratio (0.1)
   expect_reason(input, "inlier ratio");
 
   input = goodInput(base);
@@ -266,6 +266,11 @@ TEST(Decision, CoversEveryStatus)
   input.frames.back().scan_elsewhere = true;
   EXPECT_EQ(decide(input).status, Status::kAmbiguous);
   EXPECT_NE(decide(input).message.find("LiDAR scan fits another place"), std::string::npos);
+  // Ambiguous because the landmarks rest on keyframes whose scans fitted two places.
+  input.frames.back().scan_elsewhere = false;
+  input.frames.back().scan_twin = true;
+  EXPECT_EQ(decide(input).status, Status::kAmbiguous);
+  EXPECT_NE(decide(input).message.find("two places within 1 m"), std::string::npos);
 
   input.frames = {agreeing(0), agreeing(1), agreeing(2)};
   input.frames[2].estimate->map_T_base.y += 0.5;

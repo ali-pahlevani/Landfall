@@ -94,6 +94,11 @@ TEST(ScanMatcher, RecoversAWrongGuessInARoom)
   EXPECT_LT(landfall::rotationDistance(match.pose, truth), deg(0.3));
   EXPECT_GT(match.hit_ratio, 0.9);
   EXPECT_LT(match.guess_hit_ratio, 0.5);
+  // The guess, half a metre off, fits many nats worse than the best; the true pose about as well.
+  EXPECT_GT(match.guess_nats, 5.0);
+  const auto at_truth = landfall::matchScan(field, points, truth, ScanMatchParams());
+  ASSERT_TRUE(at_truth.valid) << at_truth.reason;
+  EXPECT_LT(std::abs(at_truth.guess_nats), 0.5);
   // Walls on every side: a few centimetres in every direction, well under a degree.
   EXPECT_LT(std::sqrt(match.covariance(0, 0)), 0.05);
   EXPECT_LT(std::sqrt(match.covariance(1, 1)), 0.05);

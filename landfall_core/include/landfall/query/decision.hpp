@@ -52,7 +52,10 @@ struct FrameOutcome
 {
   Stage deepest_stage = Stage::kRetrieved;  ///< deepest stage any of its hypotheses reached
   bool ambiguous = false;
-  bool scan_elsewhere = false;            ///< ambiguous because the scan fits another place better
+  bool scan_elsewhere = false;  ///< ambiguous because the scan fits another place better
+  /// Ambiguous because the landmarks come from keyframes whose scans fitted a second place within
+  /// 1 m (FrameResult::twin_ambiguous).
+  bool scan_twin = false;
   std::optional<FrameEstimate> estimate;  ///< set when the frame has an accepted hypothesis
 };
 

@@ -29,14 +29,17 @@ places, the same in every row, without its localization knowing, and has to get 
 |---|---|---|---|
 | as mapped | **93 %**, 0 wrong | 78 %, 0 wrong | 6 %, **83 wrong** |
 | other light | 91 %, 0 wrong | 77 %, 0 wrong | |
-| nine stacks of goods the map doesn't have | 46 %, 0 wrong | 44 %, 0 wrong | 6 %, 83 wrong |
-| crate stacks gone that the map still has | 68 %, 0 wrong | | 8 %, 82 wrong |
+| nine stacks of goods the map doesn't have | 52 %\*, 0 wrong | 44 %, 0 wrong | 6 %, 83 wrong |
+| crate stacks gone that the map still has | 76 %\*, 0 wrong | | 8 %, 82 wrong |
 
 A success leaves AMCL within 0.25 m and 5° of the truth; a wrong pose is one published (or, for
 AMCL, claimed) more than 0.5 m or 10° off. The rest are misses: no pose, and the robot knows it is
-lost. Landfall published no wrong pose in its 800 placements (for one run of 100, the 95 % upper
+lost. Landfall published no wrong pose in its 1,000 placements (for one run of 100, the 95 % upper
 bound of the wrong-pose rate is 3.6 %). Changes the map doesn't have cost successes: the LiDAR
 check refuses poses where the scan no longer fits the map.
+
+\* Re-run (2026-11-14) after the relocalizer started accepting fewer inliers where the LiDAR scan
+tells the place apart (PLAN V61): 46 and 68 % before. The other rows are from M7 (2026-11-08/09).
 
 - **Time:** a median 6 s with `classical`, looking around from up to eight headings; 36 % of the
   placements in under a second. About 50 ms per camera frame on a laptop CPU, LiDAR checks

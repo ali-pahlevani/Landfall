@@ -571,6 +571,8 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
     l.pnp_success_prob = number();
   } else if (name == "sanity.min_inliers") {
     l.sanity.min_inliers = static_cast<int>(number());
+  } else if (name == "sanity.min_inliers_unique") {
+    l.sanity.min_inliers_unique = static_cast<int>(number());
   } else if (name == "sanity.min_inlier_ratio") {
     l.sanity.min_inlier_ratio = number();
   } else if (name == "sanity.max_mean_reproj_error_px") {
@@ -636,6 +638,10 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
     l.scan.check_alternatives = value == "true";
   } else if (name == "scan_check.alternative_margin") {
     l.scan.alternative_margin = number();
+  } else if (name == "scan_check.unique_margin") {
+    l.scan.unique_margin = number();
+  } else if (name == "scan_check.max_twin_support") {
+    l.scan.max_twin_support = number();
   } else if (name == "imu.max_age") {
     q.gravity.max_age = number();
   } else if (name == "imu.max_angular_rate") {
@@ -730,7 +736,8 @@ int query(const std::vector<std::string> & argv)
          "inliers,inlier_ratio,coverage,height_error_m,tilt_error_deg,ambiguity_ratio,"
          "consistency_m,consistency_deg,scan_hit_ratio,scan_violation_ratio,features,places,"
          "best_x,best_y,best_yaw,best_score,"
-         "runner_up_x,runner_up_y,runner_up_yaw,runner_up_score,message,rejection\n";
+         "runner_up_x,runner_up_y,runner_up_yaw,runner_up_score,message,rejection,"
+         "alternative_gap,twin_distance,twin_nats,twin_support,unique\n";
 
   std::map<std::string, int> statuses;
   std::vector<double> frame_seconds;
@@ -789,7 +796,23 @@ int query(const std::vector<std::string> & argv)
     } else {
       csv << ",,,,";
     }
-    csv << message << "," << rejection << "\n";
+    csv << message << "," << rejection << ",";
+    // What the scan told apart at the last frame's best place (also when it was refused).
+    const landfall::ScanUniqueness & u = r.last_frame.uniqueness;
+    csv << (u.measured ? fixed(u.alternative_gap, 3) : std::string()) << ",";
+    if (u.twin_checked) {
+      csv << fixed(u.twin_distance, 3) << "," << fixed(u.twin_nats, 2) << ",";
+    } else {
+      csv << ",,";
+    }
+    if (clusters.empty()) {
+      csv << ",";
+    } else {
+      const auto & best =
+        r.last_frame.hypotheses[static_cast<std::size_t>(clusters.front().members.front())];
+      csv << fixed(best.twin_support, 3) << ",";
+    }
+    csv << (u.twin_checked ? (u.unique ? "1" : "0") : "") << "\n";
   };
 
   const auto counts = landfall::ros::queryBagImages(
@@ -808,6 +831,7 @@ int query(const std::vector<std::string> & argv)
       outcome.deepest_stage = result.deepest_stage;
       outcome.ambiguous = result.ambiguity.ambiguous;
       outcome.scan_elsewhere = result.scan_alternative.has_value();
+      outcome.scan_twin = result.twin_ambiguous;
       if (result.pose && !outcome.ambiguous) {
         outcome.estimate = landfall::FrameEstimate{*result.pose, odom_T_base};
         current->valid_stamps.push_back(stamp);

@@ -399,11 +399,13 @@ ScanMatch matchScan(
         result.alternative = candidate;
       }
     }
+    const double independent = std::min(
+      1.0, static_cast<double>(params.effective_beams) / static_cast<double>(endpoints.size()));
     if (result.alternative) {
-      const double independent = std::min(
-        1.0, static_cast<double>(params.effective_beams) / static_cast<double>(endpoints.size()));
       result.alternative_nats = independent * (best_log_likelihood - alternative_log_likelihood);
     }
+    result.guess_nats =
+      independent * (best_log_likelihood - logLikelihood(d, endpoints, guess, inv_sigma));
   }
 
   if (result.hit_ratio < params.min_hit_ratio) {

@@ -65,17 +65,25 @@ frame goes through these steps:
 2. Match each place 2D–3D, then solve the pose: upright LO-RANSAC with the gravity from the IMU or
    the flat floor, falling back to P3P.
 3. Run the sanity checks (`sanity.*`): inliers, inlier ratio, reprojection error, image coverage,
-   base height and tilt, and a free map cell under the base.
+   base height and tilt, and a free map cell under the base. A pose needs `sanity.min_inliers` (40)
+   inliers, or `sanity.min_inliers_unique` (20) where the LiDAR scan tells the place apart (step
+   6), and `sanity.min_inlier_ratio` (0.1) of its 2D–3D matches as inliers.
 4. Check the LiDAR scan nearest the image against the map at the pose (`scan_check.*`, below).
 5. Cluster the poses that passed every check. A second, separate place that passed them too, with
-   at least `sanity.min_inliers` inliers, makes the frame ambiguous. The default
-   `ambiguity.max_score_ratio: 0` counts it whatever its score: in a building whose halves look
-   alike, the wrong half can score higher than the right one.
+   at least `sanity.min_inliers` inliers, makes the frame ambiguous (with fewer than 40 inliers
+   for the best place, any second place does). The default `ambiguity.max_score_ratio: 0` counts it
+   whatever its score: in a building whose halves look alike, the wrong half can score higher than
+   the right one.
+6. Fit the scan elsewhere (*Where else the scan fits* below): a place it fits better makes the frame
+   ambiguous, and so does a pose whose landmarks came mostly from keyframes the build couldn't
+   place; a pose with fewer than `sanity.min_inliers` inliers stands only where the scan fits
+   nowhere else nearly as well.
 
 The decision:
 - Any ambiguous frame makes the request **`AMBIGUOUS`**.
-- Too few valid frames give the deepest failure reached: **`NO_MATCH`** (no pose with
-  `sanity.min_inliers`), then **`REJECTED_SANITY`**, then **`REJECTED_SCAN_CHECK`**.
+- Too few valid frames give the deepest failure reached: **`NO_MATCH`** (no pose with enough
+  inliers), then **`REJECTED_SANITY`**, then **`REJECTED_SCAN_CHECK`** (also for a pose with fewer
+  than `sanity.min_inliers` inliers that the scan doesn't tell apart).
 - Frames that disagree with the odometry between them by more than
   `consistency.max_translation_error` or `consistency.max_rotation_error_deg` give
   **`REJECTED_CONSISTENCY`**.
@@ -119,6 +127,40 @@ beyond 1 m or 30°, at least `scan_check.alternative_margin` (0.01) better than 
 ratio less violation ratio), the frame is `AMBIGUOUS`: the message says the scan fits another place
 better. Places that are truly identical for the LiDAR, such as twin aisles, fit alike and stay
 vision's to decide. The search takes about 20 ms per frame on 16 threads.
+
+**What the scan tells apart.** Where the LiDAR settles the place by itself, fewer inliers suffice. A
+pose with at least `sanity.min_inliers_unique` (20) but fewer than `sanity.min_inliers` (40)
+inliers passes only where the scan fits every other place (beyond 1 m or 30°) at least
+`scan_check.unique_margin` (0.05) worse, and no place within 1 m almost as well: in the window the
+build matches keyframe scans in (±1 m, ±6°), the scan must fit best at the pose, and a second
+fit, at least 15 cm away, must be at least 1 nat worse. Otherwise the frame is refused, and its best
+hypothesis says why (`… inliers < 40 where the scan fits a place 0.47 m away almost as well`).
+Without the search (`scan_check.check_alternatives: false`) or without a scan, 40 inliers it is.
+
+**Landmarks the build couldn't place.** The build flags the keyframes whose scan fits a second place
+within 1 m almost as well, typically a wall the map has twice (`docs/recording.md`, *Keyframe
+poses*). Along it their poses rest on odometry and the recorded pose, so they may sit at the other
+place, and so may the landmarks they triangulated and a pose found from them. A pose whose inliers
+come for more than `scan_check.max_twin_support` (0.5) from such keyframes is `AMBIGUOUS` (`the
+landmarks come from keyframes whose LiDAR scans fitted two places within 1 m`). The scan can't
+settle it there: where the map is wrong, it may fit the wrong place better. In the URDF Maker
+warehouse's aisles with doubled walls, a pose 0.56 m off fitted the map 1 nat better than the true
+one. The more of a pose's inliers came from flagged keyframes, the further off it was: with at most
+half of them, a median 3.5 cm and at most 22 cm (256 poses); with 90 % or more, a median 26 cm and
+up to 0.56 m (19 poses). Maps without flagged keyframes, such as the depot's, never meet this
+check.
+
+In the warehouse (the 904 sweep requests against the protocol drive's database,
+`docs/recording.md`), these settings localized 27.3 % of the single requests instead of 22.8 %, with
+no wrong pose instead of 2, at a median error of 3.1 cm instead of 3.4. A look-around (eight
+headings) localized 75 of the 113 places instead of 85: 61 of the 66 in the open north instead of
+59, and 14 of the 47 in the aisles with doubled walls instead of 26, where most poses rested on
+flagged keyframes (median error 26 cm where at least 90 % of the inliers came from them). With 20
+inliers and no condition, 30.1 % localized and 4 were wrong (one 6.6 m off along a repeating wall).
+In the depot simulation's cross-session requests (*Accuracy* below), the settings changed nothing:
+98.7 % and 98.2 % success, no wrong pose. In the kidnap benchmark they took the depot with unmapped
+goods from 46 to 52 % and the one with removed crates from 68 to 76 %, still without a wrong pose
+(`docs/benchmark.md`).
 
 `scan_check.mode` is `required` by default: no request runs without a scan. `optional` checks a
 pose when a scan is there and accepts it on the vision checks otherwise. `disabled` never checks.

@@ -201,7 +201,7 @@ std::shared_ptr<LocalizationMap> LocalizationMap::load(
 
   for (const auto & k : db.keyframes()) {
     map->keyframe_index_[k.id] = map->keyframes_.size();
-    map->keyframes_.push_back({k.id, k.refined, k.T_map_cam});
+    map->keyframes_.push_back({k.id, k.refined, k.T_map_cam, k.flags});
   }
   if (map->keyframes_.empty()) {
     throw std::runtime_error("the database has no keyframes");

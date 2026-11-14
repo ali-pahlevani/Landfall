@@ -13,13 +13,17 @@
 // limitations under the License.
 
 #include <gtest/gtest.h>
+#include <sqlite3.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "landfall/build/builder_config.hpp"
@@ -180,6 +184,38 @@ landfall::QueryFrame query(
 landfall::QueryFrame query(const World & world, const Pose2 & truth, int seed)
 {
   return query(world, landfall::toPose3(truth), landfall::toPose3(truth), seed, world.T_base_cam);
+}
+
+// A frame that sees little of the map: `landmarks` of observe()'s landmark features (its first
+// ones), spread over them, and its 150 distractors (its last ones).
+Features thin(const Features & f, std::size_t landmarks)
+{
+  constexpr std::size_t kDistractors = 150;
+  const std::size_t seen = f.keypoints.size() - kDistractors;
+  const std::size_t stride = std::max<std::size_t>(1, seen / std::max<std::size_t>(landmarks, 1));
+  Features out;
+  out.type = f.type;
+  std::size_t kept = 0;
+  for (std::size_t i = 0; i < f.keypoints.size(); ++i) {
+    const bool keep = i >= seen || (i % stride == 0 && kept < landmarks);
+    if (keep) {
+      kept += i < seen ? 1 : 0;
+      out.keypoints.push_back(f.keypoints[i]);
+      out.descriptors.push_back(f.descriptors.row(static_cast<int>(i)));
+    }
+  }
+  return out;
+}
+
+// Sets bits in every keyframe's flags, as the build does for the keyframes whose scan fits a
+// second place.
+void flagKeyframes(const std::string & db_path, uint32_t flags)
+{
+  sqlite3 * handle = nullptr;
+  ASSERT_EQ(sqlite3_open(db_path.c_str(), &handle), SQLITE_OK);
+  const std::string sql = "UPDATE keyframes SET flags = flags | " + std::to_string(flags);
+  EXPECT_EQ(sqlite3_exec(handle, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+  sqlite3_close(handle);
 }
 
 // Builds the one-room database once for the tests of this fixture.
@@ -446,6 +482,93 @@ TEST_F(LocalizerTest, SameResultWithAnyThreadCount)
   EXPECT_EQ(ra.hypotheses.size(), rb.hypotheses.size());
 }
 
+TEST_F(LocalizerTest, FewInliersStandWhereTheScanIsUnique)
+{
+  // Frames that see 30 of the room's landmarks: fewer inliers than sanity.min_inliers (40). In the
+  // one room the scan fits nowhere else nearly as well, so sanity.min_inliers_unique (20) suffice;
+  // without that floor, or without the search for other places, they are refused.
+  const auto map = landfall::LocalizationMap::load(*db_path_);
+  landfall::Localizer localizer(map, {});
+  landfall::LocalizerParams no_floor;
+  no_floor.sanity.min_inliers_unique = 40;
+  landfall::Localizer strict(map, no_floor);
+  landfall::LocalizerParams no_search;
+  no_search.scan.check_alternatives = false;
+  landfall::Localizer unchecked(map, no_search);
+  const auto path = landfall::test::loopBothWays(0, 0, 10, 6, 1.0);
+  int localized = 0;
+  int wrong = 0;
+  int queries = 0;
+  double smallest_gap = 1.0;
+  for (std::size_t k = 0; k < path.size(); k += 4) {
+    auto frame = query(*world_, path[k], 900 + static_cast<int>(k));
+    frame.features = thin(*frame.features, 30);
+    ++queries;
+    const auto result = localizer.localize(frame);
+    if (!result.pose) {
+      continue;
+    }
+    ++localized;
+    wrong += landfall::translationDistance(*result.pose, path[k]) > 0.1 ? 1 : 0;
+    const auto & best = result.hypotheses[static_cast<std::size_t>(result.best)];
+    EXPECT_LT(best.sanity.num_inliers, 40) << k;
+    EXPECT_GE(best.sanity.num_inliers, 20) << k;
+    EXPECT_TRUE(result.uniqueness.unique) << k;
+    EXPECT_EQ(best.twin_support, 0.0);
+    smallest_gap = std::min(smallest_gap, result.uniqueness.alternative_gap);
+    EXPECT_FALSE(strict.localize(frame).pose) << k;
+    const auto refused = unchecked.localize(frame);
+    EXPECT_FALSE(refused.pose) << k;
+    ASSERT_FALSE(refused.hypotheses.empty());
+    EXPECT_NE(refused.hypotheses.front().rejection.find("isn't checked"), std::string::npos)
+      << refused.hypotheses.front().rejection;
+  }
+  RecordProperty("localized", localized);
+  RecordProperty("smallest_alternative_gap", std::to_string(smallest_gap));
+  EXPECT_EQ(wrong, 0);
+  EXPECT_GE(localized, queries * 3 / 4);
+}
+
+TEST_F(LocalizerTest, PosesOnFlaggedKeyframesAreAmbiguous)
+{
+  // The same database with every keyframe flagged as the build flags those whose scan fits a
+  // second place within 1 m: a pose found from their landmarks may sit at that place, and the
+  // frame is ambiguous unless scan_check.max_twin_support allows it.
+  const std::string flagged = dir_->file("flagged.landfall.db");
+  std::filesystem::copy_file(*db_path_, flagged, std::filesystem::copy_options::overwrite_existing);
+  flagKeyframes(flagged, landfall::db::KeyframeRecord::kFlagScanAmbiguous);
+  const auto map = landfall::LocalizationMap::load(flagged);
+  for (const auto & k : map->keyframes()) {
+    ASSERT_NE(k.flags & landfall::db::KeyframeRecord::kFlagScanAmbiguous, 0U);
+  }
+  const Pose2 truth{6.0, 0.1, 0.02};
+  const auto frame = query(*world_, truth, 41);
+  landfall::Localizer localizer(map, {});
+  const auto result = localizer.localize(frame);
+  EXPECT_TRUE(result.ambiguity.ambiguous);
+  EXPECT_TRUE(result.twin_ambiguous);
+  ASSERT_GE(result.best, 0);
+  EXPECT_EQ(result.hypotheses[static_cast<std::size_t>(result.best)].twin_support, 1.0);
+  // Without the LiDAR check as well: the rule is about the landmarks, not this scan.
+  landfall::LocalizerParams camera_only;
+  camera_only.scan_mode = landfall::ScanCheckMode::kDisabled;
+  landfall::Localizer unchecked(map, camera_only);
+  EXPECT_TRUE(unchecked.localize(frame).twin_ambiguous);
+  landfall::LocalizerParams allow;
+  allow.scan.max_twin_support = 1.0;
+  landfall::Localizer allowing(map, allow);
+  const auto allowed = allowing.localize(frame);
+  EXPECT_FALSE(allowed.ambiguity.ambiguous);
+  ASSERT_TRUE(allowed.pose);
+  EXPECT_LT(landfall::translationDistance(*allowed.pose, truth), 0.05);
+  // Unflagged, the same frame stands.
+  landfall::Localizer plain(landfall::LocalizationMap::load(*db_path_), {});
+  const auto unflagged = plain.localize(frame);
+  EXPECT_FALSE(unflagged.twin_ambiguous);
+  ASSERT_TRUE(unflagged.pose);
+  EXPECT_EQ(unflagged.hypotheses[static_cast<std::size_t>(unflagged.best)].twin_support, 0.0);
+}
+
 TEST_F(LocalizerTest, RejectsAnEmptyImage)
 {
   landfall::Localizer localizer(landfall::LocalizationMap::load(*db_path_), {});
@@ -508,6 +631,32 @@ TEST_F(DuplicatedRoomTest, IsAmbiguousAndNeverWrong)
   RecordProperty("ambiguous", ambiguous);
   EXPECT_EQ(wrong, 0);
   EXPECT_GE(ambiguous, queries * 9 / 10);
+}
+
+TEST_F(DuplicatedRoomTest, FewInliersAreRefusedWhereTheScanFitsTwoPlaces)
+{
+  // Frames that see 30 landmarks: the scan fits both rooms alike, so the floor for few inliers
+  // doesn't apply, and no pose stands.
+  landfall::Localizer localizer(landfall::LocalizationMap::load(*db_path_), {});
+  const auto path = landfall::test::loopBothWays(0, 0, 10, 6, 1.0);
+  int published = 0;
+  int measured = 0;
+  for (std::size_t k = 0; k < path.size(); k += 4) {
+    for (const double offset : {0.0, 20.0}) {
+      const Pose2 truth = landfall::compose({offset, 0.0, 0.0}, path[k]);
+      auto frame = query(*world_, truth, 800 + static_cast<int>(k));
+      frame.features = thin(*frame.features, 30);
+      const auto result = localizer.localize(frame);
+      published += result.pose && !result.ambiguity.ambiguous ? 1 : 0;
+      if (result.uniqueness.measured) {
+        ++measured;
+        EXPECT_FALSE(result.uniqueness.unique);
+        EXPECT_LT(result.uniqueness.alternative_gap, 0.05);
+      }
+    }
+  }
+  RecordProperty("measured", measured);
+  EXPECT_EQ(published, 0);
 }
 
 }  // namespace

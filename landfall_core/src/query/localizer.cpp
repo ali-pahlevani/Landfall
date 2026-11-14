@@ -24,6 +24,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "landfall/grid/scan_matcher.hpp"
+
 namespace landfall
 {
 
@@ -73,6 +75,10 @@ int find(std::vector<int> & parent, int i)
 }
 
 double toRad(double degrees) { return degrees * M_PI / 180.0; }
+
+// A second fit of the scan within this many nats of the best can't be told apart from it: the
+// build flags its keyframes with the same test (kAmbiguityNats in map_builder.cpp).
+constexpr double kTwinNats = 1.0;
 
 }  // namespace
 
@@ -156,11 +162,13 @@ Hypothesis Localizer::solvePlace(
   Hypothesis h;
   h.keyframe_ids = place.keyframe_ids;
 
-  // Best database match of every query feature, then one query feature per landmark.
+  // Best database match of every query feature, then one query feature per landmark; each keeps
+  // the keyframe it matched in.
   struct Candidate
   {
     int64_t landmark = -1;
     float distance = 0.0F;
+    int64_t keyframe = -1;
   };
   std::map<int, Candidate> by_query;
   for (const int64_t id : place.keyframe_ids) {
@@ -170,43 +178,63 @@ Hypothesis Localizer::solvePlace(
       if (landmark < 0 || map_->landmark(landmark) == nullptr) {
         continue;
       }
-      auto [it, inserted] = by_query.try_emplace(m.query, Candidate{landmark, m.distance});
+      auto [it, inserted] = by_query.try_emplace(m.query, Candidate{landmark, m.distance, id});
       if (
         !inserted && (m.distance < it->second.distance ||
                       (m.distance == it->second.distance && landmark < it->second.landmark))) {
-        it->second = {landmark, m.distance};
+        it->second = {landmark, m.distance, id};
       }
     }
   }
-  std::map<int64_t, std::pair<int, float>> by_landmark;
+  struct Pick
+  {
+    int query = 0;
+    float distance = 0.0F;
+    int64_t keyframe = -1;
+  };
+  std::map<int64_t, Pick> by_landmark;
   for (const auto & [query, c] : by_query) {
-    auto [it, inserted] = by_landmark.try_emplace(c.landmark, query, c.distance);
-    if (!inserted && c.distance < it->second.second) {
-      it->second = {query, c.distance};
+    auto [it, inserted] = by_landmark.try_emplace(c.landmark, Pick{query, c.distance, c.keyframe});
+    if (!inserted && c.distance < it->second.distance) {
+      it->second = {query, c.distance, c.keyframe};
     }
   }
-  std::vector<std::pair<int, int64_t>> pairs;  // (query feature, landmark), by query feature
+  struct Pair
+  {
+    int query = 0;
+    int64_t landmark = -1;
+    int64_t keyframe = -1;
+  };
+  std::vector<Pair> pairs;  // by query feature (one landmark each)
   pairs.reserve(by_landmark.size());
-  for (const auto & [landmark, q] : by_landmark) {
-    pairs.emplace_back(q.first, landmark);
+  for (const auto & [landmark, pick] : by_landmark) {
+    pairs.push_back({pick.query, landmark, pick.keyframe});
   }
-  std::sort(pairs.begin(), pairs.end());
+  std::sort(
+    pairs.begin(), pairs.end(), [](const Pair & a, const Pair & b) { return a.query < b.query; });
 
   Correspondences correspondences;
   std::vector<Vec2> pixels;
-  for (const auto & [query, landmark] : pairs) {
-    const Keypoint & k = features.keypoints[static_cast<std::size_t>(query)];
+  std::vector<char> from_flagged;  // matched in a keyframe whose scan had a twin
+  for (const Pair & pair : pairs) {
+    const Keypoint & k = features.keypoints[static_cast<std::size_t>(pair.query)];
     const Vec2 pixel(k.x, k.y);
     Vec2 normalized;
     if (!frame.camera.undistort(pixel, &normalized)) {
       continue;
     }
     correspondences.normalized.push_back(normalized);
-    correspondences.points.push_back(*map_->landmark(landmark));
+    correspondences.points.push_back(*map_->landmark(pair.landmark));
     pixels.push_back(pixel);
+    const MapKeyframe * keyframe = map_->keyframe(pair.keyframe);
+    from_flagged.push_back(
+      keyframe != nullptr && (keyframe->flags & db::KeyframeRecord::kFlagScanAmbiguous) != 0 ? 1
+                                                                                             : 0);
   }
   h.correspondences = static_cast<int>(pixels.size());
-  const int min_inliers = params_.sanity.min_inliers;
+  // A pose with fewer than sanity.min_inliers inliers may still stand where the scan tells it
+  // apart (localize() decides): every check here takes the lower floor.
+  const int min_inliers = std::min(params_.sanity.min_inliers_unique, params_.sanity.min_inliers);
   if (h.correspondences < min_inliers) {
     std::ostringstream reason;
     reason << h.correspondences << " 2D-3D matches < " << min_inliers;
@@ -236,14 +264,18 @@ Hypothesis Localizer::solvePlace(
   h.method = solution->method;
   h.T_map_cam = solution->T_cam_map.inverse();
   std::vector<char> is_inlier(pixels.size(), 0);
+  int flagged_inliers = 0;
   for (const int i : solution->inliers) {
     is_inlier[static_cast<std::size_t>(i)] = 1;
+    flagged_inliers += from_flagged[static_cast<std::size_t>(i)];
   }
+  h.twin_support = static_cast<double>(flagged_inliers) / static_cast<double>(inliers);
   for (std::size_t i = 0; i < pixels.size(); ++i) {
     (is_inlier[i] != 0 ? h.inlier_pixels : h.outlier_pixels).push_back(pixels[i]);
   }
 
   SanityParams sanity = params_.sanity;
+  sanity.min_inliers = min_inliers;
   if (sanity.max_mean_reprojection_px <= 0.0) {
     sanity.max_mean_reprojection_px = 0.5 * options.threshold_px;
   }
@@ -281,6 +313,41 @@ Hypothesis Localizer::solvePlace(
     h.pose = h.scan.best_pose;
   }
   return h;
+}
+
+ScanUniqueness Localizer::measureUniqueness(
+  const ProjectedScan & scan, const Hypothesis & winner, const ScanAlternative & alternative,
+  bool near) const
+{
+  ScanUniqueness u;
+  u.measured = true;
+  if (alternative.found) {
+    u.alternative_gap = scanFit(winner.scan.score) - scanFit(alternative.score);
+  }
+  if (!near) {
+    return u;
+  }
+  u.twin_checked = true;
+  // Within 1 m, the window the build matches its keyframes' scans in (ScanMatchParams).
+  const ScanMatchParams window;
+  const Pose2 & pose = winner.scan.best_pose;
+  const ScanMatch match = matchScan(map_->field(), scan.endpoints, pose, window);
+  if (!match.valid) {
+    // The best fit on the window's edge: the scan may fit as well beyond it (a corridor).
+    u.twin = true;
+    u.twin_distance = window.search_xy;
+  } else if (translationDistance(match.pose, pose) >= window.alternative_distance) {
+    // The scan fits best elsewhere nearby.
+    u.twin = true;
+    u.twin_distance = translationDistance(match.pose, pose);
+    u.twin_nats = -match.guess_nats;
+  } else if (match.alternative) {
+    u.twin_distance = translationDistance(*match.alternative, pose);
+    u.twin_nats = match.alternative_nats;
+    u.twin = match.alternative_nats < kTwinNats;
+  }
+  u.unique = u.alternative_gap >= params_.scan.unique_margin && !u.twin;
+  return u;
 }
 
 FrameResult Localizer::localize(const QueryFrame & frame)
@@ -360,22 +427,28 @@ FrameResult Localizer::localize(const QueryFrame & frame)
       result.hypotheses[static_cast<std::size_t>(member)].cluster = static_cast<int>(c);
     }
   }
-  result.ambiguity =
-    checkAmbiguity(result.clusters, {params_.max_score_ratio, params_.sanity.min_inliers});
+  // A weak winner (fewer than sanity.min_inliers inliers) has no margin to spare: any other valid
+  // place competes. A strong one keeps the plan's rule (a runner-up from min_inliers on).
+  const int strong = params_.sanity.min_inliers;
+  const bool weak = !result.clusters.empty() && result.clusters.front().score < strong;
+  result.ambiguity = checkAmbiguity(
+    result.clusters,
+    {params_.max_score_ratio, weak ? std::min(params_.sanity.min_inliers_unique, strong) : strong});
   if (!result.clusters.empty()) {
     result.best = result.clusters.front().members.front();
     result.pose = result.clusters.front().pose;
   }
-  // Vision may find the wrong one of two places that look alike, e.g. a building's halves, when
-  // the right one was recorded from elsewhere. The scan then fits the right place better: if it
-  // fits another place clearly better than this one, the frame is ambiguous.
   if (
     !result.ambiguity.ambiguous && result.best >= 0 && check_scan && projected &&
     params_.scan.check_alternatives) {
     const Hypothesis & winner = result.hypotheses[static_cast<std::size_t>(result.best)];
     if (winner.scan_checked && winner.scan.passed) {
+      // Vision may find the wrong one of two places that look alike, e.g. a building's halves,
+      // when the right one was recorded from elsewhere. The scan then fits the right place better:
+      // if it fits another place clearly better than this one, the frame is ambiguous.
       const ScanAlternative alternative =
         verifier_->bestAlternative(*projected, winner.scan.best_pose, &pool_);
+      result.uniqueness = measureUniqueness(*projected, winner, alternative, weak);
       if (
         alternative.found && scanFit(alternative.score) - scanFit(winner.scan.score) >=
                                params_.scan.alternative_margin) {
@@ -383,6 +456,34 @@ FrameResult Localizer::localize(const QueryFrame & frame)
         result.scan_alternative = alternative;
       }
     }
+  }
+  // The landmarks come mostly from keyframes whose scans fitted two places within 1 m (a wall the
+  // map has twice, say): along it their poses rest on odometry and may sit at the other place, and
+  // so may a pose found from them. A scan can't settle it: where the map is wrong, it may fit the
+  // wrong place better (plan §7.12). This holds whatever the scan check does.
+  if (
+    !result.ambiguity.ambiguous && result.best >= 0 &&
+    result.hypotheses[static_cast<std::size_t>(result.best)].twin_support >
+      params_.scan.max_twin_support) {
+    result.ambiguity.ambiguous = true;
+    result.twin_ambiguous = true;
+  }
+  // Fewer inliers than sanity.min_inliers stand only where the scan tells the pose apart.
+  if (weak && !result.ambiguity.ambiguous && result.best >= 0 && !result.uniqueness.unique) {
+    Hypothesis & winner = result.hypotheses[static_cast<std::size_t>(result.best)];
+    std::ostringstream reason;
+    reason << winner.sanity.num_inliers << " inliers < " << strong << " where the scan ";
+    if (!result.uniqueness.measured) {
+      reason << "isn't checked for other places (no scan, or scan_check.check_alternatives off)";
+    } else if (result.uniqueness.twin) {
+      reason << "fits a place " << result.uniqueness.twin_distance << " m away almost as well";
+    } else {
+      reason << "fits another place only " << result.uniqueness.alternative_gap
+             << " worse (scan_check.unique_margin " << params_.scan.unique_margin << ")";
+    }
+    winner.rejection = reason.str();
+    result.best = -1;
+    result.pose.reset();
   }
   result.timings.solve_s = watch.lap();
   result.timings.total_s = total.lap();

@@ -71,9 +71,11 @@ learned backends are in use (`docs/models.md`).
 
 The query pipeline per frame (`query/localizer.hpp`): retrieve the top keyframes, group them into
 places, match each place's landmarks, solve, check the pose (sanity), check it against the scan,
-cluster the hypotheses and decide whether the frame is ambiguous: two places pass, or the scan fits
-another place of the map clearly better than the winner's. `query/decision.hpp` then decides
-a request from its frames.
+cluster the hypotheses and decide whether the frame is ambiguous: two places pass, the scan fits
+another place of the map clearly better than the winner's, or the winner's inliers came mostly from
+keyframes the build couldn't place (their scans fitted a second place). A winner with fewer than
+`sanity.min_inliers` inliers stands only where the scan fits nowhere else nearly as well.
+`query/decision.hpp` then decides a request from its frames.
 
 ## The relocalizer node
 

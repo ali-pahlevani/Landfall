@@ -28,7 +28,12 @@ namespace landfall
 struct SanityParams
 {
   int min_inliers = 40;
-  double min_inlier_ratio = 0.25;
+  /// Fewer inliers suffice where the LiDAR scan fits nowhere else nearly as well (Localizer,
+  /// ScanUniqueness); at most min_inliers.
+  int min_inliers_unique = 20;
+  /// Inliers / 2D-3D matches. Low: repeated structure (boxes, shelving) adds many wrong matches
+  /// around a right pose (V61).
+  double min_inlier_ratio = 0.1;
   double max_mean_reprojection_px = 3.2;  ///< caller resolves "auto" (half the PnP threshold)
   double max_height_error = 0.10;         ///< m, base height above the floor (flat floor)
   double max_floor_elevation = 0.0;       ///< m, extra height allowed on a ramp; 0 = refuse ramps

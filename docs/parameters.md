@@ -84,14 +84,16 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `sanity.max_mean_reproj_error_px` | double | `0` | [0, 20] | at runtime | Largest mean inlier reprojection error; 0: half the PnP threshold |
 | `sanity.max_tilt_error_deg` | double | `3` | [0.5, 30] | at runtime | Largest roll/pitch difference to gravity, degrees |
 | `sanity.min_inlier_coverage` | double | `0.15` | [0, 1] | at runtime | Smallest fraction of the 8x6 image grid holding inliers |
-| `sanity.min_inlier_ratio` | double | `0.25` | [0, 1] | at runtime | Smallest inlier ratio |
+| `sanity.min_inlier_ratio` | double | `0.1` | [0, 1] | at runtime | Smallest inlier ratio |
 | `sanity.min_inliers` | integer | `40` | [6, 10000] | at runtime | Fewest PnP inliers |
+| `sanity.min_inliers_unique` | integer | `20` | [6, 10000] | at runtime | Fewest PnP inliers where the LiDAR scan fits nowhere else nearly as well (scan_check.unique_margin, no place within 1 m almost as good); above sanity.min_inliers it is sanity.min_inliers |
 | `sanity.require_free_space` | bool | `true` |  | at runtime | The base must stand on a known-free map cell |
 | `scan_check.alternative_margin` | double | `0.01` | [0, 0.5] | at runtime | How much better (hit ratio less violation ratio) the scan must fit elsewhere to make a pose ambiguous |
 | `scan_check.check_alternatives` | bool | `true` |  | at runtime | Search where else in the map the scan fits; a place it fits clearly better makes the pose ambiguous |
 | `scan_check.hit_tolerance` | double | `0.1` | [0.01, 1] | at runtime | A beam ending this close to an obstacle is a hit, metres |
 | `scan_check.max_range` | double | `10` | [0.5, 100] | at runtime | Longer readings are ignored, metres |
 | `scan_check.max_time_offset` | double | `0.5` | [0, 5] | at runtime | Largest time between an image and the scan that checks it, seconds |
+| `scan_check.max_twin_support` | double | `0.5` | [0, 1] | at runtime | A pose whose inliers come for more than this share from keyframes whose scans fitted a second place within 1 m (the build's flag) is AMBIGUOUS; 1: never |
 | `scan_check.max_violation_ratio` | double | `0.05` | [0, 1] | at runtime | Largest fraction of beams that see through an obstacle |
 | `scan_check.min_hit_ratio` | double | `0.85` | [0, 1] | at runtime | Smallest fraction of hits among the beams ending in known space |
 | `scan_check.min_known_ratio` | double | `0.5` | [0, 1] | at runtime | Smallest fraction of beams ending in known space |
@@ -101,6 +103,7 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `scan_check.search_angle_deg` | double | `3` | [0, 10] | at runtime | Local search window around a pose, degrees |
 | `scan_check.search_radius` | double | `0.1` | [0, 0.5] | at runtime | Local search window around a pose, metres |
 | `scan_check.topic` | string | `"scan"` |  | at startup | sensor_msgs/LaserScan topic |
+| `scan_check.unique_margin` | double | `0.05` | [0, 1] | at runtime | How much worse (hit ratio less violation ratio) the scan must fit at every other place for sanity.min_inliers_unique inliers to suffice |
 | `shadow.log_path` | string | `""` |  | at startup | If set, every request that publishes nothing (dry runs, the monitor's and the watchdog's checks) is appended there as CSV with the localization's pose |
 | `startup.delay` | double | `2` | [0, 60] | at startup | Seconds after activation before the first attempt |
 | `startup.enabled` | bool | `false` |  | at startup | Relocalize once after activation, when ready |

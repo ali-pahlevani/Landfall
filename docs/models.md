@@ -151,7 +151,8 @@ are the depot's mirror image (`docs/relocalization.md`); XFeat avoided them, at 
 `learned_cpu` misses more because its maps are thinner. From the same keyframes it triangulates
 8,662 landmarks against ORB's 14,446, with shorter tracks (3.55 against 3.97 views), so its
 successful single-frame requests have fewer inliers (median 85 against 124). Where a stretch of
-the drive falls below the 40 inliers required (`sanity.min_inliers`), a request answers NO_MATCH.
+the drive falls below the 40 inliers required (`sanity.min_inliers`; since PLAN V61, 20 where the
+LiDAR scan tells the place apart), a request answers NO_MATCH.
 EigenPlaces retrieval with ORB features did best: the most successes and half the ambiguous
 frames, at about twice the classical time.
 

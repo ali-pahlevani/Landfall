@@ -15,10 +15,11 @@
 """AMCL loses its pose: the auto trigger relocalizes once; AMCL converges and stays confident."""
 
 # The stack of test_relocalizer_amcl (map_server, AMCL and the relocalizer under
-# nav2_lifecycle_manager) with the relocalizer's auto trigger on. relocalization_check scatters
-# AMCL's particles over the whole map and asks for nothing: the relocalizer must notice on its own,
-# fire once, and never again while AMCL stays confident, although the cooldown (10 s) is shorter
-# than the quiet period the check waits for (15 s).
+# nav2_lifecycle_manager) with the relocalizer's auto trigger on and its kidnap watchdog (on by
+# default) off. relocalization_check scatters AMCL's particles over the whole map and asks for
+# nothing: the relocalizer must notice on its own, fire once, and never again while AMCL stays
+# confident, although the cooldown (10 s) is shorter than the quiet period the check waits for
+# (15 s).
 
 import os
 import tempfile
@@ -68,7 +69,8 @@ def generate_test_description():
              '-p', 'query.timeout:=20.0',
              '-p', 'auto_trigger.enabled:=true',
              '-p', 'auto_trigger.duration:=1.0',
-             '-p', 'auto_trigger.cooldown:=10.0'],
+             '-p', 'auto_trigger.cooldown:=10.0',
+             '-p', 'kidnap_watchdog.enabled:=false'],
         output='screen')
     manager = launch_ros.actions.Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',

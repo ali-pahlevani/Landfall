@@ -13,6 +13,9 @@
 # may stop where the database holds no views (docs/nav2_integration.md).
 # Writes the simulation log (Nav2's, the relocalizer's), each goal's result and a bag (AMCL, ground
 # truth, the relocalizer's status, initial poses, TF) to the output directory.
+# RELOCALIZER_PARAMS: the relocalizer's parameter file. The default,
+# sim/params/relocalizer_depot_sim.yaml, has the kidnap watchdog off (the tree's recovery
+# relocalizes); sim/params/relocalizer_depot_watchdog.yaml lets the watchdog notice the kidnap.
 #
 #   navigate_depot.sh <output directory> <database>
 set -euo pipefail
@@ -23,6 +26,7 @@ out="${1:?usage: navigate_depot.sh <output directory> <database>}"
 database="${2:?usage: navigate_depot.sh <output directory> <database>}"
 share="$(ros2 pkg prefix landfall_bringup)/share/landfall_bringup"
 map="${MAP:-$(ros2 pkg prefix nav2_bringup)/share/nav2_bringup/maps/depot.yaml}"
+relocalizer_params="${RELOCALIZER_PARAMS:-${share}/sim/params/relocalizer_depot_sim.yaml}"
 robot_name="nav2_turtlebot4"
 mkdir -p "${out}"
 if [[ -e "${out}/bag" ]]; then
@@ -44,7 +48,7 @@ trap stop EXIT
 
 X_POSE=4.0 Y_POSE=-0.75 YAW=0.0 SIM_LAUNCH="${share}/sim/launch/depot_navigation.launch.xml" \
   bash "${share}/sim/scripts/start_depot_sim.sh" database:="${database}" map:="${map}" \
-  > "${out}/sim.log" 2>&1 &
+  relocalizer_params_file:="${relocalizer_params}" > "${out}/sim.log" 2>&1 &
 sim_pid=$!
 
 ros2 bag record --use-sim-time -s sqlite3 -o "${out}/bag" \

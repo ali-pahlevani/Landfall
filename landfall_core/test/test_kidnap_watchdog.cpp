@@ -41,7 +41,7 @@ TEST(KidnapWatchdog, FiresAfterEnoughDisagreeingChecksInARow)
   EXPECT_FALSE(watchdog.shouldFire(10.0));  // one check is not enough
   EXPECT_TRUE(watchdog.observe(7.9, 179.0));
   EXPECT_TRUE(watchdog.shouldFire(20.0));
-  watchdog.fired(20.0);
+  watchdog.fired();
   EXPECT_EQ(watchdog.disagreements(), 0);
   EXPECT_FALSE(watchdog.shouldFire(20.0));
 }
@@ -68,24 +68,40 @@ TEST(KidnapWatchdog, AnAgreeingCheckRestartsTheCount)
   EXPECT_FALSE(watchdog.shouldFire(0.0));
 }
 
-TEST(KidnapWatchdog, HonorsTheCooldown)
+TEST(KidnapWatchdog, HonorsTheCooldownAfterAPublishedPose)
 {
   landfall::KidnapWatchdog watchdog(params());
   watchdog.observe(5.0, 90.0);
   watchdog.observe(5.0, 90.0);
   ASSERT_TRUE(watchdog.shouldFire(100.0));
-  watchdog.fired(100.0);
-  // The relocalization found nothing and the localization stays wrong: the checks still disagree,
-  // but the next relocalization waits for the cooldown.
+  watchdog.fired();
+  watchdog.published(101.0);
+  // The published pose was wrong after all (the checks keep disagreeing with it): the next
+  // relocalization waits for the cooldown.
   watchdog.observe(5.0, 90.0);
   watchdog.observe(5.0, 90.0);
-  EXPECT_FALSE(watchdog.shouldFire(129.9));
-  EXPECT_TRUE(watchdog.shouldFire(130.0));
+  EXPECT_FALSE(watchdog.shouldFire(130.9));
+  EXPECT_TRUE(watchdog.shouldFire(131.0));
   watchdog.reset();
   EXPECT_EQ(watchdog.disagreements(), 0);
   watchdog.observe(5.0, 90.0);
   watchdog.observe(5.0, 90.0);
-  EXPECT_TRUE(watchdog.shouldFire(100.5));  // no cooldown after a reset
+  EXPECT_TRUE(watchdog.shouldFire(101.5));  // no cooldown after a reset
+}
+
+TEST(KidnapWatchdog, TriesAgainAfterARelocalizationThatPublishedNothing)
+{
+  landfall::KidnapWatchdog watchdog(params());
+  watchdog.observe(5.0, 90.0);
+  watchdog.observe(5.0, 90.0);
+  ASSERT_TRUE(watchdog.shouldFire(100.0));
+  watchdog.fired();
+  // The relocalization found no pose and the localization stays wrong: no cooldown, the next two
+  // disagreeing checks start another one.
+  watchdog.observe(5.0, 90.0);
+  EXPECT_FALSE(watchdog.shouldFire(110.0));
+  watchdog.observe(5.0, 90.0);
+  EXPECT_TRUE(watchdog.shouldFire(120.0));
 }
 
 TEST(KidnapWatchdog, OneConfirmationFiresAtOnce)
@@ -96,7 +112,8 @@ TEST(KidnapWatchdog, OneConfirmationFiresAtOnce)
   landfall::KidnapWatchdog watchdog(p);
   watchdog.observe(2.0, 0.0);
   EXPECT_TRUE(watchdog.shouldFire(0.0));
-  watchdog.fired(0.0);
+  watchdog.fired();
+  watchdog.published(0.0);
   watchdog.observe(2.0, 0.0);
   EXPECT_TRUE(watchdog.shouldFire(0.0));
 }

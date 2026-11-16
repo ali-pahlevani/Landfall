@@ -242,14 +242,35 @@ ending early (0.4 to 0.7 s); after three 30° turns of 0.8 s each, the fourth he
 robot at (10.11, -6.00, 173.0°) against the true (10.08, -6.02, 172.8°), 5.3 s after the first
 request, and the goal succeeded 19 s later.
 
+Runs 12 to 16 (2026-11-16) repeated run 11 with the kidnap watchdog on (PLAN V64;
+`RELOCALIZER_PARAMS` set to `sim/params/relocalizer_depot_watchdog.yaml`, since the simulation's
+own parameters turn it off). The startup relocalization published after 11 to 18 s, 3 cm and 0.3°
+off, and the first goal succeeded in every run. After the kidnap the robot drove on from the wrong
+pose toward the second goal. In four runs the watchdog's relocalization published 21 to 32 s after
+the kidnap, 4 to 5 cm and 0.1 to 0.3° from the truth, while AMCL was 6 to 12 m and 167° to 176°
+off; each time the goal under way failed 1.0 s later. The controller's path, planned from the wrong
+pose, no longer reached the robot (MPPI: "Resulting plan has 0 poses in it", `INVALID_PATH`), and
+the Jazzy tree, like Nav2's own (PLAN V48), runs the controller's recovery only for the errors
+`WouldAControllerRecoveryHelp` lists (`UNKNOWN`, `PATIENCE_EXCEEDED`, `FAILED_TO_MAKE_PROGRESS`,
+`NO_VALID_CONTROL`; T-015). In the fifth run AMCL jumped on its own, 2.2 m and 35° from one wrong
+pose to another, 19 s after the kidnap, and the goal failed the same way 2 s later, before the
+watchdog's relocalization, which the end of the run cut off. In those four runs, the robot stopped
+with its pose right within about half a minute of the kidnap. Without the watchdog, it drove on
+blind for 72 s (run 11) to 6 minutes (M6) until the tree's recovery relocalized it, and then
+reached the goal in runs 9 and 11.
+
 **Limitation.** Nav2 notices a wrong pose only when the robot can't move. Until then the robot
 drives on blind, and it can stop where the database holds no views of the place: the recovery can
 only relocalize where the recording went, in some direction. Record every lane, in both directions,
 and check the build report's coverage (docs/recording.md, "Where to drive"). A robot whose AMCL
 grows uncertain relocalizes sooner, through the relocalizer's auto trigger; one whose AMCL stays
-confident on the wrong pose, through its kidnap watchdog (`kidnap_watchdog.enabled`,
-docs/relocalization.md). In run 2, the relocalizer's background check placed the robot 9 cm from
-the truth while AMCL was confidently 8 m off.
+confident on the wrong pose, through its kidnap watchdog, on by default since PLAN V64
+(docs/relocalization.md). In run 2, the relocalizer's background check placed the robot 9 cm from
+the truth while AMCL was confidently 8 m off. The watchdog's relocalization, made outside the tree,
+ends a goal under way on Jazzy (runs 12 to 16), and on Lyrical too, whose tree checks the
+controller's error the same way (not run): the robot stops with its pose right, and the goal has to
+be sent again until T-015 lets the tree recover. Humble's tree runs its recoveries after any
+failure (not run with the watchdog).
 
 ### On Humble
 

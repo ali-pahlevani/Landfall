@@ -23,7 +23,8 @@ field validation on a real robot is PLAN M8 (`docs/field_validation.md`).
   databases of the same drive. Every condition uses them unchanged.
 - **Localization**: Landfall's `localization.launch.xml` with the simulation's AMCL parameters
   (`sim/params/localization_depot_sim.yaml`: 500 to 2000 particles, the likelihood field model)
-  and the relocalizer's defaults (`sim/params/relocalizer_depot_sim.yaml`). Nav2 runs, idle.
+  and the relocalizer's defaults (`sim/params/relocalizer_depot_sim.yaml`), with the kidnap watchdog
+  off but in the watchdog runs (`relocalizer_depot_watchdog.yaml`). Nav2 runs, idle.
 
 ## Protocol
 
@@ -296,6 +297,55 @@ database. The tables are `summarize_benchmark`'s output; the runner's CSV files 
   worlds, 234 of the 300 placements localized instead of 225, none wrongly, and a miss takes 9 to
   13 s longer to give up. The result files are in
   [`landfall_benchmark/results/seed2027_v63/`](../landfall_benchmark/results/seed2027_v63/).
+- **Since PLAN V64** (2026-11-16) the kidnap watchdog is on by default, and its cooldown begins
+  with a pose it published: a relocalization of its own that published nothing is tried again at
+  the next two disagreeing checks, where M7's waited until 30 s after the one before
+  (`docs/relocalization.md`). The watchdog run, re-run with the current relocalizer, the same
+  database and the same placements:
+
+  | Scenario | Method | Placements | Success | Wrong (95 % upper bound) | Inaccurate | Miss | First heading | Time to localize (median / p90) | Published error (median) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | nominal (classical) | watchdog | 100 | 94.0 % | 0 (3.6 %) | 0.0 % | 6.0 % | - | - / - | 2.5 cm |
+
+  | Scenario | Detected | Time to detect (median / p90) | Needless relocalizations | Observed with a right localization |
+  |---|---|---|---|---|
+  | nominal (classical) | 94.0 % | 34.1 s / 63.1 s | 0 (0.0 per hour) | 47 min |
+
+  It noticed and undid 94 of the 100 kidnaps instead of 85, a median 34 s after the kidnap (90 %
+  within 63 s; M7: 39 and 70 s), published no wrong pose, and in 47 minutes with a right
+  localization afterwards it never relocalized. Of its 995 checks, 510 found a pose (M7: 478 of
+  1,049); fewer ended without a match (218 against 400), more were refused by the LiDAR and the
+  sanity checks (77 and 55 against 27 and 22), and 91 ended `NOT_READY` without a frame taken
+  slowly enough for the IMU's gravity (82).
+
+  At 11 kidnaps a relocalization the watchdog started published nothing (3 `REJECTED_SANITY`, 3
+  `REJECTED_SCAN_CHECK`, 3 `NO_MATCH`, 2 `REJECTED_CONSISTENCY`, 1 `AMBIGUOUS`; one kidnap had two
+  of them), and at 9 of these a later one published within the 90 s. The 10 retries started 28.8
+  to 59.7 s after the relocalization before them: three before 30 s, which M7's cooldown would
+  have held back until the next disagreeing check, about 10 s later; four at 30.0 to 30.3 s; three
+  later. Two confirmations take two periods (20 s) and a relocalization that publishes nothing up
+  to its 10 s timeout, so with the defaults the old cooldown seldom held a retry back; with a
+  longer `kidnap_watchdog.cooldown` it would have. Of the 6 misses, 4 had fewer than the two
+  successful checks within the 90 s; at 2 the relocalization it started published nothing
+  (`REJECTED_CONSISTENCY` at 61 s, `REJECTED_SCAN_CHECK` at 75 s) and no two disagreeing checks
+  followed in time. The result file is in
+  [`landfall_benchmark/results/seed2027_v64/`](../landfall_benchmark/results/seed2027_v64/).
+
+  *Navigation laps* with the watchdog on and no kidnap measure its needless relocalizations while
+  the robot drives, which the benchmark's slow turns on the spot don't. In the navigation
+  simulation (`sim/launch/depot_navigation.launch.xml`, the same database, the watchdog's
+  parameter file), after the startup relocalization, the robot drove NavigateToPose goals to six
+  recorded places around the depot's lanes in turn, in two segments of 30 minutes: 101 goals
+  reached in 58 minutes of driving. One goal's response was lost in the simulation's DDS
+  ("Failed to send goal response"), and the robot stood still with a right localization for the
+  last 10 minutes of the first segment. In those 68 minutes the watchdog ran 409 checks: 341
+  found a pose, a median 1.8 cm and 0.22° from AMCL's (95 % within 5.1 cm and 0.89°, at most
+  10.6 cm and 2.2°), against its limits of 1 m and 20°; none disagreed, and it never
+  relocalized. Against Gazebo's truth, those poses were at most 11.3 cm and 1.9° off, AMCL's at
+  most 9.4 cm and 1.6°. The relocalizer used 31 % of one core of the laptop's CPU with the
+  watchdog (its process's CPU time, sampled every 30 s in the second segment), and 16 % in 15
+  minutes of the same laps with the watchdog off: the checks cost about 15 % of one core
+  (`docs/relocalization.md`, T-016).
 - **Runs.** Two runs were interrupted when the host went down and resumed at the next placement
   (`first_placement`) with the same build, models and database: `learned_cpu` nominal after
   placement 8, `learned_cpu` lighting after placement 21. The runner's startup fallback (above)

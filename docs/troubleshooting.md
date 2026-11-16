@@ -60,7 +60,7 @@ a right pose, look at its own parameters (motion noise, laser model) first.
 | `ReLocalize` fails with `UNAVAILABLE` | no relocalizer service under `service_name`: the relocalizer isn't active, or runs in another namespace |
 | `ReLocalize` fails with `TIMEOUT` | the relocalizer answered after `server_timeout`; it must exceed the request's `timeout` (the default does) |
 | NavigateToPose goals rejected at startup | Nav2 1.2 and later refuse goals while AMCL has no pose: the relocalizer's startup relocalization gives the first one (`startup_relocalization`) |
-| The robot drives on after a kidnap | Nav2 notices a wrong pose only when the robot can't move: the kidnap watchdog (`docs/relocalization.md`) |
+| The robot drives on after a kidnap | Nav2 notices a wrong pose only when the robot can't move; the kidnap watchdog notices it (on by default). Check that it runs (`kidnap_watchdog.enabled`, its count in `/diagnostics`) and that its checks find poses where the robot drives (the shadow log, `docs/relocalization.md`) |
 
 ## Monitors
 

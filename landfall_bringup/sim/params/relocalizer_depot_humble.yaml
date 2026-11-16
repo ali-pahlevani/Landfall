@@ -18,3 +18,7 @@
       delay: 2.0
       max_attempts: 5
       retry_interval: 5.0
+    # Off, as in relocalizer_depot_sim.yaml: after the kidnap the behavior tree's recovery
+    # relocalizes.
+    kidnap_watchdog:
+      enabled: false

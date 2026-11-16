@@ -1,6 +1,7 @@
-# The relocalizer in the depot simulation with its kidnap watchdog on (the kidnap benchmark's
-# watchdog runs, docs/benchmark.md): relocalizer_depot_sim.yaml plus the watchdog, at its
-# defaults (a check every 10 s, two disagreeing checks before relocalizing).
+# The relocalizer in the depot simulation with its kidnap watchdog on, at its defaults (a check
+# every 10 s, two disagreeing checks before relocalizing): relocalizer_depot_sim.yaml, which turns
+# it off, with the watchdog. For the kidnap benchmark's watchdog runs (docs/benchmark.md) and
+# navigate_depot.sh with RELOCALIZER_PARAMS.
 /**:
   ros__parameters:
     image:

@@ -57,8 +57,8 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `imu.max_angular_rate` | double | `0.1` | [0, 2] | at runtime | IMU gravity is used only below this turn rate, rad/s |
 | `imu.topic` | string | `"imu"` |  | at startup | sensor_msgs/Imu with orientation |
 | `kidnap_watchdog.confirmations` | integer | `2` | [1, 10] | at runtime | Disagreeing checks in a row (any check: the monitor's too) before relocalizing |
-| `kidnap_watchdog.cooldown` | double | `30` | [0, 3600] | at runtime | Seconds after a watchdog relocalization before the next one |
-| `kidnap_watchdog.enabled` | bool | `false` |  | at startup | Check the localization's pose with dry-run requests, and relocalize when they keep disagreeing with it |
+| `kidnap_watchdog.cooldown` | double | `30` | [0, 3600] | at runtime | Seconds after a pose the watchdog published before it relocalizes again (a relocalization that published nothing leaves no cooldown) |
+| `kidnap_watchdog.enabled` | bool | `true` |  | at startup | Check the localization's pose with dry-run requests, and relocalize when they keep disagreeing with it |
 | `kidnap_watchdog.max_rotation_deg` | double | `20` | [1, 180] | at runtime | A check disagrees with the localization when their headings differ by more degrees |
 | `kidnap_watchdog.max_translation` | double | `1` | [0.1, 10] | at runtime | A check disagrees with the localization when their poses differ by more metres |
 | `kidnap_watchdog.period` | double | `10` | [1, 3600] | at startup | Seconds between the watchdog's dry-run requests |

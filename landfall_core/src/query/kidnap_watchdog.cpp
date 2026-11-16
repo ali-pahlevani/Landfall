@@ -30,19 +30,19 @@ bool KidnapWatchdog::shouldFire(double t) const
   if (disagreements_ < params_.confirmations) {
     return false;
   }
-  return !last_fired_ || t - *last_fired_ >= params_.cooldown;
+  return !last_published_ || t - *last_published_ >= params_.cooldown;
 }
 
-void KidnapWatchdog::fired(double t)
+void KidnapWatchdog::published(double t)
 {
-  last_fired_ = t;
+  last_published_ = t;
   disagreements_ = 0;
 }
 
 void KidnapWatchdog::reset()
 {
   disagreements_ = 0;
-  last_fired_.reset();
+  last_published_.reset();
 }
 
 }  // namespace landfall

@@ -17,3 +17,8 @@
       delay: 2.0
       max_attempts: 5
       retry_interval: 5.0
+    # Off here, although on by default: the kidnap benchmark's request and AMCL runs measure the
+    # requests and AMCL alone, and the navigation run the behavior tree's recovery.
+    # relocalizer_depot_watchdog.yaml has it on.
+    kidnap_watchdog:
+      enabled: false

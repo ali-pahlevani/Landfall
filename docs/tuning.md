@@ -108,8 +108,9 @@ poses before what it does to successes. All parameters are listed in `docs/param
   alike to within noise ambiguous (twin aisles, which vision should decide); a larger one lets more
   look-alikes through. `evaluate_scan_check --alternatives` (and `--symmetry` for a building that
   looks alike turned about a point) measures both on your recordings. Turning the check off saves
-  about 20 ms per frame and gives up the defense against look-alike places that the LiDAR check
-  alone lets through.
+  about 20 ms per frame on 16 threads (0.25 s of CPU time) and gives up the defense against
+  look-alike places that the LiDAR check alone lets through, and the poses with fewer than
+  `sanity.min_inliers` inliers, which stand only where it shows the scan unique.
 - **Ambiguity** (`ambiguity.max_score_ratio`, 0). Any second place that passes every check, the
   LiDAR included, makes the frame `AMBIGUOUS`, whatever its score: in the depot's mirrored halves
   the wrong place out-scored the right one in 8 of 20 ambiguous frames. Leave it at 0.
@@ -163,9 +164,10 @@ poses before what it does to successes. All parameters are listed in `docs/param
   `duration` seconds. A localization that is confidently wrong doesn't: AMCL after the M6 kidnaps,
   and after global localization in the benchmark, reported a few centimetres while metres off.
   That case is the kidnap watchdog's.
-- **Kidnap watchdog** (`kidnap_watchdog.*`): a shorter `period` notices a kidnap sooner and costs one
-  request per period. The limits (1 m, 20°) are far above AMCL's normal error; keep
-  `confirmations` at 2 or more.
+- **Kidnap watchdog** (`kidnap_watchdog.*`, on by default since PLAN V64): a shorter `period`
+  notices a kidnap sooner and costs one request per period (at 10 s, about 15 % of one core of a
+  laptop CPU in the depot; `docs/relocalization.md`). The limits (1 m, 20°) are far above AMCL's
+  normal error; keep `confirmations` at 2 or more.
 - **Extrinsics monitor** (`extrinsics_monitor.*`): `max_amcl_std_xy` (5 cm) must be at or above
   what your AMCL reports while it is right, or the monitor never samples.
 

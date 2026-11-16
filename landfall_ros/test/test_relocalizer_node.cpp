@@ -90,6 +90,7 @@ protected:
       {"scan_check.topic", "/reloc_test/scan"},
       {"auto_trigger.pose_topic", "/reloc_test/amcl_pose"},
       {"extrinsics_monitor.enabled", false},
+      {"kidnap_watchdog.enabled", false},  // on by default; the watchdog's tests turn it on
     });
     return o;
   }

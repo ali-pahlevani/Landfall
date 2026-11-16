@@ -14,8 +14,8 @@ check passes. A wrong pose is worse than no pose, so Landfall prefers a miss to 
 - Drop-in on existing maps (slam_toolbox, Cartographer, any map_server `.yaml`), no re-mapping.
 - Every pose is checked: plausibility, the LiDAR scan against the occupancy map (also against
   every other place the scan could fit), and agreement of several frames with odometry.
-- Nav2 behavior tree nodes, an example tree for each Nav2 release, launch files; a kidnap watchdog
-  that notices when AMCL is confidently wrong.
+- Nav2 behavior tree nodes, an example tree for each Nav2 release, launch files; a kidnap watchdog,
+  on by default, that notices when AMCL is confidently wrong.
 - Open source (Apache-2.0) with permissively licensed dependencies only.
 - ROS 2 Humble, Jazzy and Lyrical.
 
@@ -34,7 +34,7 @@ places, the same in every row, without its localization knowing, and has to get 
 
 A success leaves AMCL within 0.25 m and 5° of the truth; a wrong pose is one published (or, for
 AMCL, claimed) more than 0.5 m or 10° off. The rest are misses: no pose, and the robot knows it is
-lost. Landfall published no wrong pose in its 1,800 placements (for one run of 100, the 95 % upper
+lost. Landfall published no wrong pose in its 1,900 placements (for one run of 100, the 95 % upper
 bound of the wrong-pose rate is 3.6 %). Changes the map doesn't have cost successes: the LiDAR
 check refuses poses where the scan no longer fits the map.
 
@@ -47,9 +47,11 @@ instead of 45° from eight (97, 51 and 77 % with 45° steps). Before V61: 93, 46
 
 - **Time:** a median 5.4 s with `classical` as mapped, looking around from up to twelve headings;
   37 % of the placements in under a second. A robot that finds no pose gives up after 39 to 45 s.
-  About 50 ms per camera frame on a laptop CPU, LiDAR checks included.
-- **Kidnap watchdog**, with nothing asked: 85 % of the kidnaps noticed and undone within 90 s
-  (median 39 s), no wrong pose, no needless relocalization in 43 minutes.
+  About 50 ms per camera frame on a laptop CPU's 16 threads (0.4 s of CPU time), LiDAR checks
+  included.
+- **Kidnap watchdog**, on by default, with nothing asked: 94 % of the kidnaps noticed and undone
+  within 90 s (median 34 s), no wrong pose, no needless relocalization in 47 minutes, nor in 68
+  minutes of navigation laps (re-run 2026-11-16; M7: 85 %, median 39 s).
 - **Covariance:** each pose is published with a covariance estimated for it instead of a fixed
   25 cm and 5°. In the three re-run rows (\*), its standard deviations had a median of 4.1 cm and
   0.27°, and 229 of the 234 published poses lay inside their 95 % ellipse.

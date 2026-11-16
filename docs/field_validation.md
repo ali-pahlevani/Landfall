@@ -69,12 +69,19 @@ headings, near repetitive structures, with and without loads, at the ends of ais
    compare the answer with AMCL's pose (the shadow log records these too).
 2. Then live: make AMCL lose its pose (`reinitialize_global_localization`, or a wrong initial pose
    from RViz), call `~/relocalize`, and check that AMCL converges on the right pose (the operator
-   confirms where the robot is).
+   confirms where the robot is). The kidnap watchdog (on by default) would relocalize a wrong pose
+   on its own within about half a minute: run these trials with `kidnap_watchdog.enabled: false`,
+   and the watchdog's own in step 4.
 3. The early end (`query.early_stop_*`, PLAN V63): at about 20 spots where a request found nothing,
    record 10 s of the robot standing still (image, camera_info, scan, TF), and replay the bag with
    `landfall query --frames 3` twice, with the defaults and with
    `--set query.early_stop_frames=0`. A spot that localizes only in the second replay is a success
    the early end lost; in simulation, with a camera's noise added, it lost 0.1 % of them.
+
+4. The kidnap watchdog (PLAN V64), on again: at about 10 spots, give AMCL a wrong pose from RViz
+   (2 to 10 m off, and once only turned by 90°) while the robot stands or drives slowly. Note the
+   seconds until the watchdog relocalizes ("kidnap watchdog: ... relocalizing" in the node's log)
+   and the error of the pose it publishes.
 
 Note every result: status, the pose's error against the confirmed pose, the time.
 
@@ -84,13 +91,19 @@ On the robot's own computer, from the shadow log (`elapsed_s`, the whole request
 log (milliseconds per frame). The release's target for the classical backend is a median request
 under 3 s on a CPU-only PC.
 
+The relocalizer's share of the CPU, with the kidnap watchdog on and off: a few minutes of each
+while the robot drives, the process's CPU time from `ps -o times= -p <pid>` at the start and the
+end (or `pidstat -p <pid> 30`). In the simulation its checks cost about 15 % of one core of a
+laptop CPU (`docs/relocalization.md`, T-016).
+
 ## Results to report
 
 | What | How |
 |---|---|
 | Wrong poses | count over shadow and active trials, with the 95 % upper bound; target 0 |
 | Success and miss rates | per trigger, from the shadow log; per spot, from the active trials |
-| Timings | median and 95th percentile per request |
+| Timings | median and 95th percentile per request; the relocalizer's CPU share with the watchdog on and off |
 | Early end | requests that ended early (`ended early` in the shadow log's messages); successes it lost in the replays (step 3.3) |
+| Kidnap watchdog | the seconds to relocalize and the error (step 3.4); its false alarms from the shadow log: two successful requests in a row further from AMCL's pose than `kidnap_watchdog.max_translation` or `max_rotation_deg`, where the watchdog would have relocalized a right localization; target 0 |
 | Stability | no crash, no growing memory over the soak |
 | Changes | every threshold changed from its default, and why |

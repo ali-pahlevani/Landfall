@@ -25,16 +25,17 @@ struct KidnapWatchdogParams
   double max_translation = 1.0;    ///< m a check may differ from the localization and agree
   double max_rotation_deg = 20.0;  ///< deg, likewise
   int confirmations = 2;           ///< disagreeing checks in a row before relocalizing
-  double cooldown = 30.0;          ///< s after a relocalization it started before the next one
+  double cooldown = 30.0;          ///< s after a pose it published before its next relocalization
 };
 
 /// Notices a wrong localization, such as a kidnapped robot whose localization stays confident
 /// (plan §7.20), from the relocalizer's background checks: dry-run requests that passed every
 /// check. A check disagrees when its pose is further from the localization's than either limit.
 /// After `confirmations` disagreeing checks in a row, with no agreeing one between them, a
-/// relocalization should start, unless the watchdog started one less than `cooldown` ago. Checks
-/// that found no pose say nothing about the localization and are not observed. Times are seconds
-/// on any one clock.
+/// relocalization should start, unless one the watchdog started published a pose less than
+/// `cooldown` ago. One that published nothing leaves no cooldown: the next `confirmations`
+/// disagreeing checks start another (V64). Checks that found no pose say nothing about the
+/// localization and are not observed. Times are seconds on any one clock.
 class KidnapWatchdog
 {
 public:
@@ -50,8 +51,11 @@ public:
   bool observe(double translation, double rotation_deg);
   /// True when a relocalization should start at time t.
   bool shouldFire(double t) const;
-  /// The watchdog started a relocalization at time t: the count restarts, the cooldown begins.
-  void fired(double t);
+  /// The watchdog started a relocalization: the count restarts.
+  void fired() { disagreements_ = 0; }
+  /// The relocalization the watchdog started published a pose at time t: the count restarts and
+  /// the cooldown begins.
+  void published(double t);
   /// Forgets the disagreeing checks (e.g. another request gave the localization a new pose).
   void restart() { disagreements_ = 0; }
   /// Forgets the checks and the cooldown (e.g. after reactivation).
@@ -62,7 +66,7 @@ public:
 private:
   KidnapWatchdogParams params_;
   int disagreements_ = 0;
-  std::optional<double> last_fired_;
+  std::optional<double> last_published_;
 };
 
 }  // namespace landfall

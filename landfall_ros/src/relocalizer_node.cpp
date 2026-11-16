@@ -182,7 +182,7 @@ void RelocalizerNode::declareParameters()
     "extrinsics_monitor.period", 60.0,
     describe("Seconds between the monitor's dry-run requests", 1.0, 3600.0));
   declare_parameter(
-    "kidnap_watchdog.enabled", false,
+    "kidnap_watchdog.enabled", true,
     describe("Check the localization's pose with dry-run requests, and relocalize when they keep "
              "disagreeing with it"));
   declare_parameter(
@@ -468,7 +468,10 @@ void RelocalizerNode::declareParameters()
       kDynamic));
   declare_parameter(
     "kidnap_watchdog.cooldown", 30.0,
-    describe("Seconds after a watchdog relocalization before the next one", 0.0, 3600.0, kDynamic));
+    describe(
+      "Seconds after a pose the watchdog published before it relocalizes again (a relocalization "
+      "that published nothing leaves no cooldown)",
+      0.0, 3600.0, kDynamic));
 }
 
 RelocalizerNode::Settings RelocalizerNode::readSettings() const
@@ -1086,9 +1089,24 @@ std::optional<RelocalizerNode::Request> RelocalizerNode::watch(
   const Request & request, const Result & result)
 {
   if (result.published) {
-    // The localization got a new pose: earlier disagreements are about the old one.
+    // The localization got a new pose: earlier disagreements are about the old one. A pose the
+    // watchdog's own relocalization published also starts its cooldown.
     const std::lock_guard<std::mutex> lock(mutex_);
-    watchdog_.restart();
+    if (request.trigger == "watchdog") {
+      watchdog_.published(now().seconds());
+    } else {
+      watchdog_.restart();
+    }
+    return std::nullopt;
+  }
+  if (settings_.watchdog_enabled && !request.background && request.trigger == "watchdog") {
+    // Its relocalization published nothing: no cooldown, the next disagreeing checks try again.
+    RCLCPP_INFO(
+      get_logger(),
+      "kidnap watchdog: the relocalization published nothing (%s); %d more disagreeing check(s) "
+      "start another",
+      toString(static_cast<Status>(result.status)),
+      static_cast<int>(get_parameter("kidnap_watchdog.confirmations").as_int()));
     return std::nullopt;
   }
   if (!settings_.watchdog_enabled || !request.background || result.status != Result::SUCCESS) {
@@ -1119,7 +1137,7 @@ std::optional<RelocalizerNode::Request> RelocalizerNode::watch(
       return std::nullopt;
     }
     count = watchdog_.disagreements();
-    watchdog_.fired(t);
+    watchdog_.fired();
   }
   RCLCPP_WARN(
     get_logger(),

@@ -279,6 +279,18 @@ All notable changes to this project are documented here. The format follows
   wrongly, in the same time where both did; a robot that finds no pose gives up 9 to 13 s later
   (after 39 to 45 s). A request succeeded 92 % of the time within 15° of a direction the
   recording looked in nearby, 66 % at 15° to 30°: 30° steps always leave a heading within 15°.
+- The kidnap watchdog is on by default (`kidnap_watchdog.enabled`, PLAN V64): after a kidnap AMCL
+  can stay confident on the wrong pose, which its covariance doesn't show (the covariance-based
+  auto trigger stays off by default). Its cooldown (`kidnap_watchdog.cooldown`, 30 s) now begins
+  with a pose it published: a relocalization of its own that published nothing is tried again at
+  the next two disagreeing checks. In the kidnap benchmark it noticed and undid 94 of the 100
+  kidnaps (M7: 85), a median 34 s after the kidnap, without a wrong pose, and in 68 minutes of
+  navigation laps it never relocalized a right localization. Its checks cost about 15 % of one core
+  of a laptop CPU (T-016). A goal under way fails when it relocalizes, on Jazzy and Lyrical: their
+  trees don't run the controller's recovery for `INVALID_PATH` (T-015). The simulation's parameters
+  (`sim/params/relocalizer_depot_sim.yaml`, `relocalizer_depot_humble.yaml`) turn it off, so that
+  the kidnap benchmark's request and AMCL runs and the navigation runs measure what they did;
+  `navigate_depot.sh` takes `RELOCALIZER_PARAMS` (`relocalizer_depot_watchdog.yaml` turns it on).
 - CI: the Docker images retry their network steps (apt update and downloads, rosdep update and
   install).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.

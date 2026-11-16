@@ -16,7 +16,7 @@
 
 # map_server, AMCL and the relocalizer run under nav2_lifecycle_manager (with bonds), as in a
 # robot's localization bringup. relocalization_check plays the depot fixture's first window and
-# decides.
+# decides. The kidnap watchdog (on by default) is off: only the service's request may publish.
 
 import os
 import tempfile
@@ -62,7 +62,8 @@ def generate_test_description():
              '-p', 'camera_info.topic:=/rgbd_camera/camera_info',
              '-p', 'imu.topic:=/imu',
              '-p', 'imu.frame:=imu_link',
-             '-p', 'consistency.num_frames:=2'],
+             '-p', 'consistency.num_frames:=2',
+             '-p', 'kidnap_watchdog.enabled:=false'],
         output='screen')
     manager = launch_ros.actions.Node(
         package='nav2_lifecycle_manager', executable='lifecycle_manager',

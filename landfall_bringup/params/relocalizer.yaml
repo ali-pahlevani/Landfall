@@ -32,5 +32,8 @@
     auto_trigger:
       enabled: false           # relocalize on its own while AMCL stays uncertain
       pose_topic: amcl_pose
+    kidnap_watchdog:
+      enabled: true            # check AMCL's pose every 10 s and relocalize when vision keeps
+                               # disagreeing with it: AMCL can stay confident after a kidnap
     bond:
       enabled: true            # heartbeat with nav2_lifecycle_manager

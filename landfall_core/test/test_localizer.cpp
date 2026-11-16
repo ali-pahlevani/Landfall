@@ -299,6 +299,7 @@ TEST_F(LocalizerTest, LocalizesPosesBetweenKeyframes)
     worst_yaw = std::max(worst_yaw, yaw);
     wrong += position > 0.25 ? 1 : 0;
     EXPECT_EQ(result.deepest_stage, landfall::Stage::kScanPassed);
+    EXPECT_DOUBLE_EQ(result.closeness, 1.0);
     ASSERT_GE(result.best, 0);
     const auto & best = result.hypotheses[static_cast<std::size_t>(result.best)];
     EXPECT_GE(best.sanity.num_inliers, 40);
@@ -367,9 +368,14 @@ TEST_F(LocalizerTest, UnknownPlaceIsNoMatch)
   EXPECT_FALSE(result.pose);
   EXPECT_EQ(result.deepest_stage, landfall::Stage::kRetrieved);
   EXPECT_EQ(result.best, -1);
+  // Nowhere near a pose: no place found half the matches a pose needs.
+  EXPECT_LT(result.closeness, 0.5);
+  double best = 0.0;
   for (const auto & h : result.hypotheses) {
     EXPECT_FALSE(h.rejection.empty());
+    best = std::max(best, h.closeness);
   }
+  EXPECT_DOUBLE_EQ(result.closeness, best);
 }
 
 TEST_F(LocalizerTest, SanityRejectsWrongCameraHeight)
@@ -384,8 +390,11 @@ TEST_F(LocalizerTest, SanityRejectsWrongCameraHeight)
   EXPECT_FALSE(result.pose);
   EXPECT_EQ(result.deepest_stage, landfall::Stage::kSolved);
   ASSERT_FALSE(result.hypotheses.empty());
-  EXPECT_NE(result.hypotheses.front().rejection.find("height"), std::string::npos)
-    << result.hypotheses.front().rejection;
+  const auto & front = result.hypotheses.front();
+  EXPECT_NE(front.rejection.find("height"), std::string::npos) << front.rejection;
+  // About three times sanity.max_height_error (0.1 m): a third of the way.
+  EXPECT_DOUBLE_EQ(front.closeness, front.sanity.closeness);
+  EXPECT_LT(front.closeness, 0.4);
 }
 
 TEST_F(LocalizerTest, SanityRejectsPosesInsideObstacles)
@@ -398,6 +407,8 @@ TEST_F(LocalizerTest, SanityRejectsPosesInsideObstacles)
   ASSERT_FALSE(result.hypotheses.empty());
   EXPECT_NE(result.hypotheses.front().rejection.find("free"), std::string::npos)
     << result.hypotheses.front().rejection;
+  EXPECT_DOUBLE_EQ(
+    result.hypotheses.front().closeness, 0.0);  // no scale: a robot can't stand there
 }
 
 TEST_F(LocalizerTest, ScanRejectsAPlaceThatOnlyLooksRight)
@@ -698,6 +709,13 @@ TEST_F(DuplicatedRoomTest, FewInliersAreRefusedWhereTheScanFitsTwoPlaces)
         ++measured;
         EXPECT_FALSE(result.uniqueness.unique);
         EXPECT_LT(result.uniqueness.alternative_gap, 0.05);
+      }
+      if (!result.pose) {
+        // A pose refused for its inliers alone came near: another frame may see 40 of them.
+        EXPECT_LT(result.closeness, 1.0);
+        if (result.uniqueness.measured) {
+          EXPECT_GE(result.closeness, 0.5);
+        }
       }
     }
   }

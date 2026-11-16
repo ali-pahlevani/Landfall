@@ -49,6 +49,7 @@ add_library(landfall_core SHARED
   src/query/auto_trigger.cpp
   src/query/clustering.cpp
   src/query/decision.cpp
+  src/query/early_stop.cpp
   src/query/extrinsics_monitor.cpp
   src/query/kidnap_watchdog.cpp
   src/query/localization_map.cpp

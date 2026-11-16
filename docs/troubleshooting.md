@@ -28,7 +28,8 @@ status and lists the `NOT_READY` reasons with their fixes.
 | Status | Usual cause | What helps |
 |---|---|---|
 | `NOT_READY` | something missing: database, map, camera, scan, TF, AMCL | the message, and the table in `docs/relocalization.md` |
-| `NO_MATCH` often | the robot looks at views the recording never saw, or the scene changed | record there in this direction; let the robot turn (the example tree looks around from eight headings) |
+| `NO_MATCH` often | the robot looks at views the recording never saw, or the scene changed | record there in this direction; let the robot turn (the example tree looks around from twelve headings) |
+| A failure in well under its timeout, `ended early` in the message | the camera stood still and two frames came nowhere near a pose (`query.early_stop_*`): the rest would have shown the same | as for the status itself; let the robot turn. `query.early_stop_frames: 0` waits for the timeout |
 | `AMBIGUOUS` | two places pass every check: repetitive aisles, mirrored halves | by design: the robot moves on and asks again |
 | `AMBIGUOUS`: `the landmarks come from keyframes whose LiDAR scans fitted two places within 1 m` | the map draws a wall twice (or the structure repeats) where the recording drove; the build warned that keyframes `fit a second place` (orange on its coverage map) | fix the map there and rebuild; elsewhere the robot relocalizes |
 | `REJECTED_SCAN_CHECK` with `inliers < 40 where the scan …` (the best hypothesis) | vision found the place with few landmarks, and the LiDAR can't confirm it alone: the scan fits another place, or a place within 1 m, almost as well | let the robot turn and ask again; record more views there |

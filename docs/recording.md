@@ -59,8 +59,8 @@ simulations (the URDF Maker warehouse's 904-request heading sweep and the depot'
 benchmark), a request succeeded 72-83 % of the time when a keyframe holding at least 40 landmarks
 lay within 1 m of it and looked within the same 45° sector, and 4-12 % of the time without one;
 3 of the 177 successes came from farther than 2 m or 45° from every keyframe. Turning and asking
-again (the example behavior tree) relocalized 67-90 % of the places with such a view in one
-direction, 94-95 % of those with views in two or more, and 15 % of those with none.
+again (the example behavior tree, then in 45° steps) relocalized 67-90 % of the places with such a
+view in one direction, 94-95 % of those with views in two or more, and 15 % of those with none.
 
 So drive for the views the robot will need:
 

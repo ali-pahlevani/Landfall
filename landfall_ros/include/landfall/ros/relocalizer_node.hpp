@@ -34,6 +34,7 @@
 #include "diagnostic_updater/diagnostic_updater.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "landfall/query/auto_trigger.hpp"
+#include "landfall/query/early_stop.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
 #include "landfall/query/kidnap_watchdog.hpp"
 #include "landfall/query/localizer.hpp"
@@ -140,6 +141,7 @@ private:
     AutoTriggerParams auto_trigger;
     ExtrinsicsMonitorParams monitor;
     KidnapWatchdogParams watchdog;
+    EarlyStopParams early_stop;
     double monitor_max_amcl_std_xy = 0.05;
     double monitor_max_linear_speed = 0.2;
     double monitor_max_angular_speed = 0.1;

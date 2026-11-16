@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -123,6 +124,7 @@ TEST_F(ScanVerifierTest, TruePoseIsAccepted)
     const auto scan = verifier_.project(simulateScan(*field_, truth), flat_);
     const auto result = verifier_.verify(scan, truth);
     EXPECT_TRUE(result.passed) << result.reason;
+    EXPECT_DOUBLE_EQ(result.closeness, 1.0);
     EXPECT_GE(result.score.hit_ratio, 0.9);
     EXPECT_EQ(result.score.violations, 0);
     EXPECT_LE(landfall::translationDistance(result.best_pose, truth), 0.05);
@@ -147,6 +149,22 @@ TEST_F(ScanVerifierTest, OffsetPosesAreRejected)
        {Pose2{3.5, 3.0, 0.3}, Pose2{3.0, 2.5, 0.3}, Pose2{3.35, 3.35, 0.3}, Pose2{3.0, 3.0, 0.5}}) {
     const auto result = verifier_.verify(scan, wrong);
     EXPECT_FALSE(result.passed) << wrong.x << " " << wrong.y << " " << wrong.yaw;
+    // How close it came: the worst of its tests against their limits (misses against the misses
+    // allowed).
+    const auto & p = verifier_.params();
+    const auto & score = result.score;
+    double expected = 1.0;
+    if (score.known_ratio < p.min_known_ratio) {
+      expected = std::min(expected, score.known_ratio / p.min_known_ratio);
+    }
+    if (score.hit_ratio < p.min_hit_ratio) {
+      expected = std::min(expected, (1.0 - p.min_hit_ratio) / (1.0 - score.hit_ratio));
+    }
+    if (score.violation_ratio > p.max_violation_ratio) {
+      expected = std::min(expected, p.max_violation_ratio / score.violation_ratio);
+    }
+    EXPECT_LT(result.closeness, 1.0);
+    EXPECT_NEAR(result.closeness, expected, 1e-12);
   }
 }
 
@@ -170,6 +188,8 @@ TEST_F(ScanVerifierTest, TooFewBeamsFail)
   const auto result = verifier_.verify(verifier_.project(scan, flat_), Pose2{3.0, 3.0, 0.0});
   EXPECT_FALSE(result.passed);
   EXPECT_NE(result.reason.find("valid beams"), std::string::npos) << result.reason;
+  EXPECT_NEAR(result.closeness, result.score.valid_beams / 60.0, 1e-12);  // of min_valid_beams
+  EXPECT_LE(result.closeness, 40.0 / 60.0);
 }
 
 TEST_F(ScanVerifierTest, RampTiltDropsFloorHits)

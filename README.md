@@ -27,33 +27,32 @@ places, the same in every row, without its localization knowing, and has to get 
 
 | Depot world | Landfall `classical` | Landfall `learned_cpu` | AMCL's global localization |
 |---|---|---|---|
-| as mapped | **93 %**, 0 wrong | 78 %, 0 wrong | 6 %, **83 wrong** |
+| as mapped | **99 %**\*, 0 wrong | 78 %, 0 wrong | 6 %, **83 wrong** |
 | other light | 91 %, 0 wrong | 77 %, 0 wrong | |
-| nine stacks of goods the map doesn't have | 50 %\*, 0 wrong | 44 %, 0 wrong | 6 %, 83 wrong |
-| crate stacks gone that the map still has | 76 %\*, 0 wrong | | 8 %, 82 wrong |
+| nine stacks of goods the map doesn't have | 54 %\*, 0 wrong | 44 %, 0 wrong | 6 %, 83 wrong |
+| crate stacks gone that the map still has | 81 %\*, 0 wrong | | 8 %, 82 wrong |
 
 A success leaves AMCL within 0.25 m and 5° of the truth; a wrong pose is one published (or, for
 AMCL, claimed) more than 0.5 m or 10° off. The rest are misses: no pose, and the robot knows it is
-lost. Landfall published no wrong pose in its 1,200 placements (for one run of 100, the 95 % upper
+lost. Landfall published no wrong pose in its 1,800 placements (for one run of 100, the 95 % upper
 bound of the wrong-pose rate is 3.6 %). Changes the map doesn't have cost successes: the LiDAR
 check refuses poses where the scan no longer fits the map.
 
-\* Re-run (2026-11-14) with the current relocalizer. Since PLAN V61 it accepts fewer inliers where
-the LiDAR scan tells the place apart (46 and 68 % before). Since V62 it refines each pose on the
-floor and publishes the pose's own covariance (52 and 76 % between V61 and V62; with the goods, two
-placements that had needed five and eight headings turned into misses, see
-[`docs/benchmark.md`](docs/benchmark.md)). The other rows are from M7 (2026-11-08/09).
+\* Re-run (2026-11-15) with the current relocalizer and look-around. Since PLAN V61 it accepts
+fewer inliers where the LiDAR scan tells the place apart; since V62 it refines each pose on the
+floor and publishes the pose's own covariance; since V63 a request ends early where a still camera
+sees nothing near a pose, and the robot looks around in 30° steps, from up to twelve headings,
+instead of 45° from eight (97, 51 and 77 % with 45° steps). Before V61: 93, 46 and 68 %
+([`docs/benchmark.md`](docs/benchmark.md)). The other rows are from M7 (2026-11-08/09).
 
-- **Time:** a median 6 s with `classical`, looking around from up to eight headings; 36 % of the
-  placements in under a second. About 50 ms per camera frame on a laptop CPU, LiDAR checks
-  included.
+- **Time:** a median 5.4 s with `classical` as mapped, looking around from up to twelve headings;
+  37 % of the placements in under a second. A robot that finds no pose gives up after 39 to 45 s.
+  About 50 ms per camera frame on a laptop CPU, LiDAR checks included.
 - **Kidnap watchdog**, with nothing asked: 85 % of the kidnaps noticed and undone within 90 s
   (median 39 s), no wrong pose, no needless relocalization in 43 minutes.
 - **Covariance:** each pose is published with a covariance estimated for it instead of a fixed
-  25 cm and 5°. In the two re-run rows (\*), its standard deviations had a median of 3.8 cm and
-  0.25°, and 117 of the 126 published poses lay inside their 95 % ellipse. (Since then it is
-  published without negative correlations, which Nav2's AMCL on Lyrical rejects; that only widens
-  it.)
+  25 cm and 5°. In the three re-run rows (\*), its standard deviations had a median of 4.1 cm and
+  0.27°, and 229 of the 234 published poses lay inside their 95 % ellipse.
 - **Offline**, images of one recording against another's database: 95 to 99 % of the requests
   succeed, with a median error of 1 to 2 cm
   ([`docs/relocalization.md`](docs/relocalization.md#accuracy-so-far-simulation-m4-re-run-in-m5-and-m7)).

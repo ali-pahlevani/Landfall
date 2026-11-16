@@ -70,6 +70,11 @@ headings, near repetitive structures, with and without loads, at the ends of ais
 2. Then live: make AMCL lose its pose (`reinitialize_global_localization`, or a wrong initial pose
    from RViz), call `~/relocalize`, and check that AMCL converges on the right pose (the operator
    confirms where the robot is).
+3. The early end (`query.early_stop_*`, PLAN V63): at about 20 spots where a request found nothing,
+   record 10 s of the robot standing still (image, camera_info, scan, TF), and replay the bag with
+   `landfall query --frames 3` twice, with the defaults and with
+   `--set query.early_stop_frames=0`. A spot that localizes only in the second replay is a success
+   the early end lost; in simulation, with a camera's noise added, it lost 0.1 % of them.
 
 Note every result: status, the pose's error against the confirmed pose, the time.
 
@@ -86,5 +91,6 @@ under 3 s on a CPU-only PC.
 | Wrong poses | count over shadow and active trials, with the 95 % upper bound; target 0 |
 | Success and miss rates | per trigger, from the shadow log; per spot, from the active trials |
 | Timings | median and 95th percentile per request |
+| Early end | requests that ended early (`ended early` in the shadow log's messages); successes it lost in the replays (step 3.3) |
 | Stability | no crash, no growing memory over the soak |
 | Changes | every threshold changed from its default, and why |

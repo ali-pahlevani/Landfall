@@ -104,16 +104,23 @@ struct Hypothesis
 {
   std::vector<int64_t> keyframe_ids;  ///< the place, best retrieval rank first
   int correspondences = 0;            ///< 2D-3D matches after deduplication
+  // The small fields stay together, so that T_map_cam keeps its alignment without padding.
   Stage stage = Stage::kRetrieved;
-  std::string rejection;  ///< why it stopped; empty for a valid hypothesis
   bool solved = false;
   PnpMethod method = PnpMethod::kP3P;
+  bool scan_checked = false;  ///< `scan` holds the LiDAR check's result
+  std::string rejection;      ///< why it stopped; empty for a valid hypothesis
+  /// How close it came to a valid pose (V63): 1 for a valid hypothesis. Without a pose (fewer
+  /// matches or inliers than the inlier floor), the sanity checks' closeness of the best pose its
+  /// matches gave (inliers against the floor, height, tilt, free floor: chance matches leave
+  /// chance inliers but seldom a pose on the floor), or its matches against the floor below 6 of
+  /// them. Else the sanity check's, or the LiDAR check's; 0 where the inliers fix no pose.
+  double closeness = 0.0;
   /// Share of the inliers matched in keyframes whose scan fitted a second place within 1 m (the
   /// build's kFlagScanAmbiguous): their landmarks are as uncertain along it.
   double twin_support = 0.0;
   Pose3 T_map_cam = Pose3::Identity();
-  SanityResult sanity;  ///< metrics; valid when solved
-  bool scan_checked = false;
+  SanityResult sanity;   ///< metrics; valid when solved
   ScanCheckResult scan;  ///< valid when scan_checked
   /// Base pose: the floor refinement's (LocalizerParams::refine_on_floor) or the free PnP
   /// solution's, replaced by the scan check's best if scan_check.refine_pose.
@@ -181,6 +188,11 @@ struct FrameResult
   /// within 1 m (scan_check.max_twin_support).
   bool twin_ambiguous = false;
   int best = -1;  ///< index of the winning hypothesis, -1 without a valid one
+  /// How close the frame came to a pose (V63): the best of its hypotheses' closeness, 1 when it has
+  /// a pose (or is ambiguous: places passed every check), 0 without any place. A weak winner the
+  /// scan doesn't tell apart counts by the better of its inliers against sanity.min_inliers and its
+  /// scan gap against scan_check.unique_margin (0 for a twin, or when the scan isn't checked).
+  double closeness = 0.0;
   FrameTimings timings;
 };
 

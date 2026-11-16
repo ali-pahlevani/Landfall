@@ -15,10 +15,13 @@
 // The example behavior tree of this Nav2 release loads as Nav2's navigator loads it: with all of
 // Nav2's behavior tree plugins and Landfall's plugin library, on a blackboard like the
 // navigator's, with the servers its nodes connect to (docs/PLAN.md M6). Placeholder servers stand
-// in for Nav2's: Nav2's action and service nodes wait for them when the tree is created.
+// in for Nav2's: Nav2's action and service nodes wait for them when the tree is created. Spin
+// turns at once, and a mock relocalizer answers, so that the look-around runs as it would.
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -48,6 +51,10 @@ namespace
 
 using landfall::nav2::test::makeBlackboard;
 using landfall::nav2::test::makeBtNode;
+using landfall::nav2::test::MockRelocalizer;
+using landfall::nav2::test::tickUntilDone;
+using Result = landfall_msgs::msg::RelocalizationResult;
+using namespace std::chrono_literals;
 
 // The plugin libraries Nav2's navigator loads by itself: from nav2_behavior_tree on Jazzy and
 // later, from Humble's nav2_bringup/params/nav2_params.yaml (Nav2 1.1.20) on Humble, where they
@@ -128,6 +135,24 @@ typename rclcpp_action::Server<ActionT>::SharedPtr placeholderAction(
     [](const std::shared_ptr<Handle>) {});
 }
 
+// Accepts every goal and succeeds at once, counting the goals.
+template <typename ActionT>
+typename rclcpp_action::Server<ActionT>::SharedPtr succeedingAction(
+  const rclcpp::Node::SharedPtr & node, const std::string & name, std::atomic<int> & goals)
+{
+  using Handle = rclcpp_action::ServerGoalHandle<ActionT>;
+  return rclcpp_action::create_server<ActionT>(
+    node, name,
+    [&goals](const rclcpp_action::GoalUUID &, std::shared_ptr<const typename ActionT::Goal>) {
+      ++goals;
+      return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    },
+    [](const std::shared_ptr<Handle>) { return rclcpp_action::CancelResponse::ACCEPT; },
+    [](const std::shared_ptr<Handle> handle) {
+      handle->succeed(std::make_shared<typename ActionT::Result>());
+    });
+}
+
 template <typename ServiceT>
 typename rclcpp::Service<ServiceT>::SharedPtr placeholderService(
   const rclcpp::Node::SharedPtr & node, const std::string & name)
@@ -147,7 +172,7 @@ protected:
     actions_.push_back(
       placeholderAction<nav2_msgs::action::ComputePathToPose>(servers_, "compute_path_to_pose"));
     actions_.push_back(placeholderAction<nav2_msgs::action::FollowPath>(servers_, "follow_path"));
-    actions_.push_back(placeholderAction<nav2_msgs::action::Spin>(servers_, "spin"));
+    actions_.push_back(succeedingAction<nav2_msgs::action::Spin>(servers_, "spin", spin_goals_));
     actions_.push_back(placeholderAction<nav2_msgs::action::Wait>(servers_, "wait"));
     actions_.push_back(placeholderAction<nav2_msgs::action::BackUp>(servers_, "backup"));
     services_.push_back(placeholderService<nav2_msgs::srv::ClearEntireCostmap>(
@@ -160,7 +185,13 @@ protected:
 
     node_ = makeBtNode("bt_navigator_test");
     blackboard_ = makeBlackboard(node_);
+    for (const std::string & plugin : nav2Plugins()) {
+      factory_.registerFromPlugin(loader_.getOSName(plugin));
+    }
+    factory_.registerFromPlugin(LANDFALL_NAV2_PLUGIN);
   }
+
+  BT::Tree createTree() { return factory_.createTreeFromFile(LANDFALL_NAV2_TREE, blackboard_); }
 
   void TearDown() override
   {
@@ -168,6 +199,7 @@ protected:
     spinner_.join();
   }
 
+  std::atomic<int> spin_goals_{0};
   rclcpp::Node::SharedPtr servers_;
   std::vector<std::shared_ptr<void>> actions_;
   std::vector<std::shared_ptr<void>> services_;
@@ -175,6 +207,8 @@ protected:
   std::thread spinner_;
   std::shared_ptr<landfall::nav2::bt::RosNode> node_;
   BT::Blackboard::Ptr blackboard_;
+  BT::SharedLibrary loader_;
+  BT::BehaviorTreeFactory factory_;
 };
 
 std::vector<const BT::TreeNode *> nodesNamed(const BT::TreeNode * root, const std::string & id)
@@ -197,27 +231,36 @@ const BT::TreeNode * child(const BT::TreeNode * node, std::size_t index)
   return control->children()[index];
 }
 
+const BT::TreeNode * decorated(const BT::TreeNode * node)
+{
+  const auto * decorator = dynamic_cast<const BT::DecoratorNode *>(node);
+  return decorator == nullptr ? nullptr : decorator->child();
+}
+
+std::string inputPort(const BT::TreeNode * node, const std::string & port)
+{
+  const auto & ports = node->config().input_ports;
+  const auto it = ports.find(port);
+  return it == ports.end() ? std::string() : it->second;
+}
+
 TEST_F(BehaviorTreesTest, NavigateToPoseWithRelocalizationLoadsWithNav2sPlugins)
 {
-  BT::BehaviorTreeFactory factory;
-  BT::SharedLibrary loader;
-  for (const std::string & plugin : nav2Plugins()) {
-    factory.registerFromPlugin(loader.getOSName(plugin));
-  }
-  factory.registerFromPlugin(LANDFALL_NAV2_PLUGIN);
-
   BT::Tree tree;
-  ASSERT_NO_THROW(tree = factory.createTreeFromFile(LANDFALL_NAV2_TREE, blackboard_))
-    << LANDFALL_NAV2_TREE;
+  ASSERT_NO_THROW(tree = createTree()) << LANDFALL_NAV2_TREE;
   const BT::TreeNode * root = tree.rootNode();
   ASSERT_NE(root, nullptr);
 
-  // Relocalizing from up to eight headings, before navigating and as a recovery.
+  // Relocalizing from up to twelve headings, before navigating and as a recovery.
   EXPECT_EQ(nodesNamed(root, "IsLocalized").size(), 1U);
-  EXPECT_EQ(nodesNamed(root, "ReLocalize").size(), 16U);
+  EXPECT_EQ(nodesNamed(root, "ReLocalize").size(), 4U);
+  for (const BT::TreeNode * retry : nodesNamed(root, "RetryUntilSuccessful")) {
+    EXPECT_EQ(inputPort(retry, "num_attempts"), "11") << retry->name();
+  }
+  EXPECT_EQ(nodesNamed(root, "RetryUntilSuccessful").size(), 2U);
 
   // Before navigating: Fallback[IsLocalized, Sequence[looking around, Wait, clear both costmaps]],
-  // where looking around is Fallback[ReLocalize, Sequence[Spin, ReLocalize], ...].
+  // where looking around is Fallback[ReLocalize, RetryUntilSuccessful[Sequence[Spin, ReLocalize]]].
   const BT::TreeNode * ensure = child(root, 0);
   ASSERT_NE(ensure, nullptr);
   EXPECT_EQ(ensure->name(), "EnsureLocalized");
@@ -230,8 +273,13 @@ TEST_F(BehaviorTreesTest, NavigateToPoseWithRelocalizationLoadsWithNav2sPlugins)
   ASSERT_NE(around, nullptr);
   ASSERT_NE(child(around, 0), nullptr);
   EXPECT_EQ(child(around, 0)->registrationName(), "ReLocalize");
-  ASSERT_NE(child(child(around, 1), 0), nullptr);
-  EXPECT_EQ(child(child(around, 1), 0)->registrationName(), "Spin");
+  ASSERT_NE(child(around, 1), nullptr);
+  EXPECT_EQ(child(around, 1)->registrationName(), "RetryUntilSuccessful");
+  const BT::TreeNode * turn = decorated(child(around, 1));
+  ASSERT_NE(child(turn, 1), nullptr);
+  EXPECT_EQ(child(turn, 0)->registrationName(), "Spin");
+  EXPECT_EQ(inputPort(child(turn, 0), "spin_dist"), "0.524");
+  EXPECT_EQ(child(turn, 1)->registrationName(), "ReLocalize");
   ASSERT_NE(child(before, 3), nullptr);
   EXPECT_EQ(child(before, 1)->registrationName(), "Wait");
   EXPECT_EQ(child(before, 2)->registrationName(), "ClearEntireCostmap");
@@ -255,6 +303,35 @@ TEST_F(BehaviorTreesTest, NavigateToPoseWithRelocalizationLoadsWithNav2sPlugins)
   EXPECT_EQ(child(first, 2)->registrationName(), "ClearEntireCostmap");
   EXPECT_EQ(child(first, 3)->registrationName(), "ClearEntireCostmap");
   EXPECT_EQ(child(first, 4)->registrationName(), "ComputePathToPose");
+  ASSERT_NE(child(child(first, 0), 1), nullptr);
+  EXPECT_EQ(child(child(first, 0), 1)->registrationName(), "RetryUntilSuccessful");
+}
+
+// Without a pose from AMCL and no match anywhere, the robot asks at its heading and after each of
+// 11 turns, then gives up: the tree fails before navigating.
+TEST_F(BehaviorTreesTest, LooksAroundFromTwelveHeadingsBeforeGivingUp)
+{
+  const MockRelocalizer relocalizer({{Result::NO_MATCH, 0ms}});
+  BT::Tree tree = createTree();
+  EXPECT_EQ(tickUntilDone(tree), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(relocalizer.requests().size(), 12U);
+  EXPECT_EQ(spin_goals_.load(), 11);
+}
+
+// The first pose ends the look-around: the fifth request answers, after four turns.
+TEST_F(BehaviorTreesTest, StopsLookingAroundAtTheFirstPose)
+{
+  const MockRelocalizer relocalizer(
+    {{Result::NO_MATCH, 0ms},
+     {Result::NO_MATCH, 0ms},
+     {Result::NO_MATCH, 0ms},
+     {Result::NO_MATCH, 0ms},
+     {Result::SUCCESS, 0ms}});
+  BT::Tree tree = createTree();
+  // The placeholder Wait refuses its goal, so the tree fails after the look-around.
+  tickUntilDone(tree);
+  EXPECT_EQ(relocalizer.requests().size(), 5U);
+  EXPECT_EQ(spin_goals_.load(), 4);
 }
 
 }  // namespace

@@ -36,6 +36,7 @@
 #include "landfall/db/migrations.hpp"
 #include "landfall/grid/map_loader.hpp"
 #include "landfall/grid/occupancy_grid.hpp"
+#include "landfall/query/early_stop.hpp"
 #include "landfall/query/localizer.hpp"
 #include "landfall/record/staging.hpp"
 #include "landfall/ros/backends.hpp"
@@ -530,6 +531,7 @@ struct QuerySettings
   landfall::LocalizerParams localizer;
   landfall::ConsistencyParams consistency;
   landfall::GravityParams gravity;
+  landfall::EarlyStopParams early_stop;
   double min_frame_interval = 0.3;
   double timeout = 10.0;
   double scan_max_time_offset = 0.5;
@@ -561,6 +563,10 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
     l.top_k = static_cast<int>(number());
   } else if (name == "query.timeout") {
     q.timeout = number();
+  } else if (name == "query.early_stop_frames") {
+    q.early_stop.frames = static_cast<int>(number());
+  } else if (name == "query.early_stop_closeness") {
+    q.early_stop.closeness = number();
   } else if (name == "matching.ratio") {
     l.ratio.ratio = number();
   } else if (name == "matching.min_cosine") {
@@ -687,7 +693,8 @@ double percentile(std::vector<double> values, double p)
 }
 
 // One relocalization request replayed from the bag: frames until `frames` produced a pose, one
-// was ambiguous, or `timeout` seconds of recording passed (as the node does with live images).
+// was ambiguous, `timeout` seconds of recording passed, or the camera stood still and its frames
+// came nowhere near a pose (query.early_stop_*), as the node does with live images.
 struct ReplayedRequest
 {
   int64_t first_stamp = 0;
@@ -696,6 +703,8 @@ struct ReplayedRequest
   std::vector<int64_t> valid_stamps;
   std::vector<landfall::FrameResult> valid_frames;
   landfall::FrameResult last_frame;
+  landfall::EarlyStop early_stop;
+  bool stopped_early = false;
 };
 
 int query(const std::vector<std::string> & argv)
@@ -761,7 +770,7 @@ int query(const std::vector<std::string> & argv)
          "best_x,best_y,best_yaw,best_score,"
          "runner_up_x,runner_up_y,runner_up_yaw,runner_up_score,message,rejection,"
          "alternative_gap,twin_distance,twin_nats,twin_support,unique,"
-         "cov_xx,cov_xy,cov_xyaw,cov_yy,cov_yyaw,cov_yawyaw,noise_px\n";
+         "cov_xx,cov_xy,cov_xyaw,cov_yy,cov_yyaw,cov_yawyaw,noise_px,closeness,stopped_early\n";
 
   std::map<std::string, int> statuses;
   std::vector<double> frame_seconds;
@@ -778,6 +787,10 @@ int query(const std::vector<std::string> & argv)
     const landfall::ScoreSummary scores = landfall::summarizeScores(
       r.valid_frames.empty() ? std::vector<landfall::FrameResult>{r.last_frame} : r.valid_frames);
     std::string message = decision.message;
+    if (r.stopped_early) {
+      message += "; ended early: " + std::to_string(r.early_stop.stillFrames()) +
+                 " frames from a camera that stood still came nowhere near a pose";
+    }
     std::string rejection =
       r.last_frame.hypotheses.empty() ? "" : r.last_frame.hypotheses.front().rejection;
     std::replace(message.begin(), message.end(), ',', ';');
@@ -851,12 +864,18 @@ int query(const std::vector<std::string> & argv)
       const auto & frame = r.valid_frames.back();
       csv << fixed(frame.hypotheses[static_cast<std::size_t>(frame.best)].noise_px, 2);
     }
-    csv << "\n";
+    // How close the request's best frame came to a pose (1: one had a pose), and whether it ended
+    // early.
+    csv << "," << fixed(r.early_stop.bestCloseness(), 3) << "," << (r.stopped_early ? 1 : 0)
+        << "\n";
   };
 
   const auto counts = landfall::ros::queryBagImages(
     bag_uri, localizer, options,
-    [&](int64_t stamp, const landfall::Pose2 & odom_T_base, landfall::FrameResult && result) {
+    [&](
+      const landfall::QueryFrame & frame, const landfall::Pose2 & odom_T_base,
+      landfall::FrameResult && result) {
+      const int64_t stamp = frame.stamp_ns;
       frame_seconds.push_back(result.timings.total_s);
       if (current && stamp - current->first_stamp > timeout_ns) {
         finish(*current);
@@ -865,7 +884,10 @@ int query(const std::vector<std::string> & argv)
       if (!current) {
         current = ReplayedRequest();
         current->first_stamp = stamp;
+        current->early_stop = landfall::EarlyStop(settings.early_stop);
       }
+      const bool stop_early = current->early_stop.add(
+        landfall::toPose3(odom_T_base) * frame.T_base_cam, frame.image, result.closeness);
       landfall::FrameOutcome outcome;
       outcome.deepest_stage = result.deepest_stage;
       outcome.ambiguous = result.ambiguity.ambiguous;
@@ -880,6 +902,10 @@ int query(const std::vector<std::string> & argv)
       current->last_stamp = stamp;
       current->last_frame = std::move(result);
       if (outcome.ambiguous || static_cast<int>(current->valid_frames.size()) >= frames) {
+        finish(*current);
+        current.reset();
+      } else if (stop_early) {
+        current->stopped_early = true;
         finish(*current);
         current.reset();
       }

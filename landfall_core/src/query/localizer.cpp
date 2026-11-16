@@ -26,6 +26,7 @@
 
 #include "landfall/geometry/floor_refinement.hpp"
 #include "landfall/grid/scan_matcher.hpp"
+#include "landfall/util/closeness.hpp"
 
 namespace landfall
 {
@@ -236,10 +237,16 @@ Hypothesis Localizer::solvePlace(
   // A pose with fewer than sanity.min_inliers inliers may still stand where the scan tells it
   // apart (localize() decides): every check here takes the lower floor.
   const int min_inliers = std::min(params_.sanity.min_inliers_unique, params_.sanity.min_inliers);
-  if (h.correspondences < min_inliers) {
+  // Too few matches for a pose. With a handful, one is solved all the same, only to tell how near
+  // the place came (closeness, V63): matches by chance leave chance inliers, but rarely a pose that
+  // stands on the floor.
+  constexpr int kMatchesToMeasure = 6;
+  const bool too_few_matches = h.correspondences < min_inliers;
+  if (h.correspondences < kMatchesToMeasure) {
     std::ostringstream reason;
     reason << h.correspondences << " 2D-3D matches < " << min_inliers;
     h.rejection = reason.str();
+    h.closeness = closenessAtLeast(h.correspondences, min_inliers);
     return h;
   }
 
@@ -250,14 +257,38 @@ Hypothesis Localizer::solvePlace(
   options.max_iterations = params_.pnp_max_iterations;
   options.success_prob = params_.pnp_success_prob;
   options.seed = params_.seed;
+  SanityParams sanity = params_.sanity;
+  sanity.min_inliers = min_inliers;
+  if (sanity.max_mean_reprojection_px <= 0.0) {
+    sanity.max_mean_reprojection_px = 0.5 * options.threshold_px;
+  }
   const Vec3 gravity_cam = frame.T_base_cam.linear().transpose() * frame.gravity.gravity_base;
   const auto solution =
     solvePnp(params_.pnp, correspondences, gravity_cam.normalized(), options, min_inliers);
   const int inliers = solution ? static_cast<int>(solution->inliers.size()) : 0;
-  if (!solution || inliers < min_inliers) {
+  if (too_few_matches || !solution || inliers < min_inliers) {
     std::ostringstream reason;
-    reason << "pose with " << inliers << " inliers < " << min_inliers;
+    if (too_few_matches) {
+      reason << h.correspondences << " 2D-3D matches < " << min_inliers;
+    } else {
+      reason << "pose with " << inliers << " inliers < " << min_inliers;
+    }
     h.rejection = reason.str();
+    if (solution) {
+      // As near as its pose came through the sanity checks: its inliers against the floor, and
+      // its height, tilt and place, which a pose from chance matches seldom gets right.
+      SanityInput input;
+      input.T_map_cam = solution->T_cam_map.inverse();
+      input.T_base_cam = frame.T_base_cam;
+      input.gravity = frame.gravity;
+      input.num_correspondences = h.correspondences;
+      for (const int i : solution->inliers) {
+        input.inlier_pixels.push_back(pixels[static_cast<std::size_t>(i)]);
+      }
+      input.mean_reprojection_px = solution->mean_reprojection_px;
+      input.image_size = cv::Size(frame.camera.width(), frame.camera.height());
+      h.closeness = checkSanity(input, sanity, &map_->field()).closeness;
+    }
     return h;
   }
   h.solved = true;
@@ -305,11 +336,6 @@ Hypothesis Localizer::solvePlace(
     map_std_yaw * map_std_yaw);
   h.noise_px = refined.noise_px;
 
-  SanityParams sanity = params_.sanity;
-  sanity.min_inliers = min_inliers;
-  if (sanity.max_mean_reprojection_px <= 0.0) {
-    sanity.max_mean_reprojection_px = 0.5 * options.threshold_px;
-  }
   SanityInput input;
   input.T_map_cam = h.T_map_cam;
   input.T_base_cam = frame.T_base_cam;
@@ -323,24 +349,29 @@ Hypothesis Localizer::solvePlace(
   h.pose = h.sanity.pose;
   if (!h.sanity.passed) {
     h.rejection = h.sanity.reason;
+    h.closeness = h.sanity.closeness;
     return h;
   }
   h.stage = Stage::kSanityPassed;
   if (!check_scan) {
+    h.closeness = 1.0;
     return h;
   }
   // Vision proposes, LiDAR verifies.
   h.scan_checked = true;
   if (scan == nullptr) {
     h.rejection = "no LiDAR scan for this image";
+    h.closeness = 1.0;  // the next image may come with one
     return h;
   }
   h.scan = verifier_->verify(*scan, h.sanity.pose);
   if (!h.scan.passed) {
     h.rejection = "scan check: " + h.scan.reason;
+    h.closeness = h.scan.closeness;
     return h;
   }
   h.stage = Stage::kScanPassed;
+  h.closeness = 1.0;
   if (params_.refine_with_scan) {
     h.pose = h.scan.best_pose;
   }
@@ -515,9 +546,22 @@ FrameResult Localizer::localize(const QueryFrame & frame)
              << " worse (scan_check.unique_margin " << params_.scan.unique_margin << ")";
     }
     winner.rejection = reason.str();
+    // Another frame may bring its inliers up to sanity.min_inliers or its scan gap to the margin;
+    // a twin, or a scan that isn't checked, stays as it is.
+    const bool gap_counts = result.uniqueness.measured && !result.uniqueness.twin;
+    const double closeness = std::max(
+      closenessAtLeast(result.clusters.front().score, strong),
+      gap_counts ? closenessAtLeast(result.uniqueness.alternative_gap, params_.scan.unique_margin)
+                 : 0.0);
+    for (const int member : result.clusters.front().members) {
+      result.hypotheses[static_cast<std::size_t>(member)].closeness = closeness;
+    }
     result.best = -1;
     result.pose.reset();
     result.covariance = Mat3::Zero();
+  }
+  for (const Hypothesis & h : result.hypotheses) {
+    result.closeness = std::max(result.closeness, h.closeness);
   }
   result.timings.solve_s = watch.lap();
   result.timings.total_s = total.lap();

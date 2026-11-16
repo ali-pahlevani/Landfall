@@ -164,7 +164,7 @@ if(BUILD_TESTING)
 
   # The relocalizer fed with the depot fixture (readiness, BUSY, publishing, startup, lifecycle).
   ament_add_gtest(test_relocalizer_node test/test_relocalizer_node.cpp TIMEOUT 400)
-  target_link_libraries(test_relocalizer_node landfall_relocalizer)
+  target_link_libraries(test_relocalizer_node landfall_relocalizer opencv_imgcodecs)
   target_compile_definitions(test_relocalizer_node PRIVATE
     LANDFALL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/depot_small"
     LANDFALL_ROS_DISTRO="$ENV{ROS_DISTRO}")

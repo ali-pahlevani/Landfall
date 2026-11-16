@@ -57,8 +57,11 @@ Before it uses any image, the request answers **`NOT_READY`** when one of these 
 | `no image on '…' within N s` | Image topic and transport |
 
 Then it collects frames at least `consistency.min_frame_interval` apart. It continues until
-`consistency.num_frames` (default 3) of them produced a pose, or `query.timeout` runs out. Each
-frame goes through these steps:
+`consistency.num_frames` (default 3) of them produced a pose, `query.timeout` runs out, or it can
+no longer succeed: a camera that stands still in front of a scene that doesn't change shows the
+same in every frame, so once `query.early_stop_frames` (2) such frames came nowhere near a pose
+(*How close a frame came*, below), and no frame of the request came near one, the request ends with
+what they found ("ended early" in its message). Each frame goes through these steps:
 
 1. Extract features. Retrieve the `query.top_k` most similar keyframes and group them into places,
    by shared landmarks or by camera proximity.
@@ -94,6 +97,31 @@ The decision:
 
 Every threshold except the structural parameters can change at runtime with `ros2 param set` and
 applies to the next request ([parameters.md](parameters.md)).
+
+**How close a frame came** (PLAN V63). Each place is measured by the share of its limit that its
+worst check reached: 12 of the 20 inliers a pose needs is 0.6, an inlier coverage of 0.05 against
+0.15 is 0.33, a base height of twice `sanity.max_height_error` is 0.5, and the LiDAR's misses count
+against the misses `scan_check.min_hit_ratio` allows (a hit ratio of 0.7 against 0.85: 0.15 / 0.3
+= 0.5). Every check counts, not only the first that failed, since a pose has to pass them all; a
+check without a scale counts 0 (a pose off the free floor). A place without enough matches or
+inliers for a pose is measured by the best pose its matches gave, through the same checks:
+matches by chance leave chance inliers, but seldom a pose that stands upright on the floor. A pose
+with fewer than `sanity.min_inliers` inliers that the scan doesn't tell apart counts by the better
+of its inliers against 40 and its scan gap against `scan_check.unique_margin`. The frame takes its
+best place, 1 with a pose. Below `query.early_stop_closeness` (0.5) no place got halfway, and the
+frame came nowhere near a pose. A camera stands still while it moves less than 1 cm and 0.5° (the
+odometry with the extrinsics at the image) and its image changes by less than 2 grey levels on
+average (a 64 x 48 thumbnail with its mean brightness removed): a camera's noise and auto exposure
+stay below, a person walking through the view or a turn doesn't.
+
+In the URDF Maker warehouse (the 904 frames of the heading sweep, each a still robot's view), 60 %
+of the frames that failed came below 0.5. A real camera's frames differ, though: with a camera's
+noise added (about 3 and 6 grey levels, the gain within 2 %, two copies of each frame), 57 of the
+271 frames that found a pose in some copy failed in others, at times below 0.1. Requests simulated
+from the copies (up to 8 frames, 3 needed) kept all but 0.1 % of their successes with the defaults,
+within the simulation's own noise, while 53 % of the failing requests ended after 2 frames: a
+failing request took 4.4 frames instead of 7.6. A threshold of 0.7 lost 0.4 %, 0.8 lost 0.6 %;
+3 frames lost 0.02 % and ended 49 % early.
 
 **The published covariance.** AMCL draws its particles from the covariance that comes with the pose,
 so it should say how far off the pose may be: too wide, and AMCL has to narrow a cloud the pose
@@ -309,7 +337,9 @@ it, not at exposure, so poses are looked up a few tens of milliseconds late. Set
 The scan check uses the bag's `bag.scan_topic` (default `/scan`) from the build configuration. It
 writes one CSV row per request, with the pose's estimated covariance (`cov_xx`, `cov_xy`,
 `cov_xyaw`, `cov_yy`, `cov_yyaw`, `cov_yawyaw`: m², m·rad, rad²; the node publishes its cover
-without negative entries, never narrower) and the last frame's reprojection noise (`noise_px`).
+without negative entries, never narrower), the last frame's reprojection noise (`noise_px`), how
+close the request's best frame came to a pose (`closeness`) and whether the request ended early
+(`stopped_early`: the camera stood still, the bag's odometry and extrinsics say).
 `evaluate_poses --queries` scores those rows against a simulator's ground truth, and the covariance
 too: the share of errors inside its 95 % region (about 95 % when it is honest) and their normalized
 squared errors. `--errors` writes every scored pose with its error and covariance:
@@ -327,7 +357,8 @@ These runs used the Gazebo depot drives from M2 (run 1 and run 2, about 9 minute
 directions). Each run's images, one per second, were queried against the other run's database, with
 the default thresholds and the LiDAR check. Success means within 0.25 m and 5°; wrong means more
 than 0.5 m or 10° off. As in the node, a frame that finds nothing doesn't end a request: the next
-image is tried until `query.timeout`. Run 1's 448 images, for example, made 440 single-frame
+image is tried until `query.timeout` (the robot drove; a still camera's request may end early since
+V63). Run 1's 448 images, for example, made 440 single-frame
 requests.
 
 | Queries → database | Request | Success | AMBIGUOUS | NO_MATCH | REJECTED_CONSISTENCY | Wrong poses | Error of published poses (median / p95) |

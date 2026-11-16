@@ -151,9 +151,8 @@ Sequence
 │   └── Sequence
 │       ├── Fallback (looking around)
 │       │   ├── ReLocalize (timeout 2.5 s)
-│       │   ├── Sequence: Spin 45°, ReLocalize
-│       │   ├── ...                      (8 headings in all)
-│       │   └── Sequence: Spin 45°, ReLocalize
+│       │   └── RetryUntilSuccessful     up to 11 turns
+│       │       └── Sequence: Spin 30°, ReLocalize
 │       ├── Wait 1 s                     for AMCL's map -> odom
 │       └── clear both costmaps
 └── RecoveryNode "NavigateRecovery"             Nav2's tree
@@ -173,9 +172,20 @@ Sequence
 
 A database holds views of a place only in the directions the recording drove there, so a robot
 that stands at an angle to them may not be recognized. When an attempt fails, the robot turns by
-45° and asks again, from up to eight headings, so one of them is at most 22.5° off a mapped
-direction. Each attempt lets the relocalizer take 2.5 s, so with no match at all the robot gives up
-after about 35 s.
+30° and asks again, from up to twelve headings, so one of them is at most 15° off a mapped
+direction. In the kidnap benchmark's depot as mapped, a request succeeded 92 % of the time within
+15° of a direction that a keyframe within 1 m looked in, 66 % at 15° to 30° and 38 % at 30° to
+45° (the TurtleBot's camera is 72° wide). Before PLAN V63 the tree turned by 45°, from eight
+headings, so the nearest could be 22.5° off: of the same 100 placements 97 localized instead of
+99, and where both did, in about the same time (`docs/benchmark.md`). A camera with a narrower
+view shares less of the image with a recorded view at the same angle and needs smaller steps; a
+wider one may take larger: `spin_dist` sets the step and `num_attempts` the turns (45° and 7 as
+before). Each attempt lets the relocalizer take 2.5 s; where the camera, standing still, sees
+nothing near a pose, the relocalizer answers after two frames (`query.early_stop_*`,
+`docs/tuning.md`). In the simulation run below (run 11) such answers came after 0.4 s, or 0.7 s
+right after a turn, and a 30° turn took 0.8 s: each heading that found nothing cost about 1.5 s.
+From those times, twelve headings take about 17 s where the camera sees nothing near a pose at
+any of them, and about 39 s where every request runs its 2.5 s.
 
 A relocalization can move the robot's pose by metres. While the pose was wrong, the scans marked
 obstacles in the costmaps in the wrong places, and the path was planned from the wrong pose. So
@@ -214,14 +224,23 @@ Nine runs (M6, runs 2 to 10, while the tree took its final form):
 | Startup relocalization | every run: published 10 to 18 s after launch, at (12.01 to 12.02, -0.72, 0.3°) against the true (12.00, -0.75, 0°), 3 to 4 cm off; Nav2 activated right after |
 | First goal | succeeded in every run |
 | After the kidnap | the robot drove on from the wrong pose until the controller failed to make progress, and the first recovery relocalized in every run; its first answer came 1 to 6 min after the kidnap |
-| Run 9 (final tree) | first attempt NO_MATCH; after one 45° turn, localized at (10.17, -6.01, 163.0°) against the true (10.15, -6.03, 162.9°); the goal succeeded 19 s later |
-| Run 10 (final tree) | the robot had stopped in the lane between the pallet rows, at (9.74, -3.70), which the recording never drove: no heading matched, and the goal timed out |
+| Run 9 (M6's final tree) | first attempt NO_MATCH; after one 45° turn, localized at (10.17, -6.01, 163.0°) against the true (10.15, -6.03, 162.9°); the goal succeeded 19 s later |
+| Run 10 (M6's final tree) | the robot had stopped in the lane between the pallet rows, at (9.74, -3.70), which the recording never drove: no heading matched, and the goal timed out |
 
-The earlier runs found what the final tree does differently: the relocalization tried one heading
+The earlier runs found what M6's final tree does differently: the relocalization tried one heading
 in runs 2 and 3 and four, 90° apart, in runs 4 to 6, and often found no match; the controller
 followed the old path and the planner saw phantom obstacles after a relocalization (run 3); and the
 path was planned before AMCL's transform followed the new pose (run 8). In run 7, eight headings
 found no match where the robot had stopped, as in run 10.
+
+Run 11 (2026-11-15) used PLAN V63's tree, which turns by 30° and whose requests end early, with
+the kidnap benchmark's `classical` database (M7's build of the same drive). The startup
+relocalization published after 10 s, 3.2 cm and 0.3° off, and the first goal succeeded. After the
+kidnap the robot drove on until the controller failed to make progress, and the first recovery's
+first answer came 72 s after the kidnap. Its first three headings found nothing, each request
+ending early (0.4 to 0.7 s); after three 30° turns of 0.8 s each, the fourth heading localized the
+robot at (10.11, -6.00, 173.0°) against the true (10.08, -6.02, 172.8°), 5.3 s after the first
+request, and the goal succeeded 19 s later.
 
 **Limitation.** Nav2 notices a wrong pose only when the robot can't move. Until then the robot
 drives on blind, and it can stop where the database holds no views of the place: the recovery can

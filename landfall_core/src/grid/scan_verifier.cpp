@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "landfall/geometry/gravity.hpp"
+#include "landfall/util/closeness.hpp"
 
 namespace landfall
 {
@@ -162,6 +163,14 @@ std::string ScanVerifier::failure(const ScanScore & score) const
   return reason.str();
 }
 
+double ScanVerifier::closeness(const ScanScore & score) const
+{
+  return std::min(
+    {closenessAtLeast(score.known_ratio, params_.min_known_ratio),
+     closenessAtMost(1.0 - score.hit_ratio, 1.0 - params_.min_hit_ratio),
+     closenessAtMost(score.violation_ratio, params_.max_violation_ratio)});
+}
+
 ScanCheckResult ScanVerifier::verify(const ProjectedScan & scan, const Pose2 & hypothesis) const
 {
   ScanCheckResult result;
@@ -170,6 +179,7 @@ ScanCheckResult ScanVerifier::verify(const ProjectedScan & scan, const Pose2 & h
     result.score.valid_beams = static_cast<int>(scan.endpoints.size());
     result.reason = "only " + std::to_string(scan.endpoints.size()) + " valid beams (need " +
                     std::to_string(params_.min_valid_beams) + ")";
+    result.closeness = closenessAtLeast(result.score.valid_beams, params_.min_valid_beams);
     return result;
   }
 
@@ -220,6 +230,7 @@ ScanCheckResult ScanVerifier::verify(const ProjectedScan & scan, const Pose2 & h
       break;
     }
   }
+  result.closeness = result.passed ? 1.0 : closeness(result.score);
   return result;
 }
 

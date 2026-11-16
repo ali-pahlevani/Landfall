@@ -64,10 +64,10 @@ learned backends are in use (`docs/models.md`).
 | `build/` | pair selection, tracks, triangulation, the pose-prior bundle adjustment, the build report |
 | `db/` | the SQLite schema, migrations, blob codecs |
 | `grid/` | the map loader (nav2_map_server's rules), the likelihood field, the scan verifier and its search for other places the scan fits |
-| `query/` | the per-frame localizer, sanity checks, clustering and ambiguity, odometry consistency, the decision, the auto trigger, the extrinsics monitor, the kidnap watchdog |
+| `query/` | the per-frame localizer, sanity checks, clustering and ambiguity, odometry consistency, the decision, the early end of a request a still camera can't win, the auto trigger, the extrinsics monitor, the kidnap watchdog |
 | `record/` | keyframe gating, image quality, the staging folder |
 | `eval/` | ground-truth trajectories and error statistics |
-| `util/` | SHA-256, JSON, a thread pool |
+| `util/` | SHA-256, JSON, a thread pool, how close a measured value came to its limit |
 
 The query pipeline per frame (`query/localizer.hpp`): retrieve the top keyframes, group them into
 places, match each place's landmarks, solve, refine the pose on the floor with its covariance
@@ -75,8 +75,11 @@ places, match each place's landmarks, solve, refine the pose on the floor with i
 cluster the hypotheses and decide whether the frame is ambiguous: two places pass, the scan fits
 another place of the map clearly better than the winner's, or the winner's inliers came mostly from
 keyframes the build couldn't place (their scans fitted a second place). A winner with fewer than
-`sanity.min_inliers` inliers stands only where the scan fits nowhere else nearly as well.
-`query/decision.hpp` then decides a request from its frames and fuses their poses and covariances.
+`sanity.min_inliers` inliers stands only where the scan fits nowhere else nearly as well. Each
+frame also says how close it came to a pose (its closeness: the best place's worst check against
+its limit). `query/early_stop.hpp` ends a request whose camera stands still and whose frames came
+nowhere near a pose: the frames that follow would show the same. `query/decision.hpp` then decides
+a request from its frames and fuses their poses and covariances.
 
 ## The relocalizer node
 

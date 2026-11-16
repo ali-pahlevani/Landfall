@@ -27,8 +27,8 @@ kidnap_runner:
     startup_wait: 90.0
     angular_speed: 0.5
     landfall:
-      attempts: 8         # headings, as the example behavior tree's look-around
-      turn_deg: 45.0
+      attempts: 12        # headings, as the example behavior tree's look-around (45 degrees
+      turn_deg: 30.0      # and 8 headings before PLAN V63)
       num_frames: 0       # the relocalizer's consistency.num_frames
       request_timeout: 2.5
     convergence:

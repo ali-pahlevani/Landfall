@@ -54,7 +54,10 @@ TEST(FixtureQuery, NonKeyframeImagesLocalizeAccuratelyAndNeverWrongly)
   double worst_accurate = 0.0;
   const auto counts = landfall::ros::queryBagImages(
     landfall::test::kFixtureDir + "/bag", localizer, options,
-    [&](int64_t stamp, const landfall::Pose2 &, landfall::FrameResult && result) {
+    [&](
+      const landfall::QueryFrame & frame, const landfall::Pose2 &,
+      landfall::FrameResult && result) {
+      const int64_t stamp = frame.stamp_ns;
       ++frames;
       seconds.push_back(result.timings.total_s);
       if (result.ambiguity.ambiguous) {

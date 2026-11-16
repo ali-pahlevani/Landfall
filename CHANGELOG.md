@@ -108,7 +108,7 @@ All notable changes to this project are documented here. The format follows
   the tree is loaded, retries a busy relocalizer and waits 20 s for an answer by default.
 - Example tree `navigate_to_pose_w_relocalization.xml`, Nav2's default tree of each release with
   relocalization before navigating (when the localization is uncertain) and as the first recovery.
-  It relocalizes from up to eight headings (turning 45° after a failed attempt), then clears both
+  It relocalizes from up to twelve headings (turning 30° after a failed attempt), then clears both
   costmaps, and in the recovery plans the path again from the new pose.
 - Launch files in `landfall_bringup`: localization (map_server, AMCL and the relocalizer under one
   lifecycle manager), navigation (nav2_bringup's, with Landfall's tree), both together, and the
@@ -255,6 +255,30 @@ All notable changes to this project are documented here. The format follows
   published positions inside the 95 % ellipse (published as estimated: the run came before the
   cover); AMCL after converging as close as with the fixed covariance
   (`landfall_benchmark/results/seed2027_v62/`).
+- A relocalization request ends early when it can no longer succeed (PLAN V63): a camera that
+  stands still (it moved less than 1 cm and 0.5°, and its image changed by less than 2 grey
+  levels) shows the same in every frame, so after `query.early_stop_frames` (2) of its frames came
+  nowhere near a pose (`query.early_stop_closeness` 0.5: no place got halfway through its checks),
+  with none of the request's frames nearer, the request ends with their status ("ended early" in
+  its message) instead of at its timeout. Each frame's closeness is the share of its limit its best
+  place's worst check reached; a place without a pose is measured by the best pose its matches gave,
+  through the sanity checks. The node's dump and `landfall query` write it (`closeness`,
+  `stopped_early`), and `landfall query` ends requests early as the node does. In the warehouse,
+  requests simulated from the sweep frames with a camera's noise kept all but 0.1 % of their
+  successes while half the failing ones ended after 2 frames. In the kidnap benchmark 47 to 63 % of
+  the failing requests ended early (a median 0.4 s), a robot that found no pose gave up after 28 to
+  33 s instead of 41, and successes went from 50 to 51 % with the goods, 76 to 77 % without the
+  crates, and 93 (M7) to 97 % as mapped, no wrong pose; the one success the early end seemed to
+  cost missed in two of three repeats without it too, the LiDAR refusing the heading that had
+  found it (`landfall_benchmark/results/seed2027_v63/`).
+- The example tree looks around in 30° steps, from up to twelve headings, instead of 45° from eight
+  (PLAN V63): one `RetryUntilSuccessful` loop of `Spin` and `ReLocalize` (`spin_dist` sets the step,
+  `num_attempts` the turns). The kidnap runner follows (`landfall.turn_deg` 30,
+  `landfall.attempts` 12). In the kidnap benchmark 99 % of the placements localized instead of 97 %
+  as mapped, 54 instead of 51 % with the goods and 81 instead of 77 % without the crates, none
+  wrongly, in the same time where both did; a robot that finds no pose gives up 9 to 13 s later
+  (after 39 to 45 s). A request succeeded 92 % of the time within 15° of a direction the
+  recording looked in nearby, 66 % at 15° to 30°: 30° steps always leave a heading within 15°.
 - CI: the Docker images retry their network steps (apt update and downloads, rosdep update and
   install).
 - Staging folders are format 2: `keyframes.csv` gains the odometry pose, `scans.csv` the scans.

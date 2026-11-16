@@ -4,17 +4,20 @@
   docs/nav2_integration.md.
   - Before navigating: if the localization isn't certain (IsLocalized on amcl_pose), ask the
     relocalizer for a pose (ReLocalize), looking around: after a failed attempt the robot turns
-    by 45 degrees (Spin) and asks again, from up to eight headings, since the map may hold views
-    of the place in some directions only. Nav2 refuses a goal while the robot has no pose at all, so
-    a robot that starts unlocalized needs the relocalizer's startup trigger.
+    by 30 degrees (Spin) and asks again, from up to twelve headings (num_attempts counts the
+    turns), since the map may hold views of the place in some directions only. Nav2 refuses a
+    goal while the robot has no pose at all, so a robot that starts unlocalized needs the
+    relocalizer's startup trigger.
   - Relocalizing, looking around the same way, is the first recovery action: a robot whose
     localization has gone wrong (moved while switched off, kidnapped) gets a pose from vision before
-    Nav2's other recoveries run. As in Nav2's tree, recoveries run for the controller and planner
-    errors they can help with.
+    Nav2's other recoveries run. As in Nav2's tree, recoveries run for the controller and
+    planner errors they can help with.
   After a relocalization, the tree waits a second for AMCL's map -> odom to follow the new pose,
   then clears both costmaps (while the pose was wrong, scans marked obstacles in the wrong places)
-  and, in the recovery, plans the path again from the new pose before navigation resumes. Each ReLocalize lets the relocalizer take 2.5 s (timeout) and waits
-  12.5 s for its answer (server_timeout, default: timeout + 10 s).
+  and, in the recovery, plans the path again from the new pose before navigation resumes.
+  Each ReLocalize lets the relocalizer take 2.5 s (timeout) and waits 12.5 s for its answer
+  (server_timeout, default: timeout + 10 s); where the camera sees nothing near a pose, the
+  relocalizer answers after two frames (query.early_stop_frames).
 -->
 <root BTCPP_format="4" main_tree_to_execute="NavigateToPoseWithRelocalization">
   <BehaviorTree ID="NavigateToPoseWithRelocalization">
@@ -24,34 +27,12 @@
         <Sequence name="RelocalizeBeforeNavigating">
           <Fallback name="ReLocalizeBeforeNavigatingLookingAround">
             <ReLocalize name="ReLocalizeBeforeNavigating" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating45" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating90" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating135" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating180" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating225" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating270" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
-            <Sequence>
-              <Spin spin_dist="0.785"/>
-              <ReLocalize name="ReLocalizeBeforeNavigating315" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-            </Sequence>
+            <RetryUntilSuccessful name="TurnAndReLocalizeBeforeNavigating" num_attempts="11">
+              <Sequence>
+                <Spin spin_dist="0.524"/>
+                <ReLocalize name="ReLocalizeBeforeNavigatingAfterTurning" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
+              </Sequence>
+            </RetryUntilSuccessful>
           </Fallback>
           <Wait name="WaitForLocalization-BeforeNavigating" wait_duration="1.0"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Relocalized" service_name="local_costmap/clear_entirely_local_costmap"/>
@@ -90,34 +71,12 @@
               <Sequence name="RelocalizeAndReplan">
                 <Fallback name="ReLocalizeRecoveryLookingAround">
                   <ReLocalize name="ReLocalizeRecovery" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery45" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery90" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery135" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery180" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery225" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery270" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
-                  <Sequence>
-                    <Spin spin_dist="0.785"/>
-                    <ReLocalize name="ReLocalizeRecovery315" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
-                  </Sequence>
+                  <RetryUntilSuccessful name="TurnAndReLocalizeRecovery" num_attempts="11">
+                    <Sequence>
+                      <Spin spin_dist="0.524"/>
+                      <ReLocalize name="ReLocalizeRecoveryAfterTurning" service_name="landfall_relocalizer/relocalize" timeout="2.5"/>
+                    </Sequence>
+                  </RetryUntilSuccessful>
                 </Fallback>
                 <Wait name="WaitForLocalization-Recovery" wait_duration="1.0"/>
                 <ClearEntireCostmap name="ClearLocalCostmap-Relocalized" service_name="local_costmap/clear_entirely_local_costmap"/>

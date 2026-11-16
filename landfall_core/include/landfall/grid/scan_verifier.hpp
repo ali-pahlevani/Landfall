@@ -89,6 +89,10 @@ struct ScanCheckResult
   std::string reason;  ///< why it failed; empty on success
   ScanScore score;
   Pose2 best_pose;  ///< pose of the reported score (refined within the search window)
+  /// How close the pose came to passing (V63): 1 when it passed; else the smallest share of its
+  /// limit a test reached. Misses count against the misses allowed: a hit ratio of 0.7 against
+  /// min_hit_ratio 0.85 is 0.15 / 0.3 = 0.5.
+  double closeness = 1.0;
 };
 
 /// How well a scan fits at a pose, to compare poses: the hit ratio less the violation ratio.
@@ -125,6 +129,7 @@ public:
 
 private:
   std::string failure(const ScanScore & score) const;
+  double closeness(const ScanScore & score) const;
 
   std::shared_ptr<const LikelihoodField> field_;
   ScanCheckParams params_;

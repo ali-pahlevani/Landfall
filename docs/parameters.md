@@ -83,6 +83,8 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `pnp.refinement` | string | `"floor"` |  | at runtime | Last refinement of a pose: floor (x, y and yaw; the base's height and tilt held near the floor and gravity) or free (6 DoF) |
 | `pnp.solver` | string | `"upright_then_p3p"` |  | at runtime | upright, p3p, upright_then_p3p or opencv |
 | `pnp.success_prob` | double | `0.9999` | [0.9, 0.999999] | at runtime | RANSAC confidence |
+| `query.early_stop_closeness` | double | `0.5` | [0, 1] | at runtime | A frame came near a pose when a place reached this share of every check's limit (matches and inliers, coverage, height, tilt, the LiDAR's misses, ...) |
+| `query.early_stop_frames` | integer | `2` | [0, 10] | at runtime | A request ends early after this many frames from a camera that stood still (moved under 1 cm and 0.5 degrees, its image changed under 2 grey levels), none near a pose (query.early_stop_closeness), when no frame of the request came near one; 0: never |
 | `query.timeout` | double | `10` | [1, 120] | at runtime | Seconds for a whole request, frame collection included |
 | `query.top_k` | integer | `10` | [1, 100] | at runtime | Keyframes retrieved per frame |
 | `require_map_match` | bool | `true` |  | at startup | Refuse requests unless the map on 'map' equals the database's occupancy map |

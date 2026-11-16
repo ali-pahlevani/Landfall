@@ -65,9 +65,23 @@ poses before what it does to successes. All parameters are listed in `docs/param
   published the mirror pose of the hall's other half once per direction; the 3-frame requests
   holding those frames were rejected by the odometry check (`docs/relocalization.md`). Fewer frames
   are faster; more frames catch more and miss more.
-- **Timeout** (`query.timeout`, 10 s, or the request's own). A request ends after its frames or at
-  the timeout. The example behavior tree asks for 2.5 s per heading and turns between attempts,
-  which recovers more than one long request at a heading the database has no views from.
+- **Timeout** (`query.timeout`, 10 s, or the request's own). A request ends after its frames, at
+  the timeout, or early (below). The example behavior tree asks for 2.5 s per heading and turns
+  by 30° between attempts, which recovers more than one long request at a heading the database
+  has no views from (the step: `docs/nav2_integration.md`).
+- **Early end** (`query.early_stop_frames`, 2; `query.early_stop_closeness`, 0.5). A camera that
+  stands still in front of a scene that doesn't change sees the same in every frame: after 2
+  frames that came nowhere near a pose (no place got halfway through its checks, *How close a frame
+  came* in `docs/relocalization.md`) the request ends instead of waiting for its timeout. In the
+  warehouse, with a camera's noise added, the defaults kept all but 0.1 % of the successes while
+  half the failing requests ended after 2 frames. In the kidnap benchmark 47 to 63 % of the
+  failing requests ended early, after a median 0.4 s, and a robot that found no pose gave up after
+  28 to 33 s instead of 41 (45° steps); the one success the early end seemed to cost was the
+  LiDAR's call, not its own (`docs/benchmark.md`). A higher closeness or 1
+  frame ends more requests early, at the risk of ending one that a later frame would have won (0.7:
+  0.4 % of the successes lost); 3 frames lost 0.02 %. Frames that vary more than a camera's noise
+  (a mount that shakes, flickering light) count as a changing scene, and their requests wait for
+  the timeout as before. 0 frames waits for the timeout every time.
 - **Consistency** (`consistency.max_translation_error`, `consistency.max_rotation_error_deg`,
   0.15 m and 5°). Raise the rotation limit if requests end `REJECTED_CONSISTENCY` while the robot
   turns: wheel odometry slips on the spot (`docs/sensors.md`).

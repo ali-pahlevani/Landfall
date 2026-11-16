@@ -40,9 +40,10 @@ true pose; the start isn't measured. Then, for each placement:
    meets the same 100. The results use seed 2027; the development runs (below) used 2026 and 7,
    and nothing was changed against seed 2027's placements (`sample_placements` prints them).
 2. **Getting the pose back**, by method:
-   - `landfall`: a request to the relocalizer (2.5 s); if it publishes nothing, the robot turns 45°
-     and asks again, from up to eight headings, as the example behavior tree does
-     (`docs/nav2_integration.md`).
+   - `landfall`: a request to the relocalizer (2.5 s); if it publishes nothing, the robot turns 30°
+     and asks again, from up to twelve headings, as the example behavior tree does
+     (`docs/nav2_integration.md`). Until PLAN V63 the tree and the runs turned by 45°, from eight
+     headings: M7's runs and the re-runs below say which.
    - `amcl`: AMCL's global localization (`reinitialize_global_localization`), then two full turns
      on the spot while AMCL updates. AMCL claims a pose when its reported standard deviation drops
      below 0.5 m (the relocalizer's auto trigger limit).
@@ -228,6 +229,73 @@ database. The tables are `summarize_benchmark`'s output; the runner's CSV files 
   succeeded, more than 5 mm closer at 15 and 15 placements, farther at 7 and 16). After the 9 poses
   outside their ellipse it ended 0.0 to 1.4 cm off. The result files are in
   [`landfall_benchmark/results/seed2027_v62/`](../landfall_benchmark/results/seed2027_v62/).
+- **Since PLAN V63** (2026-11-15) a request ends early when its camera stands still and two
+  frames came nowhere near a pose, instead of at its 2.5 s timeout (`query.early_stop_*`,
+  `docs/relocalization.md`), and the example tree turns by 30°, from up to twelve headings,
+  instead of 45° from eight (`docs/nav2_integration.md`). Each change was measured on its own: the
+  early end with 45° steps, against the V62 runs (the same code without it) and M7's nominal run
+  (before V61); then 30° steps against 45°, with the early end.
+
+  | Scenario | Method | Placements | Success | Wrong (95 % upper bound) | Inaccurate | Miss | First heading | Time to localize (median / p90) | Published error (median) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | nominal (classical) | landfall | 100 | 97.0 % | 0 (3.6 %) | 0.0 % | 3.0 % | 45.0 % | 3.9 s / 12.2 s | 2.7 cm |
+  | added_objects (classical) | landfall | 100 | 51.0 % | 0 (3.6 %) | 0.0 % | 49.0 % | 22.0 % | 5.9 s / 16.5 s | 3.5 cm |
+  | crates_removed (classical) | landfall | 100 | 77.0 % | 0 (3.6 %) | 0.0 % | 23.0 % | 34.0 % | 5.9 s / 17.5 s | 3.1 cm |
+  | nominal (classical; 30-degree steps) | landfall | 100 | 99.0 % | 0 (3.6 %) | 0.0 % | 1.0 % | 44.0 % | 5.4 s / 13.2 s | 2.9 cm |
+  | added_objects (classical; 30-degree steps) | landfall | 100 | 54.0 % | 0 (3.6 %) | 0.0 % | 46.0 % | 22.0 % | 5.4 s / 14.7 s | 3.3 cm |
+  | crates_removed (classical; 30-degree steps) | landfall | 100 | 81.0 % | 0 (3.6 %) | 0.0 % | 19.0 % | 34.0 % | 5.9 s / 22.1 s | 3.0 cm |
+
+  The first three rows turned by 45°, from eight headings; the lighting condition wasn't re-run.
+
+  *The early end* (45° steps). Of the requests that found no pose, 47 % and 61 % ended early with
+  the goods and without the crates, after a median 0.4 s, and they took 709 s instead of 1,176
+  and 365 s instead of 779 in all. A miss gave up after a median 32.5 and 30.2 s instead of 40.8.
+  The median time to localize stayed at 5.9 s: there, a first heading that found nothing mostly
+  came near a pose (the LiDAR refused one within reach of its limits) and took its 2.5 s; the 90th
+  percentile went from 21.7 to 17.5 s without the crates. Counting every request that ended early
+  at its 2.5 s gives about the V62 run's times again (5.9 s; 16.6 and 21.6 s against 16.5 and
+  21.7), so the early end is what changed them. Three placements changed outcome in each
+  condition, as between the V61 and V62 runs: two misses became successes and one success a miss.
+  With the goods, that one (placement 44) failed at a heading whose request ran its full 2.5 s.
+  Without the crates, placement 95 had succeeded at its sixth heading in the V62 run; this time
+  that heading's request ended early, its pose refused by the LiDAR (closeness 0.33). Repeated
+  three times each way, placement 95 missed in all three runs with the early end and in two of
+  three without it; the one success came, as in V62, from the sixth heading's first frames
+  (0.8 s), and every request at the sixth heading that failed in the repeats ran its full 2.5 s,
+  refused by the LiDAR: the heading is at the edge of the scan check, and the early end didn't
+  decide it. In the nominal world 97 placements localized, against 93 in M7 (the four that
+  changed all became successes), 45 at the first heading (36). The median time to localize was
+  3.9 s (M7: 6.0 s; with every early-ended request at its 2.5 s, 5.9 s), its 90th percentile
+  12.2 s (21.6; 16.4), and the three misses gave up after a median 28.1 s (40.8): here most
+  headings that found nothing came nowhere near a pose, and 63 % of the failing requests ended
+  early.
+
+  *30° steps* (with the early end). In the nominal world 99 placements localized instead of 97:
+  the two that changed (20 and 37) localized at the fifth and sixth heading, 120° and 150° from
+  where they started, between two of the 45° tree's headings, and no success was lost. Where both
+  localized, the robot turned less before its pose (a median 30° instead of 45°) and took about
+  the same time (a median 0.01 s longer, a mean 0.3 s); the median over all successes went from
+  3.9 to 5.4 s only because it falls between the first heading's successes (under a second) and
+  the second's (3.3 s or more), and the 44 and 45 at the first heading differ by one. The one miss
+  gave up after 41.1 s (twelve headings). Over both runs' 502 requests, one succeeded 96 % of the
+  time when the robot faced within 7.5° of a direction that a keyframe within 1 m looked in, 86 %
+  at 7.5° to 15°, 74 % at 15° to 22.5°, 53 % at 22.5° to 30°, 38 % at 30° to 45° and 6 % beyond:
+  30° steps always leave one heading within 15°, 45° steps one within 22.5°.
+
+  In the changed worlds, with the goods 54 placements localized instead of 51: three misses became
+  successes, at the fifth, sixth and twelfth heading. Without the crates 81 localized instead of
+  77: six misses became successes and two successes misses. Placement 62 had localized at its
+  fourth 45° heading, 135° from where it started, which lies between two 30° steps, and neither of
+  those found a pose: the converse of placements 20 and 37 as mapped. Placement 99 missed at the
+  heading that had found it, 180° from where it started and 0.9 m from the nearest keyframe. Where
+  both localized, the time stayed the same (a median 0.01 s shorter with the goods and longer
+  without the crates, a mean 1.1 s shorter and 0.8 s longer), and a miss gave up after a median
+  45.3 and 39.0 s instead of 32.5 and 30.2. Requests succeeded less often in the changed worlds at
+  every offset, and fell off the same way: with the goods 25 % within 15° of a recorded direction,
+  14 % at 15° to 30° and 5 % at 30° to 45°; without the crates 45, 29 and 19 %. Over the three
+  worlds, 234 of the 300 placements localized instead of 225, none wrongly, and a miss takes 9 to
+  13 s longer to give up. The result files are in
+  [`landfall_benchmark/results/seed2027_v63/`](../landfall_benchmark/results/seed2027_v63/).
 - **Runs.** Two runs were interrupted when the host went down and resumed at the next placement
   (`first_placement`) with the same build, models and database: `learned_cpu` nominal after
   placement 8, `learned_cpu` lighting after placement 21. The runner's startup fallback (above)

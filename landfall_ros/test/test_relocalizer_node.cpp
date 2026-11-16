@@ -13,17 +13,20 @@
 // limitations under the License.
 
 // The relocalizer node in-process, fed with the depot fixture: readiness (NOT_READY reasons), BUSY,
-// publishing to AMCL's topic, dry runs, the scan check modes, odometry consistency, the startup and
-// automatic triggers, the extrinsics monitor, the kidnap watchdog, lifecycle transitions and
-// parameter validation.
+// publishing to AMCL's topic, dry runs, the scan check modes, odometry consistency, the early end of
+// a request a still camera can't win, the startup and automatic triggers, the extrinsics monitor,
+// the kidnap watchdog, lifecycle transitions and parameter validation.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <memory>
+#include <opencv2/core.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <optional>
 #include <string>
 #include <thread>
@@ -656,6 +659,84 @@ TEST_F(RelocalizerNodeTest, OdometryThatDisagreesIsRejected)
   EXPECT_TRUE(h.poses.empty());
 }
 
+TEST_F(RelocalizerNodeTest, EndsEarlyWhenAStillCameraComesNowhereNearAPose)
+{
+  // A camera that looks at a blank wall: no features, no place anywhere near a pose. Standing
+  // still, it sees the same in every frame, so the request ends after query.early_stop_frames (2)
+  // frames. With the early end off, or with a camera that moves (new views), the request takes its
+  // whole timeout.
+  geometry_msgs::msg::TransformStamped odom_to_base;
+  for (const auto & message : data_->tf) {
+    for (const auto & t : message.transforms) {
+      if (t.header.frame_id == "odom" && odom_to_base.child_frame_id.empty()) {
+        odom_to_base = t;
+      }
+    }
+  }
+  ASSERT_FALSE(odom_to_base.child_frame_id.empty());
+  const cv::Mat blank(
+    static_cast<int>(data_->camera_info.height), static_cast<int>(data_->camera_info.width),
+    CV_8UC3, cv::Scalar(128, 128, 128));
+  std::vector<uchar> jpeg;
+  ASSERT_TRUE(cv::imencode(".jpg", blank, jpeg));
+
+  struct Case
+  {
+    int64_t early_stop_frames;
+    double step;  ///< m the robot moves between images
+    bool ends_early;
+  };
+  for (const Case & c : {Case{2, 0.0, true}, Case{0, 0.0, false}, Case{2, 0.05, false}}) {
+    rclcpp::NodeOptions o = options(*db_path_);
+    o.append_parameter_override("query.early_stop_frames", c.early_stop_frames);
+    Harness h(o);
+    h.up();
+    ASSERT_TRUE(h.client->wait_for_service(std::chrono::seconds(2)));
+    auto request = std::make_shared<Relocalize::Request>();
+    request->num_frames = 2;
+    request->dry_run = true;
+    request->timeout = 3.0F;
+    auto future = h.client->async_send_request(request);
+    h.spinFor(std::chrono::milliseconds(200));
+    double x = 0.0;
+    const auto deadline = Clock::now() + std::chrono::seconds(15);
+    while (future.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready &&
+           Clock::now() < deadline) {
+      // The image with its odometry, scan and camera_info at one stamp.
+      const auto stamp = h.driver->now();
+      tf2_msgs::msg::TFMessage tf;
+      tf.transforms.push_back(odom_to_base);
+      tf.transforms.back().header.stamp = stamp;
+      tf.transforms.back().transform.translation.x += x;
+      x += c.step;
+      h.tf_pub->publish(tf);
+      auto scan = data_->scans.front();
+      scan.header.stamp = stamp;
+      h.scan_pub->publish(scan);
+      auto info = data_->camera_info;
+      info.header.stamp = stamp;
+      h.info_pub->publish(info);
+      sensor_msgs::msg::CompressedImage image;
+      image.header.stamp = stamp;
+      image.header.frame_id = data_->images.front().header.frame_id;
+      image.format = "jpeg";
+      image.data = jpeg;
+      h.image_pub->publish(image);
+      h.spinFor(std::chrono::milliseconds(150));
+    }
+    ASSERT_EQ(future.future.wait_for(std::chrono::seconds(0)), std::future_status::ready);
+    const Result r = future.future.get()->result;
+    EXPECT_EQ(r.status, Result::NO_MATCH) << r.message;
+    const bool ended_early = r.message.find("ended early") != std::string::npos;
+    EXPECT_EQ(ended_early, c.ends_early) << r.message;
+    if (c.ends_early) {
+      EXPECT_LT(r.scores.elapsed_s, 1.5F) << r.message;
+    } else {
+      EXPECT_GE(r.scores.elapsed_s, 2.9F) << r.message;
+    }
+  }
+}
+
 TEST_F(RelocalizerNodeTest, AutoTriggerFiresOnceAndHonorsTheCooldown)
 {
   rclcpp::NodeOptions o = options(*db_path_);
@@ -819,6 +900,10 @@ TEST_F(RelocalizerNodeTest, ValidatesParameters)
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("pnp.refinement", "planar")).successful);
   EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("output.covariance", "fixed")).successful);
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("output.covariance", "large")).successful);
+  EXPECT_TRUE(node->set_parameter(rclcpp::Parameter("query.early_stop_frames", 0)).successful);
+  EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("query.early_stop_frames", 11)).successful);
+  EXPECT_FALSE(
+    node->set_parameter(rclcpp::Parameter("query.early_stop_closeness", 1.5)).successful);
   // Structural parameters are read-only.
   EXPECT_FALSE(node->set_parameter(rclcpp::Parameter("database_path", "/tmp/x.db")).successful);
   EXPECT_EQ(node->shutdown().id(), State::PRIMARY_STATE_FINALIZED);

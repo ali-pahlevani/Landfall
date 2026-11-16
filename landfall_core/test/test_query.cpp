@@ -15,12 +15,15 @@
 #include <gtest/gtest.h>
 
 #include <Eigen/Eigenvalues>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 #include <random>
 #include <string>
 #include <vector>
 
 #include "landfall/query/clustering.hpp"
 #include "landfall/query/decision.hpp"
+#include "landfall/query/early_stop.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
 #include "landfall/query/sanity.hpp"
 #include "synthetic_scene.hpp"
@@ -75,6 +78,15 @@ landfall::SanityInput goodInput(const Pose3 & T_map_base)
   input.mean_reprojection_px = 1.0;
   input.image_size = cv::Size(640, 480);
   return input;
+}
+
+// A wall with two boxes in front of it, as a camera sees it.
+cv::Mat wallScene()
+{
+  cv::Mat scene(480, 640, CV_8UC3, cv::Scalar(90, 90, 90));
+  cv::rectangle(scene, cv::Rect(50, 60, 200, 150), cv::Scalar(200, 180, 160), cv::FILLED);
+  cv::rectangle(scene, cv::Rect(400, 200, 180, 220), cv::Scalar(30, 40, 50), cv::FILLED);
+  return scene;
 }
 
 FrameOutcome validFrame(const Pose2 & map_T_base, const Pose2 & odom_T_base)
@@ -148,6 +160,38 @@ TEST(Sanity, EachCheckRejects)
 
   expect_reason(goodInput(landfall::test::basePose(9.0, 4.0, 0.0)), "known-free");   // unknown
   expect_reason(goodInput(landfall::test::basePose(0.02, 4.0, 0.0)), "known-free");  // wall
+}
+
+TEST(Sanity, ClosenessIsTheShareOfItsLimitTheWorstCheckReached)
+{
+  const auto field = room();
+  const landfall::SanityParams params;
+  const Pose3 base = landfall::test::basePose(3.0, 4.0, 0.4);
+  const auto closeness = [&](const landfall::SanityInput & input) {
+    return landfall::checkSanity(input, params, &field).closeness;
+  };
+  EXPECT_DOUBLE_EQ(closeness(goodInput(base)), 1.0);
+
+  auto input = goodInput(base);
+  input.inlier_pixels.resize(30);  // 30 of sanity.min_inliers 40
+  EXPECT_NEAR(closeness(input), 0.75, 1e-9);
+
+  input = goodInput(base);
+  input.T_map_cam.translation().z() += 0.2;  // twice sanity.max_height_error
+  EXPECT_NEAR(closeness(input), 0.5, 1e-9);
+
+  input = goodInput(base);
+  input.T_map_cam.linear() = input.T_map_cam.linear() * Eigen::AngleAxisd(deg(4.0), Vec3::UnitX());
+  EXPECT_NEAR(closeness(input), 0.75, 1e-6);  // 3 of 4 degrees
+
+  // Every check counts, not only the first that failed: the pose passes only when all do.
+  input = goodInput(base);
+  input.inlier_pixels.resize(30);
+  input.T_map_cam.translation().z() += 0.2;
+  EXPECT_NEAR(closeness(input), 0.5, 1e-9);
+
+  // Checks without a scale: off the free floor.
+  EXPECT_DOUBLE_EQ(closeness(goodInput(landfall::test::basePose(9.0, 4.0, 0.0))), 0.0);
 }
 
 TEST(Sanity, RampsNeedImuGravityAndAConfiguredElevation)
@@ -249,6 +293,93 @@ TEST(Consistency, CarriesTheCovarianceThroughOdometry)
   EXPECT_EQ(turned(0, 1), turned(1, 0));
   EXPECT_EQ(turned(0, 2), turned(2, 0));
   EXPECT_EQ(turned(1, 2), turned(2, 1));
+}
+
+TEST(EarlyStop, EndsARequestAStillCameraCanNoLongerWin)
+{
+  const Pose3 here = landfall::toPose3(Pose2{1.0, 2.0, 0.3}) * landfall::test::baseToCamera();
+  const cv::Mat scene = wallScene();
+  // Two frames from one camera pose, nowhere near a pose (closeness below 0.5).
+  landfall::EarlyStop still;
+  EXPECT_FALSE(still.add(here, scene, 0.1));
+  EXPECT_TRUE(still.add(here, scene, 0.2));
+  EXPECT_EQ(still.stillFrames(), 2);
+  EXPECT_DOUBLE_EQ(still.bestCloseness(), 0.2);
+
+  // Within 1 cm and half a degree the camera sees the same; beyond, the count starts again.
+  Pose3 nudged = here;
+  nudged.translation() += Vec3(0.005, 0.0, 0.0);
+  nudged.linear() = nudged.linear() * Eigen::AngleAxisd(deg(0.3), Vec3::UnitY());
+  landfall::EarlyStop nudge;
+  EXPECT_FALSE(nudge.add(here, scene, 0.1));
+  EXPECT_TRUE(nudge.add(nudged, scene, 0.1));
+  for (const Pose3 & moved :
+       {Pose3(here * Eigen::AngleAxisd(deg(1.0), Vec3::UnitY())),
+        Pose3(Eigen::Translation3d(0.02, 0.0, 0.0) * here)}) {
+    landfall::EarlyStop turn;
+    EXPECT_FALSE(turn.add(here, scene, 0.1));
+    EXPECT_FALSE(turn.add(moved, scene, 0.1));  // a new view
+    EXPECT_EQ(turn.stillFrames(), 1);
+    EXPECT_TRUE(turn.add(moved, scene, 0.1));
+  }
+
+  // One frame that came near a pose (or found one) keeps the request going to its end.
+  for (const double near : {0.5, 1.0}) {
+    landfall::EarlyStop hopeful;
+    EXPECT_FALSE(hopeful.add(here, scene, near));
+    for (int i = 0; i < 5; ++i) {
+      EXPECT_FALSE(hopeful.add(here, scene, 0.0));
+    }
+  }
+
+  // The settings: three frames; or never.
+  landfall::EarlyStopParams params;
+  params.frames = 3;
+  landfall::EarlyStop three(params);
+  EXPECT_FALSE(three.add(here, scene, 0.0));
+  EXPECT_FALSE(three.add(here, scene, 0.0));
+  EXPECT_TRUE(three.add(here, scene, 0.0));
+  params.frames = 0;
+  landfall::EarlyStop never(params);
+  for (int i = 0; i < 5; ++i) {
+    EXPECT_FALSE(never.add(here, scene, 0.0));
+  }
+}
+
+TEST(EarlyStop, AChangingSceneIsNotTheSameView)
+{
+  const Pose3 here = landfall::toPose3(Pose2{1.0, 2.0, 0.3}) * landfall::test::baseToCamera();
+  const cv::Mat scene = wallScene();
+  // A camera's noise (6 grey levels) and a gain off by 3 % (auto exposure) show the same scene.
+  cv::Mat noise(scene.size(), CV_32FC3);
+  cv::RNG(5).fill(noise, cv::RNG::NORMAL, 0.0, 6.0);
+  cv::Mat noisy;
+  scene.convertTo(noisy, CV_32FC3);
+  noisy += noise;
+  noisy.convertTo(noisy, CV_8UC3);
+  cv::Mat brighter;
+  scene.convertTo(brighter, CV_8UC3, 1.03);
+  const cv::Mat reference = landfall::EarlyStop::thumbnail(scene);
+  EXPECT_LT(landfall::EarlyStop::change(reference, landfall::EarlyStop::thumbnail(noisy)), 1.0);
+  EXPECT_LT(landfall::EarlyStop::change(reference, landfall::EarlyStop::thumbnail(brighter)), 2.0);
+  landfall::EarlyStop still;
+  EXPECT_FALSE(still.add(here, scene, 0.1));
+  EXPECT_TRUE(still.add(here, noisy, 0.1));
+
+  // A person walking through the view: the scene changed, the count starts again.
+  cv::Mat walker = scene.clone();
+  cv::rectangle(walker, cv::Rect(260, 100, 120, 380), cv::Scalar(20, 20, 20), cv::FILLED);
+  EXPECT_GT(landfall::EarlyStop::change(reference, landfall::EarlyStop::thumbnail(walker)), 5.0);
+  landfall::EarlyStop changing;
+  EXPECT_FALSE(changing.add(here, scene, 0.1));
+  EXPECT_FALSE(changing.add(here, walker, 0.1));
+  EXPECT_TRUE(changing.add(here, walker, 0.1));
+
+  // Without an image, sameness can't be told: never still.
+  landfall::EarlyStop blind;
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_FALSE(blind.add(here, cv::Mat(), 0.0));
+  }
 }
 
 TEST(Consistency, CoversACovarianceWithoutNegativeEntries)

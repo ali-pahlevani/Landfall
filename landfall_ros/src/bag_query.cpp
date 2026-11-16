@@ -30,7 +30,7 @@ namespace landfall::ros
 
 BagQueryCounts queryBagImages(
   const std::string & uri, Localizer & localizer, const BagQueryOptions & options,
-  const std::function<void(int64_t, const Pose2 &, FrameResult &&)> & visit)
+  const std::function<void(const QueryFrame &, const Pose2 &, FrameResult &&)> & visit)
 {
   const BagConfig & bag = options.bag;
   BagQueryCounts counts;
@@ -126,7 +126,7 @@ BagQueryCounts queryBagImages(
       FrameResult result = localizer.localize(frame);
       last_used = stamp;
       ++counts.localized;
-      visit(stamp, odom_T_base, std::move(result));
+      visit(frame, odom_T_base, std::move(result));
       return true;
     });
   return counts;

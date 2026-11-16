@@ -263,8 +263,8 @@ public:
     // 5 requests of up to 10 s, 5 s apart): no request of its own may still run at placement 0.
     startup_wait_s_ = declare_parameter<double>("startup_wait", 90.0);
     angular_speed_ = declare_parameter<double>("angular_speed", 0.5);
-    attempts_ = static_cast<int>(declare_parameter<int64_t>("landfall.attempts", 8));
-    turn_deg_ = declare_parameter<double>("landfall.turn_deg", 45.0);
+    attempts_ = static_cast<int>(declare_parameter<int64_t>("landfall.attempts", 12));
+    turn_deg_ = declare_parameter<double>("landfall.turn_deg", 30.0);
     num_frames_ = static_cast<int>(declare_parameter<int64_t>("landfall.num_frames", 0));
     request_timeout_ = declare_parameter<double>("landfall.request_timeout", 2.5);
     convergence_deg_ = declare_parameter<double>("convergence.turn_deg", 360.0);
@@ -859,8 +859,8 @@ private:
   double settle_s_ = 1.5;
   double startup_wait_s_ = 90.0;
   double angular_speed_ = 0.5;
-  int attempts_ = 8;
-  double turn_deg_ = 45.0;
+  int attempts_ = 12;
+  double turn_deg_ = 30.0;
   int num_frames_ = 0;
   double request_timeout_ = 2.5;
   double convergence_deg_ = 360.0;

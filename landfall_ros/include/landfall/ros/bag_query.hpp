@@ -51,11 +51,12 @@ struct BagQueryCounts
 /// Localizes a bag's images the way the relocalizer does live: extrinsics and odometry from the
 /// bag's TF at each image stamp, gravity from its IMU (`bag.gravity_source`), the nearest LiDAR
 /// scan (`bag.scan_topic`; frames without one are skipped when the check is required). Calls
-/// `visit(stamp_ns, odom_T_base, result)` for every localized frame, in bag order. Throws
+/// `visit(frame, odom_T_base, result)` for every localized frame, in bag order: the frame as the
+/// localizer got it (stamp, extrinsics, image, ...) and the odometry at its stamp. Throws
 /// std::runtime_error when the bag lacks the topics or its camera differs from the database's.
 BagQueryCounts queryBagImages(
   const std::string & uri, Localizer & localizer, const BagQueryOptions & options,
-  const std::function<void(int64_t, const Pose2 &, FrameResult &&)> & visit);
+  const std::function<void(const QueryFrame &, const Pose2 &, FrameResult &&)> & visit);
 
 }  // namespace landfall::ros
 

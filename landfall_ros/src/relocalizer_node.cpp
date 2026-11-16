@@ -210,6 +210,19 @@ void RelocalizerNode::declareParameters()
     "query.timeout", 10.0,
     describe("Seconds for a whole request, frame collection included", 1.0, 120.0, kDynamic));
   declare_parameter(
+    "query.early_stop_frames", 2,
+    describeInt(
+      "A request ends early after this many frames from a camera that stood still (moved under 1 "
+      "cm and 0.5 degrees, its image changed under 2 grey levels), none near a pose "
+      "(query.early_stop_closeness), when no frame of the request came near one; 0: never",
+      0, 10, kDynamic));
+  declare_parameter(
+    "query.early_stop_closeness", 0.5,
+    describe(
+      "A frame came near a pose when a place reached this share of every check's limit "
+      "(matches and inliers, coverage, height, tilt, the LiDAR's misses, ...)",
+      0.0, 1.0, kDynamic));
+  declare_parameter(
     "matching.ratio", 0.8,
     describe("Lowe ratio for binary descriptors (with a mutual check)", 0.5, 1.0, kDynamic));
   declare_parameter(
@@ -580,6 +593,8 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   t.gravity.ramp_tilt_deg = get_parameter("gravity.ramp_tilt_deg").as_double();
   t.tf_timeout = get_parameter("tf_timeout").as_double();
   t.timeout = get_parameter("query.timeout").as_double();
+  t.early_stop.frames = static_cast<int>(get_parameter("query.early_stop_frames").as_int());
+  t.early_stop.closeness = get_parameter("query.early_stop_closeness").as_double();
   t.num_frames = static_cast<int>(get_parameter("consistency.num_frames").as_int());
   t.min_frame_interval = get_parameter("consistency.min_frame_interval").as_double();
   t.estimated_covariance =
@@ -1471,6 +1486,8 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
   const bool yields = request.background;  // to any other request (submit())
   const bool samples_extrinsics = request.trigger == "monitor";
   std::optional<std::pair<Pose3, Pose3>> monitor_sample;
+  EarlyStop early_stop(t.early_stop);
+  bool stopped_early = false;
   while (!cancel_ && !(yields && preempt_) && valid < required && Clock::now() < deadline) {
     PendingImage image;
     {
@@ -1609,9 +1626,17 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
       result_frame.num_features, result_frame.hypotheses.size(),
       static_cast<int>(result_frame.deepest_stage), outcome.ambiguous ? " (ambiguous)" : "",
       result_frame.timings.total_s);
+    // A camera that stands still sees the same in every frame: once its frames came nowhere near
+    // a pose, the rest of the request can't succeed (query.early_stop_*).
+    const bool stop_early = early_stop.add(
+      landfall::toPose3(odom_T_base) * frame.T_base_cam, frame.image, result_frame.closeness);
     last_frame = std::move(result_frame);
     last_image = frame.image;
     if (outcome.ambiguous) {
+      break;
+    }
+    if (stop_early) {
+      stopped_early = true;
       break;
     }
   }
@@ -1652,6 +1677,12 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
   const Decision decision = decide(input, t.consistency);
   result.status = static_cast<uint8_t>(decision.status);
   result.message = decision.message;
+  if (stopped_early) {
+    result.message +=
+      "; ended early: " + std::to_string(early_stop.stillFrames()) +
+      " frames from a camera that stood still came nowhere near a pose (closeness " +
+      fixed(early_stop.bestCloseness(), 2) + ")";
+  }
   if (monitor_sample && decision.status == Status::kSuccess) {
     // Only requests that passed every check: one sample, from the latest slow frame.
     const std::lock_guard<std::mutex> lock(mutex_);
@@ -1902,6 +1933,7 @@ void RelocalizerNode::dump(
       .field("ambiguous", frame.ambiguity.ambiguous)
       .field("ambiguity_ratio", frame.ambiguity.score_ratio)
       .field("twin_ambiguous", frame.twin_ambiguous)
+      .field("closeness", frame.closeness)
       .field("seconds", frame.timings.total_s);
     // What the scan told apart at the best place (scan_check.check_alternatives).
     if (frame.uniqueness.measured) {
@@ -1935,6 +1967,7 @@ void RelocalizerNode::dump(
         .field("stage", static_cast<int>(h.stage))
         .field("correspondences", h.correspondences)
         .field("inliers", h.sanity.num_inliers)
+        .field("closeness", h.closeness)
         .field("rejection", h.rejection);
       if (h.solved) {
         json.field("twin_support", h.twin_support).field("noise_px", h.noise_px);

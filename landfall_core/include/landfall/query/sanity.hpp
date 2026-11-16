@@ -70,6 +70,10 @@ struct SanityResult
   double height_error_m = 0.0;
   double tilt_error_deg = 0.0;
   double inlier_coverage = 0.0;
+  /// How close the pose came to passing (V63): 1 when it passed; else the smallest share of its
+  /// limit a check reached (15 inliers of 20: 0.75; twice the height limit: 0.5), 0 for checks
+  /// that have no scale (a ramp the settings refuse, a pose off the free floor).
+  double closeness = 1.0;
 };
 
 /// Rejects geometrically implausible poses (plan §7.9). Every metric is computed even when an

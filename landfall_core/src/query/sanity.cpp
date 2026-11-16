@@ -19,6 +19,8 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "landfall/util/closeness.hpp"
+
 namespace landfall
 {
 
@@ -49,6 +51,9 @@ SanityResult checkSanity(
   const double allowed_height = input.gravity.on_ramp
                                   ? params.max_floor_elevation + params.max_height_error
                                   : params.max_height_error;
+  const bool refuses_ramp = input.gravity.on_ramp && params.max_floor_elevation <= 0.0;
+  const bool on_free_floor = !params.require_free_space ||
+                             field->classify(r.pose.x, r.pose.y) == LikelihoodField::Cell::kFree;
   if (r.num_inliers < params.min_inliers) {
     reason << r.num_inliers << " inliers < " << params.min_inliers;
   } else if (r.inlier_ratio < params.min_inlier_ratio) {
@@ -58,20 +63,29 @@ SanityResult checkSanity(
            << params.max_mean_reprojection_px;
   } else if (r.inlier_coverage < params.min_inlier_coverage) {
     reason << "inlier coverage " << r.inlier_coverage << " < " << params.min_inlier_coverage;
-  } else if (input.gravity.on_ramp && params.max_floor_elevation <= 0.0) {
+  } else if (refuses_ramp) {
     reason << "robot is on a ramp (tilt " << input.gravity.tilt_deg
            << " deg); set sanity.max_floor_elevation to allow ramp queries";
   } else if (r.height_error_m > allowed_height) {
     reason << "base height " << r.height_error_m << " m > " << allowed_height;
   } else if (r.tilt_error_deg > params.max_tilt_error_deg) {
     reason << "tilt error " << r.tilt_error_deg << " deg > " << params.max_tilt_error_deg;
-  } else if (
-    params.require_free_space &&
-    field->classify(r.pose.x, r.pose.y) != LikelihoodField::Cell::kFree) {
+  } else if (!on_free_floor) {
     reason << "base pose (" << r.pose.x << ", " << r.pose.y << ") is not on a known-free cell";
   }
   r.reason = reason.str();
   r.passed = r.reason.empty();
+
+  // Every check, not only the first that failed: the pose passes only when all do.
+  if (!r.passed) {
+    r.closeness = std::min(
+      {closenessAtLeast(r.num_inliers, params.min_inliers),
+       closenessAtLeast(r.inlier_ratio, params.min_inlier_ratio),
+       closenessAtMost(r.mean_reprojection_px, params.max_mean_reprojection_px),
+       closenessAtLeast(r.inlier_coverage, params.min_inlier_coverage), refuses_ramp ? 0.0 : 1.0,
+       closenessAtMost(r.height_error_m, allowed_height),
+       closenessAtMost(r.tilt_error_deg, params.max_tilt_error_deg), on_free_floor ? 1.0 : 0.0});
+  }
   return r;
 }
 

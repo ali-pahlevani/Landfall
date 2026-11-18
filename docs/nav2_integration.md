@@ -252,12 +252,46 @@ off; each time the goal under way failed 1.0 s later. The controller's path, pla
 pose, no longer reached the robot (MPPI: "Resulting plan has 0 poses in it", `INVALID_PATH`), and
 the Jazzy tree, like Nav2's own (PLAN V48), runs the controller's recovery only for the errors
 `WouldAControllerRecoveryHelp` lists (`UNKNOWN`, `PATIENCE_EXCEEDED`, `FAILED_TO_MAKE_PROGRESS`,
-`NO_VALID_CONTROL`; T-015). In the fifth run AMCL jumped on its own, 2.2 m and 35° from one wrong
+`NO_VALID_CONTROL`; the trees handle it since PLAN V66, below). In the fifth run AMCL jumped on its own, 2.2 m and 35° from one wrong
 pose to another, 19 s after the kidnap, and the goal failed the same way 2 s later, before the
 watchdog's relocalization, which the end of the run cut off. In those four runs, the robot stopped
 with its pose right within about half a minute of the kidnap. Without the watchdog, it drove on
 blind for 72 s (run 11) to 6 minutes (M6) until the tree's recovery relocalized it, and then
 reached the goal in runs 9 and 11.
+
+Runs 17 to 22 (2026-11-16) repeated runs 12 to 16 with PLAN V66's trees: on Jazzy and Lyrical,
+when the controller reports that the path no longer reaches the robot (`INVALID_PATH`), the tree
+clears both costmaps and plans again from the new pose, and the goal goes on. Five runs had the
+watchdog on, one had it off. With the watchdog, the robot's pose was right again 23 to 35 s after
+the kidnap in every run, 3 to 10 cm and at most 0.4° from the truth, and the robot reached the second
+goal in four of the five (0.18 to 0.24 m from it, AMCL 4 to 7 cm off):
+- In three, the watchdog relocalized and the controller failed 1.0 s later with `INVALID_PATH`; the
+  tree cleared the costmaps and planned again, and the goal went on. In one of them the plan from
+  the new pose failed too, and the tree's recovery relocalized once more (at its first heading)
+  before it went on.
+- In one, the planner failed while the robot drove from the wrong pose, before the watchdog's
+  second check, and the tree's own recovery relocalized (31 s after the kidnap, at its second
+  heading).
+- In one, the goal ended as reached 0.5 s before the watchdog published: AMCL's wrong pose had
+  reached the goal while the robot stood 6.0 m from it. Nav2 judges a goal by the localization's
+  pose; the robot then stood with its pose right, short of the goal (T-018).
+
+Without the watchdog (run 22), the robot drove on from the wrong pose until the controller failed;
+the tree's recovery first asked 86 s after the goal was sent, and its two look-arounds (24
+requests) found no pose where the robot had stopped, a lane the recording never drove. The goal
+failed after 8 minutes, with AMCL still 5.6 m off.
+
+Runs 23 to 27 (2026-11-17) repeated runs 17 to 21 with PLAN V70's watchdog, which checks at once
+when the scan stops fitting the map at AMCL's pose or AMCL's pose jumps, and publishes its last
+check's pose when the last two checks agree. The pose was right again 9.9 to 17.0 s after the
+kidnap (median 10.9 s; runs 17 to 21: 22.6 to 34.5 s, median 31.2 s), published 1.9 to 7.8 cm
+from the truth, and the robot reached the second goal in all five, at most 2 cm from it. The
+kidnap leaves the robot facing a wall: in every run the scan-fit trigger fired within a second or
+two and its check found nothing the recording saw. The watchdog looked again once the robot had
+turned toward its goal, about 5 s later, found the pose and confirmed it with its next check (in
+one run the first confirmation found nothing and the next one confirmed it). In three runs the
+controller failed right after the relocalization and the tree's recovery relocalized once more,
+2 to 3 s later; every pose published was right.
 
 **Limitation.** Nav2 notices a wrong pose only when the robot can't move. Until then the robot
 drives on blind, and it can stop where the database holds no views of the place: the recovery can
@@ -266,11 +300,34 @@ and check the build report's coverage (docs/recording.md, "Where to drive"). A r
 grows uncertain relocalizes sooner, through the relocalizer's auto trigger; one whose AMCL stays
 confident on the wrong pose, through its kidnap watchdog, on by default since PLAN V64
 (docs/relocalization.md). In run 2, the relocalizer's background check placed the robot 9 cm from
-the truth while AMCL was confidently 8 m off. The watchdog's relocalization, made outside the tree,
-ends a goal under way on Jazzy (runs 12 to 16), and on Lyrical too, whose tree checks the
-controller's error the same way (not run): the robot stops with its pose right, and the goal has to
-be sent again until T-015 lets the tree recover. Humble's tree runs its recoveries after any
-failure (not run with the watchdog).
+the truth while AMCL was confidently 8 m off. Since PLAN V66 a goal under way goes on after the
+watchdog's relocalization, made outside the tree: the example trees plan again when the path no
+longer reaches the robot (runs 17 to 21 and 23 to 27; Lyrical's tree does the same, not run).
+Since PLAN V70 the watchdog notices most kidnaps within seconds. Humble's tree runs
+its recoveries after any failure (not run with the watchdog). A goal can still end on a wrong pose:
+Nav2 judges it reached by the localization, which may get there before the watchdog notices
+(T-018); a mission layer that checks the robot's pose again a few seconds after a goal, or after
+the relocalizer published a pose (`~/status`), catches it.
+
+### Trying it by hand
+
+`sim/scripts/try_depot.sh` starts the same setup with Gazebo's window and RViz, for you to drive:
+the depot, the TurtleBot 4 with Landfall's camera, Nav2 with the example tree, AMCL and the
+relocalizer at their defaults (the startup relocalization gives AMCL its pose; the kidnap watchdog
+is on). It needs a database of the depot recording (`docs/recording.md`, "The simulation
+recording") and the display (`LANDFALL_SIM_GUI=1`, `docker/README.md`):
+
+```bash
+LANDFALL_SIM_GUI=1 scripts/sim.sh 'bash /ws/install/landfall_bringup/share/landfall_bringup/sim/scripts/try_depot.sh /data/depot.landfall.db'
+```
+
+In RViz, "Nav2 Goal" sends the robot somewhere, and "2D Pose Estimate" gives AMCL a wrong pose,
+which the kidnap watchdog notices at once and corrects. In Gazebo, select the robot and move it
+with the translate or rotate tool: a kidnap, which the watchdog corrects once the camera sees a
+place the recording saw. `docker exec -it <container> bash` opens a shell next to it, as your user
+like the simulation (source `/opt/ros/jazzy/setup.bash` and `/ws/install/setup.bash`), for `ros2
+service call /landfall_relocalizer/relocalize landfall_msgs/srv/Relocalize "{}"` or `ros2 topic
+echo /landfall_relocalizer/status`. Ctrl-C ends it.
 
 ### On Humble
 

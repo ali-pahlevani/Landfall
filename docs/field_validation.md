@@ -1,10 +1,12 @@
-# Field validation
+# Validating Landfall on your robot
 
-How to validate Landfall on a real robot before relying on it: the procedure of PLAN M8, written
-for any robot. The goal is the release's promise, measured where the robot works: **no wrong
-pose** (more than 0.5 m or 10° off), with the success and miss rates and the timings that come with
-it. A real site has no ground truth; the reference is the robot's own localization while it is
-well localized, checked by the operator wherever the two disagree.
+Landfall's numbers come from simulation (`docs/benchmark.md`) and from recordings of a simulated
+warehouse; no real robot has run it yet. Before a robot relies on it, measure it on that robot,
+where it works. The goal is what Landfall is built for: **no wrong pose** (more than 0.5 m or 10°
+off), with the success and miss rates and the timings that come with it. A real site has no
+ground truth; the reference is the robot's own localization while it is well localized, checked by
+the operator wherever the two disagree. The steps below take a few days: recording, a shift or more
+in shadow mode, then active trials.
 
 ## Before starting
 
@@ -16,17 +18,17 @@ well localized, checked by the operator wherever the two disagree.
 - **One writer of `/initialpose`.** If another node also sets AMCL's pose (a saved pose restored
   at startup, another relocalization), decide which one publishes during the trials; Landfall can
   stay in `dry_run` while another node publishes.
-- **The forklift of PLAN §14** in particular: the fork carriage's TF must come from the calibrated
-  joint position (R25), the camera's latency must be measured (R26), and its localization monitor
-  must not race the relocalizer (R27).
+- **A camera on a moving part** (a mast, a carriage): its TF must come from the calibrated joint
+  position, not a relative encoder count, or the camera height is wrong and the height check
+  refuses the poses (`docs/sensors.md`).
 
 ## 1. Recording
 
 Record at least three sessions on different days or in different lighting, driving as
 `docs/recording.md` ("Where to drive") says: every aisle in both directions, open floor in lanes
-at most 2 m apart, full turns on the spot at aisle ends, junctions and where the forklift stops,
+at most 2 m apart, full turns on the spot at aisle ends, junctions and where the robot stops,
 while AMCL is well localized. Build one database from all of them and read the build report: the
-coverage of the floor the forklift can reach (target: 80 % with a view within 1 m; the coverage
+coverage of the floor the robot can reach (target: 80 % with a view within 1 m; the coverage
 map shows the gaps), landmarks per keyframe, the keyframe-pose checks.
 
 ## 2. Shadow mode
@@ -41,7 +43,7 @@ landfall_relocalizer:
     kidnap_watchdog.enabled: false     # it would publish
     extrinsics_monitor.enabled: true
     extrinsics_monitor.period: 10.0    # one dry-run request every 10 s
-    extrinsics_monitor.max_amcl_std_xy: 0.10   # at or above AMCL's std when it is right
+    extrinsics_monitor.max_localization_std_xy: 0.10   # at or above AMCL's std when it is right
     shadow.log_path: /var/log/landfall/shadow.csv
 ```
 
@@ -70,18 +72,20 @@ headings, near repetitive structures, with and without loads, at the ends of ais
 2. Then live: make AMCL lose its pose (`reinitialize_global_localization`, or a wrong initial pose
    from RViz), call `~/relocalize`, and check that AMCL converges on the right pose (the operator
    confirms where the robot is). The kidnap watchdog (on by default) would relocalize a wrong pose
-   on its own within about half a minute: run these trials with `kidnap_watchdog.enabled: false`,
-   and the watchdog's own in step 4.
+   on its own within seconds: run these trials with `kidnap_watchdog.enabled: false`, and the
+   watchdog's own in step 4.
 3. The early end (`query.early_stop_*`, PLAN V63): at about 20 spots where a request found nothing,
    record 10 s of the robot standing still (image, camera_info, scan, TF), and replay the bag with
    `landfall query --frames 3` twice, with the defaults and with
    `--set query.early_stop_frames=0`. A spot that localizes only in the second replay is a success
    the early end lost; in simulation, with a camera's noise added, it lost 0.1 % of them.
 
-4. The kidnap watchdog (PLAN V64), on again: at about 10 spots, give AMCL a wrong pose from RViz
-   (2 to 10 m off, and once only turned by 90°) while the robot stands or drives slowly. Note the
-   seconds until the watchdog relocalizes ("kidnap watchdog: ... relocalizing" in the node's log)
-   and the error of the pose it publishes.
+4. The kidnap watchdog (PLAN V64, V70), on again: at about 10 spots, give AMCL a wrong pose from
+   RViz (2 to 10 m off, and once only turned by 90°) while the robot stands or drives slowly; and
+   if the robot can be pushed with its drive released while its computer runs, push it 2 to 10 m
+   to another place at about 10 more (a kidnap). Note the seconds until the watchdog relocalizes
+   ("kidnap watchdog: vision puts the robot ..." in the node's log, after "an early check") and
+   the error of the pose it publishes.
 
 Note every result: status, the pose's error against the confirmed pose, the time.
 
@@ -93,10 +97,10 @@ under 3 s on a CPU-only PC.
 
 The relocalizer's share of the CPU, with the kidnap watchdog on and off: a few minutes of each
 while the robot drives, the process's CPU time from `ps -o times= -p <pid>` at the start and the
-end (or `pidstat -p <pid> 30`). In the simulation its checks cost about 15 % of one core of a
-laptop CPU (`docs/relocalization.md`, T-016).
+end (or `pidstat -p <pid> 30`). In the simulation its checks cost about 8 % of one core of a laptop
+CPU (`docs/relocalization.md`).
 
-## Results to report
+## What to write down
 
 | What | How |
 |---|---|

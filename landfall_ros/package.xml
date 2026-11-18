@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>landfall_ros</name>
-  <version>0.0.0</version>
+  <version>1.0.0</version>
   <description>
     ROS 2 nodes of Landfall: keyframe recorder, relocalizer lifecycle node and the database
     builder CLI, plus the distro compatibility layer they share.

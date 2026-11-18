@@ -630,7 +630,7 @@ void RecorderNode::publishStatus()
     status.rejected_tilt = c.tilt;
     status.rejected_blur = c.blur;
     status.rejected_exposure = c.exposure;
-    status.rejected_tf = c.no_pose;
+    status.rejected_no_pose = c.no_pose;
   }
   if (last_keyframe_pose_) {
     status.last_keyframe_pose = *last_keyframe_pose_;

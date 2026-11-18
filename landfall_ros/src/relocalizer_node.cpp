@@ -28,6 +28,7 @@
 #include <utility>
 #include <vector>
 
+#include "landfall/geometry/gravity.hpp"
 #include "landfall/grid/map_loader.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
 #include "landfall/record/keyframe_selector.hpp"
@@ -57,6 +58,17 @@ double secondsSince(Clock::time_point start)
 
 double deg(double rad) { return rad * 180.0 / M_PI; }
 
+// The kidnap watchdog looks again for a suspicion its check couldn't answer once the robot moved
+// or turned this much.
+constexpr double kNewViewTranslation = 0.5;  // m
+constexpr double kNewViewRotationDeg = 30.0;
+
+// Seconds on the steady clock: the kidnap watchdog's budget and cooldown.
+double steadySeconds()
+{
+  return std::chrono::duration<double>(Clock::now().time_since_epoch()).count();
+}
+
 tf2::TimePoint timePoint(int64_t stamp_ns)
 {
   return tf2::TimePoint(std::chrono::nanoseconds(stamp_ns));
@@ -74,6 +86,14 @@ std::string fixed(double value, int decimals)
 std::string poseText(const Pose2 & p)
 {
   return "(" + fixed(p.x, 2) + ", " + fixed(p.y, 2) + ", " + fixed(deg(p.yaw), 1) + " deg)";
+}
+
+// A result before any frame: its scan gap wasn't measured (NaN, as RelocalizationScores says).
+landfall_msgs::msg::RelocalizationResult emptyResult()
+{
+  landfall_msgs::msg::RelocalizationResult result;
+  result.scores.scan_alternative_gap = std::numeric_limits<float>::quiet_NaN();
+  return result;
 }
 
 }  // namespace
@@ -167,14 +187,15 @@ void RelocalizerNode::declareParameters()
   declare_parameter(
     "scan_check.mode", "required",
     describe("LiDAR check of every pose: required, optional (when a scan is there) or disabled"));
-  declare_parameter("scan_check.topic", "scan", describe("sensor_msgs/LaserScan topic"));
+  declare_parameter(
+    "scan.topic", "scan", describe("sensor_msgs/LaserScan topic (the one AMCL uses)"));
   declare_parameter(
     "auto_trigger.enabled", false,
     describe("Relocalize on its own while the localization stays uncertain"));
   declare_parameter(
-    "auto_trigger.pose_topic", "amcl_pose",
+    "localization.pose_topic", "amcl_pose",
     describe("PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor, "
-             "kidnap watchdog)"));
+             "kidnap watchdog, shadow log)"));
   declare_parameter(
     "extrinsics_monitor.enabled", true,
     describe("Compare vision's camera pose with TF's while the localization is confident"));
@@ -187,7 +208,10 @@ void RelocalizerNode::declareParameters()
              "disagreeing with it"));
   declare_parameter(
     "kidnap_watchdog.period", 10.0,
-    describe("Seconds between the watchdog's dry-run requests", 1.0, 3600.0));
+    describe(
+      "Seconds between the watchdog's scheduled checks (dry-run requests). Early checks take the "
+      "place of scheduled ones: on average at most one check per period",
+      1.0, 3600.0));
   declare_parameter(
     "shadow.log_path", "",
     describe("If set, every request that publishes nothing (dry runs, the monitor's and the "
@@ -355,7 +379,7 @@ void RelocalizerNode::declareParameters()
     "debug.dump_dir", "",
     describe("If set, every query frame and its result are saved there for tuning", kDynamic));
   declare_parameter(
-    "scan_check.max_time_offset", 0.5,
+    "scan.max_time_offset", 0.5,
     describe(
       "Largest time between an image and the scan that checks it, seconds", 0.0, 5.0, kDynamic));
   declare_parameter(
@@ -425,7 +449,7 @@ void RelocalizerNode::declareParameters()
     "auto_trigger.cooldown", 30.0,
     describe("Seconds after an automatic request before the next one", 0.0, 3600.0, kDynamic));
   declare_parameter(
-    "extrinsics_monitor.max_amcl_std_xy", 0.05,
+    "extrinsics_monitor.max_localization_std_xy", 0.05,
     describe(
       "The monitor samples only while the localization's std is below this, metres", 0.01, 1.0,
       kDynamic));
@@ -467,11 +491,18 @@ void RelocalizerNode::declareParameters()
       "Disagreeing checks in a row (any check: the monitor's too) before relocalizing", 1, 10,
       kDynamic));
   declare_parameter(
-    "kidnap_watchdog.cooldown", 30.0,
+    "kidnap_watchdog.cooldown", 10.0,
     describe(
       "Seconds after a pose the watchdog published before it relocalizes again (a relocalization "
       "that published nothing leaves no cooldown)",
       0.0, 3600.0, kDynamic));
+  declare_parameter(
+    "kidnap_watchdog.min_scan_fit", 0.2,
+    describe(
+      "An early check starts when, for a second, the scan at the localization's pose fits the map "
+      "worse than this: its hit ratio minus the share of beams that see through obstacles (-1: "
+      "never)",
+      -1.0, 1.0, kDynamic));
 }
 
 RelocalizerNode::Settings RelocalizerNode::readSettings() const
@@ -513,15 +544,27 @@ RelocalizerNode::Settings RelocalizerNode::readSettings() const
   const std::string scan_mode = get_parameter("scan_check.mode").as_string();
   requireOneOf("scan_check.mode", scan_mode, {"required", "optional", "disabled"});
   s.scan_mode = parseScanCheckMode(scan_mode).value_or(ScanCheckMode::kRequired);  // validated
-  s.scan_topic = get_parameter("scan_check.topic").as_string();
+  s.scan_topic = get_parameter("scan.topic").as_string();
   s.auto_trigger_enabled = get_parameter("auto_trigger.enabled").as_bool();
-  s.localization_pose_topic = get_parameter("auto_trigger.pose_topic").as_string();
+  s.localization_pose_topic = get_parameter("localization.pose_topic").as_string();
   s.monitor_enabled = get_parameter("extrinsics_monitor.enabled").as_bool();
   s.monitor_period = get_parameter("extrinsics_monitor.period").as_double();
   s.watchdog_enabled = get_parameter("kidnap_watchdog.enabled").as_bool();
   s.watchdog_period = get_parameter("kidnap_watchdog.period").as_double();
   s.shadow_log_path = expandHome(get_parameter("shadow.log_path").as_string());
   return s;
+}
+
+KidnapWatchdogParams RelocalizerNode::readWatchdogParams() const
+{
+  KidnapWatchdogParams w;
+  w.max_translation = get_parameter("kidnap_watchdog.max_translation").as_double();
+  w.max_rotation_deg = get_parameter("kidnap_watchdog.max_rotation_deg").as_double();
+  w.confirmations = static_cast<int>(get_parameter("kidnap_watchdog.confirmations").as_int());
+  w.cooldown = get_parameter("kidnap_watchdog.cooldown").as_double();
+  w.min_scan_fit = get_parameter("kidnap_watchdog.min_scan_fit").as_double();
+  w.period = settings_.watchdog_period;
+  return w;
 }
 
 RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
@@ -570,7 +613,7 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
   l.scan.alternative_margin = get_parameter("scan_check.alternative_margin").as_double();
   l.scan.unique_margin = get_parameter("scan_check.unique_margin").as_double();
   l.scan.max_twin_support = get_parameter("scan_check.max_twin_support").as_double();
-  t.scan_max_time_offset = get_parameter("scan_check.max_time_offset").as_double();
+  t.scan_max_time_offset = get_parameter("scan.max_time_offset").as_double();
   t.auto_trigger.max_std_xy = get_parameter("auto_trigger.max_std_xy").as_double();
   t.auto_trigger.max_std_yaw_deg = get_parameter("auto_trigger.max_std_yaw_deg").as_double();
   t.auto_trigger.duration = get_parameter("auto_trigger.duration").as_double();
@@ -579,14 +622,11 @@ RelocalizerNode::Thresholds RelocalizerNode::readThresholds() const
     static_cast<std::size_t>(get_parameter("extrinsics_monitor.min_samples").as_int());
   t.monitor.warn_translation = get_parameter("extrinsics_monitor.warn_translation").as_double();
   t.monitor.warn_rotation_deg = get_parameter("extrinsics_monitor.warn_rotation_deg").as_double();
-  t.monitor_max_amcl_std_xy = get_parameter("extrinsics_monitor.max_amcl_std_xy").as_double();
+  t.monitor_max_localization_std_xy =
+    get_parameter("extrinsics_monitor.max_localization_std_xy").as_double();
   t.monitor_max_linear_speed = get_parameter("extrinsics_monitor.max_linear_speed").as_double();
   t.monitor_max_angular_speed = get_parameter("extrinsics_monitor.max_angular_speed").as_double();
-  t.watchdog.max_translation = get_parameter("kidnap_watchdog.max_translation").as_double();
-  t.watchdog.max_rotation_deg = get_parameter("kidnap_watchdog.max_rotation_deg").as_double();
-  t.watchdog.confirmations =
-    static_cast<int>(get_parameter("kidnap_watchdog.confirmations").as_int());
-  t.watchdog.cooldown = get_parameter("kidnap_watchdog.cooldown").as_double();
+  t.watchdog = readWatchdogParams();
   t.consistency.max_translation_error =
     get_parameter("consistency.max_translation_error").as_double();
   t.consistency.max_rotation_error_deg =
@@ -665,10 +705,20 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_configure(const rclcpp_lifec
     scans_.clear();
     last_scan_.reset();
     estimate_.reset();
+    correction_.reset();
+    published_correction_.reset();
+    disagreeing_.reset();
+    scan_fit_settle_ns_ = 0;
+    check_odom_.reset();
+    check_reason_ = WatchdogCheck::kNone;
     monitor_.reset();
     watchdog_.reset();
   }
   auto_trigger_.reset();
+  scan_fit_trigger_.reset();
+  scan_fit_verifier_.reset();
+  scan_fit_stamp_ = 0;
+  scan_fit_next_ = 0.0;
   loadDatabase();
 
   camera_info_sub_ = create_subscription<sensor_msgs::msg::CameraInfo>(
@@ -850,12 +900,13 @@ RelocalizerNode::CallbackReturn RelocalizerNode::on_activate(const rclcpp_lifecy
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     watchdog_.reset();
+    disagreeing_.reset();
   }
+  scan_fit_trigger_.reset();
   if (settings_.watchdog_enabled) {
-    watchdog_timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(settings_.watchdog_period)),
-      [this] { watchdogTick(); });
+    // Ten times a second: whether a check is due (scheduled, or early), and twice a second the
+    // scan's fit at the localization's pose.
+    watchdog_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this] { watchdogTick(); });
   }
   if (settings_.bond_enabled) {
     bond_ = std::make_shared<bond::Bond>("bond", get_name(), shared_from_this());
@@ -1024,8 +1075,42 @@ void RelocalizerNode::onLocalizationPose(const geometry_msgs::msg::PoseWithCovar
   e.std_xy = worstStdXy(covariance);
   e.std_yaw_deg = deg(std::sqrt(std::max(0.0, covariance(2, 2))));
   auto_trigger_.observe(now().seconds(), e.std_xy, e.std_yaw_deg);
-  const std::lock_guard<std::mutex> lock(mutex_);
-  estimate_ = e;
+  // The localization's correction (map -> odom) as of this pose. A jump of it that the odometry
+  // doesn't explain, and that no pose of ours explains either, is someone else's /initialpose or
+  // the localization jumping on its own: the kidnap watchdog checks at once (V70).
+  std::optional<Pose2> odom_T_base;
+  if (
+    const auto T = lookup(
+      settings_.frame_odom, settings_.frame_base, timePoint(toNanoseconds(pose.header.stamp)))) {
+    odom_T_base = toPose2(*T);
+  }
+  const KidnapWatchdogParams params = readWatchdogParams();
+  const auto beyond = [&params](const Pose2 & a, const Pose2 & b) {
+    return translationDistance(a, b) > params.max_translation ||
+           deg(rotationDistance(a, b)) > params.max_rotation_deg;
+  };
+  std::optional<double> jump;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    estimate_ = e;
+    if (!odom_T_base) {
+      return;  // TF doesn't reach the pose's stamp: the next pose
+    }
+    if (correction_ && settings_.watchdog_enabled) {
+      const Pose2 expected = compose(*correction_, *odom_T_base);
+      const bool ours =
+        published_correction_ && !beyond(compose(*published_correction_, *odom_T_base), e.pose);
+      if (beyond(expected, e.pose) && !ours) {
+        jump = translationDistance(expected, e.pose);
+        watchdog_.suspect(WatchdogCheck::kJump);
+      }
+    }
+    correction_ = compose(e.pose, inverse(*odom_T_base));
+  }
+  if (jump) {
+    RCLCPP_INFO(
+      get_logger(), "kidnap watchdog: the localization's pose jumped %.2f m: checking it", *jump);
+  }
 }
 
 void RelocalizerNode::autoTriggerTick()
@@ -1050,12 +1135,12 @@ void RelocalizerNode::monitorTick()
   const Thresholds t = readThresholds();
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    if (!estimate_ || estimate_->std_xy > t.monitor_max_amcl_std_xy) {
+    if (!estimate_ || estimate_->std_xy > t.monitor_max_localization_std_xy) {
       return;  // only while the localization is confident
     }
   }
   // A full request, as the service would run it, that publishes nothing: its result feeds the
-  // shadow log (field validation, M8) and, on success, the monitor.
+  // shadow log (docs/field_validation.md) and, on success, the monitor.
   Request r;
   r.trigger = "monitor";
   r.timeout = std::min(t.timeout, 5.0);
@@ -1066,23 +1151,145 @@ void RelocalizerNode::monitorTick()
 
 void RelocalizerNode::watchdogTick()
 {
+  const double t = steadySeconds();
+  checkScanFit(t);
   if (busy_) {
     return;
   }
+  const KidnapWatchdogParams params = readWatchdogParams();
+  // A suspicion whose check found no pose waits until the camera can see something else: the robot
+  // moved half a metre or turned 30 degrees since (as the example tree's look-around).
+  std::optional<Pose2> odom;
+  if (const auto T = lookup(settings_.frame_odom, settings_.frame_base, tf2::TimePointZero)) {
+    odom = toPose2(*T);
+  }
+  WatchdogCheck reason = WatchdogCheck::kNone;
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (!estimate_) {
       return;  // the localization has no pose to check yet
     }
+    if (
+      watchdog_.waiting() != WatchdogCheck::kNone && odom && check_odom_ &&
+      (translationDistance(*odom, *check_odom_) >= kNewViewTranslation ||
+       deg(rotationDistance(*odom, *check_odom_)) >= kNewViewRotationDeg)) {
+      watchdog_.newView();
+    }
+    watchdog_.setParams(params);
+    reason = watchdog_.due(t);
+    if (reason == WatchdogCheck::kNone) {
+      return;
+    }
+    watchdog_.started(t);
+    check_reason_ = reason;
+    check_odom_ = odom;
+  }
+  if (reason != WatchdogCheck::kScheduled) {
+    RCLCPP_INFO(get_logger(), "kidnap watchdog: an early check (%s)", toString(reason));
   }
   // Whatever the localization's own uncertainty: a confident localization can be wrong (a kidnap),
   // and an uncertain one is welcome to a pose.
   Request r;
   r.trigger = "watchdog";
-  r.timeout = std::min(readThresholds().timeout, 5.0);
+  r.timeout = std::min(get_parameter("query.timeout").as_double(), 5.0);
   r.dry_run = true;
   r.background = true;
   submit(std::move(r));
+}
+
+void RelocalizerNode::checkScanFit(double t)
+{
+  // Twice a second, the newest scan at the localization's pose (V70): after a kidnap the
+  // localization stays where the robot was, and a scan taken somewhere else fits the map there
+  // much worse than it ever does while the localization is right (hits minus beams that see
+  // through obstacles, scanFit). 0.2 to 0.8 ms per scan on a laptop CPU core.
+  if (t < scan_fit_next_ || !map_ || settings_.scan_mode == ScanCheckMode::kDisabled) {
+    return;
+  }
+  scan_fit_next_ = t + 0.5;
+  const double min_fit = get_parameter("kidnap_watchdog.min_scan_fit").as_double();
+  if (min_fit <= -1.0) {
+    return;
+  }
+  // The newest scan TF reaches: odometry, and the localization's map -> odom without its pose
+  // topic, can lag the scans. Every scan since the last one judged, newest first.
+  std::vector<std::pair<int64_t, std::string>> candidates;  // stamp, laser frame
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!estimate_) {
+      return;
+    }
+    for (auto it = scans_.rbegin(); it != scans_.rend(); ++it) {
+      const int64_t stamp = toNanoseconds(it->header.stamp);
+      if (stamp <= scan_fit_stamp_ || stamp < scan_fit_settle_ns_) {
+        break;  // judged already, or the localization is still taking a pose we just published
+      }
+      candidates.emplace_back(stamp, it->header.frame_id);
+    }
+  }
+  for (const auto & [stamp, laser_frame] : candidates) {
+    const auto localization = currentLocalizationAt(stamp);
+    if (!localization) {
+      continue;
+    }
+    const auto laser = lookup(settings_.frame_base, laser_frame, timePoint(stamp));
+    if (!laser) {
+      continue;
+    }
+    const Pose2 map_T_base = *localization;
+    const Pose3 & T_base_laser = *laser;
+    scan_fit_stamp_ = stamp;
+    sensor_msgs::msg::LaserScan scan;
+    bool found = false;
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      for (auto it = scans_.rbegin(); it != scans_.rend() && !found; ++it) {
+        if (toNanoseconds(it->header.stamp) == stamp) {
+          scan = *it;
+          found = true;
+        }
+      }
+    }
+    if (!found) {
+      return;
+    }
+    ScanCheckParams scan_params = readThresholds().localizer.scan;
+    if (
+      !scan_fit_verifier_ || scan_fit_verifier_->params().max_range != scan_params.max_range ||
+      scan_fit_verifier_->params().hit_tolerance != scan_params.hit_tolerance ||
+      scan_fit_verifier_->params().violation_margin != scan_params.violation_margin ||
+      scan_fit_verifier_->params().floor_clearance != scan_params.floor_clearance) {
+      scan_params.check_alternatives = false;
+      scan_fit_verifier_ = std::make_unique<ScanVerifier>(map_->fieldPtr(), scan_params);
+    }
+    PlanarScan planar;
+    planar.ranges = scan.ranges;
+    planar.angle_min = scan.angle_min;
+    planar.angle_increment = scan.angle_increment;
+    planar.range_min = scan.range_min;
+    planar.range_max = scan.range_max;
+    planar.T_base_laser = T_base_laser;
+    const ProjectedScan projected =
+      scan_fit_verifier_->project(planar, GravityEstimate().gravity_base);
+    if (static_cast<int>(projected.endpoints.size()) < scan_params.min_valid_beams) {
+      return;  // too few beams to tell
+    }
+    const ScanScore score = scan_fit_verifier_->score(projected, map_T_base, true);
+    if (scanFit(score) >= min_fit) {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      watchdog_.dropWaiting(WatchdogCheck::kScanFit);  // it fits again
+    }
+    if (scan_fit_trigger_.observe(scanFit(score), min_fit)) {
+      RCLCPP_INFO(
+        get_logger(),
+        "kidnap watchdog: the scan doesn't fit the map at the localization's pose (hit ratio "
+        "%.2f, %.2f of the beams see through obstacles): checking it",
+        score.hit_ratio, score.violation_ratio);
+      const std::lock_guard<std::mutex> lock(mutex_);
+      watchdog_.suspect(WatchdogCheck::kScanFit);
+    }
+    return;
+  }
 }
 
 std::optional<RelocalizerNode::Request> RelocalizerNode::watch(
@@ -1093,14 +1300,20 @@ std::optional<RelocalizerNode::Request> RelocalizerNode::watch(
     // watchdog's own relocalization published also starts its cooldown.
     const std::lock_guard<std::mutex> lock(mutex_);
     if (request.trigger == "watchdog") {
-      watchdog_.published(now().seconds());
+      watchdog_.published(steadySeconds());
     } else {
       watchdog_.restart();
     }
+    disagreeing_.reset();
     return std::nullopt;
   }
   if (settings_.watchdog_enabled && !request.background && request.trigger == "watchdog") {
-    // Its relocalization published nothing: no cooldown, the next disagreeing checks try again.
+    // Its relocalization published nothing: no cooldown, the next disagreeing checks try again,
+    // the first as soon as the budget allows.
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      watchdog_.suspect(WatchdogCheck::kRetry);
+    }
     RCLCPP_INFO(
       get_logger(),
       "kidnap watchdog: the relocalization published nothing (%s); %d more disagreeing check(s) "
@@ -1109,35 +1322,77 @@ std::optional<RelocalizerNode::Request> RelocalizerNode::watch(
       static_cast<int>(get_parameter("kidnap_watchdog.confirmations").as_int()));
     return std::nullopt;
   }
+  if (
+    settings_.watchdog_enabled && request.background && request.trigger == "watchdog" &&
+    result.status != Result::SUCCESS) {
+    // An early check that found no pose says nothing about the localization: its suspicion waits
+    // for a new view.
+    const std::lock_guard<std::mutex> lock(mutex_);
+    watchdog_.unanswered(check_reason_);
+    return std::nullopt;
+  }
   if (!settings_.watchdog_enabled || !request.background || result.status != Result::SUCCESS) {
     return std::nullopt;
   }
   const int64_t stamp = toNanoseconds(result.pose.header.stamp);
-  const auto localization = localizationAt(stamp);
+  const auto localization = currentLocalizationAt(stamp);
   if (!localization) {
     return std::nullopt;  // no map -> odom: the localization has no pose to compare
   }
   const Pose2 pose = toPose2(toPose3(result.pose.pose.pose));
   const double translation = translationDistance(pose, *localization);
   const double rotation_deg = deg(rotationDistance(pose, *localization));
-  const double t = now().seconds();
-  const KidnapWatchdogParams params = readThresholds().watchdog;
+  const double t = steadySeconds();
+  const KidnapWatchdogParams params = readWatchdogParams();
+  std::optional<Pose2> odom_T_base;
+  if (const auto T = lookup(settings_.frame_odom, settings_.frame_base, timePoint(stamp))) {
+    odom_T_base = toPose2(*T);
+  }
   int count = 0;
+  bool agrees_with_previous = false;
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     watchdog_.setParams(params);
-    if (!watchdog_.observe(translation, rotation_deg) || !watchdog_.shouldFire(t)) {
+    const bool disagrees = watchdog_.observe(translation, rotation_deg);
+    // The previous disagreeing check, moved by the odometry since: does it put the robot where
+    // this one does (V70)? Then this check's pose is confirmed and can be published.
+    const auto previous = disagreeing_;
+    disagreeing_.reset();
+    if (disagrees && odom_T_base) {
+      if (previous) {
+        const Pose2 moved =
+          compose(previous->first, compose(inverse(previous->second), *odom_T_base));
+        agrees_with_previous = translationDistance(moved, pose) <= params.max_translation &&
+                               deg(rotationDistance(moved, pose)) <= params.max_rotation_deg;
+      }
+      disagreeing_ = std::make_pair(pose, *odom_T_base);
+    }
+    if (!disagrees || !watchdog_.shouldFire(t)) {
       if (watchdog_.disagreements() > 0) {
         RCLCPP_INFO(
           get_logger(),
           "kidnap watchdog: a %s check puts the robot %.2f m / %.1f deg from the localization (%d "
-          "in a row)",
-          request.trigger.c_str(), translation, rotation_deg, watchdog_.disagreements());
+          "in a row)%s",
+          request.trigger.c_str(), translation, rotation_deg, watchdog_.disagreements(),
+          watchdog_.disagreements() < params.confirmations ? ": confirming it" : "");
       }
       return std::nullopt;
     }
     count = watchdog_.disagreements();
     watchdog_.fired();
+    disagreeing_.reset();
+  }
+  if (agrees_with_previous) {
+    // The last two checks, each a full request that passed every test, agree with each other:
+    // this one's pose is the watchdog's relocalization.
+    RCLCPP_WARN(
+      get_logger(),
+      "kidnap watchdog: vision puts the robot %.2f m / %.1f deg from the localization in %d checks "
+      "in a row, the last two agreeing: publishing the last",
+      translation, rotation_deg, count);
+    if (publishConfirmedCheck(result, pose)) {
+      return std::nullopt;
+    }
   }
   RCLCPP_WARN(
     get_logger(),
@@ -1147,6 +1402,41 @@ std::optional<RelocalizerNode::Request> RelocalizerNode::watch(
   Request relocalization;
   relocalization.trigger = "watchdog";
   return relocalization;
+}
+
+bool RelocalizerNode::publishConfirmedCheck(Result result, const Pose2 & pose)
+{
+  if (const auto reason = notReady(true)) {
+    RCLCPP_INFO(get_logger(), "kidnap watchdog: cannot publish the check: %s", reason->c_str());
+    return false;
+  }
+  std::string error;
+  if (!publish(result.pose, &error)) {
+    RCLCPP_WARN(
+      get_logger(), "kidnap watchdog: the check's pose was not delivered: %s", error.c_str());
+    return false;
+  }
+  const int64_t stamp = toNanoseconds(result.pose.header.stamp);
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (const auto T = lookup(settings_.frame_odom, settings_.frame_base, timePoint(stamp))) {
+      published_correction_ = compose(pose, inverse(toPose2(*T)));
+    }
+    scan_fit_settle_ns_ = stamp + 1'000'000'000;
+    watchdog_.published(steadySeconds());
+  }
+  const std::string dry_run = " (dry run, not published)";
+  if (
+    result.message.size() >= dry_run.size() &&
+    result.message.compare(result.message.size() - dry_run.size(), dry_run.size(), dry_run) == 0) {
+    result.message.erase(result.message.size() - dry_run.size());
+  }
+  result.message += "; the kidnap watchdog's check, confirmed by the one before it";
+  result.published = true;
+  Request request;
+  request.trigger = "watchdog";
+  answer(request, result);  // ~/status, like any relocalization
+  return true;
 }
 
 bool RelocalizerNode::staticChain(const std::string & a, const std::string & b) const
@@ -1193,7 +1483,7 @@ void RelocalizerNode::submit(Request request)
     }
   }
   if (refused) {
-    Result busy;
+    Result busy = emptyResult();
     busy.status = Result::BUSY;
     busy.trigger = refused->trigger;
     busy.message = "a relocalization is already running";
@@ -1249,7 +1539,7 @@ void RelocalizerNode::workerLoop()
     try {
       result = run(request, &preempted);
     } catch (const std::exception & e) {
-      result = Result();
+      result = emptyResult();
       result.status = Result::NOT_READY;
       result.message = std::string("internal error: ") + e.what();
       RCLCPP_ERROR(get_logger(), "relocalization failed: %s", e.what());
@@ -1260,6 +1550,11 @@ void RelocalizerNode::workerLoop()
       logShadow(request, result);
     }
     std::optional<Request> next = preempted ? std::nullopt : watch(request, result);
+    if (preempted && request.trigger == "watchdog") {
+      // A request preempted the check: its suspicion is checked again after it.
+      const std::lock_guard<std::mutex> lock(mutex_);
+      watchdog_.suspect(check_reason_);
+    }
     if (request.trigger == "startup") {
       const std::lock_guard<std::mutex> lock(queue_mutex_);
       if (result.status == Result::SUCCESS) {
@@ -1460,7 +1755,7 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
 {
   const auto started = Clock::now();
   const Thresholds t = readThresholds();
-  Result result;
+  Result result = emptyResult();
   result.trigger = request.trigger;
   const bool publishing = !request.dry_run;
   if (auto reason = notReady(publishing)) {
@@ -1501,6 +1796,7 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
   std::string skipped;  // why the latest image couldn't be used
   int valid = 0;
   double localize_s = 0.0;
+  double best_closeness = 0.0;             // over the request's frames
   const bool yields = request.background;  // to any other request (submit())
   const bool samples_extrinsics = request.trigger == "monitor";
   std::optional<std::pair<Pose3, Pose3>> monitor_sample;
@@ -1610,6 +1906,14 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
         continue;
       }
     }
+    if (request.background) {
+      // The kidnap watchdog's and the extrinsics monitor's checks: a strong pose the localization
+      // confirms skips the search for other places the scan fits (LocalizationPrior).
+      if (const auto localization = localizationAt(image.stamp_ns)) {
+        frame.localization =
+          LocalizationPrior{*localization, t.watchdog.max_translation, t.watchdog.max_rotation_deg};
+      }
+    }
     try {
       frame.image = image.decode();
     } catch (const std::exception & e) {
@@ -1617,6 +1921,7 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
       continue;
     }
     FrameResult result_frame = localizer_->localize(frame);
+    best_closeness = std::max(best_closeness, result_frame.closeness);
     localize_s += result_frame.timings.total_s;
     last_stamp = image.stamp_ns;
     FrameOutcome outcome;
@@ -1730,6 +2035,11 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
     static_cast<float>(decision.consistency.max_translation_error);
   s.consistency_rotation_error_deg =
     static_cast<float>(decision.consistency.max_rotation_error_deg);
+  s.closeness = static_cast<float>(best_closeness);
+  s.stopped_early = stopped_early;
+  s.scan_alternative_gap = summary.alternative_gap_measured
+                             ? static_cast<float>(summary.scan_alternative_gap)
+                             : std::numeric_limits<float>::quiet_NaN();
 
   for (std::size_t i = 0; i < last_frame.hypotheses.size() && i < 10; ++i) {
     const Hypothesis & h = last_frame.hypotheses[i];
@@ -1761,23 +2071,26 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
     if (estimated) {
       covariance = *decision.covariance;
     }
+    // The odometry at the pose's stamp: the last valid frame's, or the latest after compensation.
+    Pose2 odom_at_pose;
+    for (auto it = outcomes.rbegin(); it != outcomes.rend(); ++it) {
+      if (it->estimate) {
+        odom_at_pose = it->estimate->odom_T_base;
+        break;
+      }
+    }
     if (t.compensate_motion) {
       try {
         const auto latest = tf_buffer_->lookupTransform(
           settings_.frame_odom, settings_.frame_base, tf2::TimePointZero);
-        Pose2 odom_at_last;
-        for (auto it = outcomes.rbegin(); it != outcomes.rend(); ++it) {
-          if (it->estimate) {
-            odom_at_last = it->estimate->odom_T_base;
-            break;
-          }
-        }
+        const Pose2 odom_at_last = odom_at_pose;
         const Pose2 odom_now = toPose2(toPose3(latest.transform));
         if (estimated) {
           covariance = propagateCovariance(covariance, pose, odom_at_last, odom_now);
         }
         pose = propagate(pose, odom_at_last, odom_now);
         stamp_ns = toNanoseconds(latest.header.stamp);
+        odom_at_pose = odom_now;
       } catch (const tf2::TransformException & e) {
         RCLCPP_WARN(get_logger(), "no current odometry to compensate motion: %s", e.what());
       }
@@ -1805,6 +2118,12 @@ RelocalizerNode::Result RelocalizerNode::run(const Request & request, bool * pre
       result.published = publish(msg, &error);
       if (!result.published) {
         result.message += "; not delivered: " + error;
+      } else {
+        // The localization's next correction: its jump to it is ours (no kidnap watchdog check),
+        // and its scans fit again once it took the pose.
+        const std::lock_guard<std::mutex> lock(mutex_);
+        published_correction_ = compose(pose, inverse(odom_at_pose));
+        scan_fit_settle_ns_ = stamp_ns + 1'000'000'000;
       }
     } else {
       result.message += " (dry run, not published)";
@@ -1952,6 +2271,7 @@ void RelocalizerNode::dump(
       .field("ambiguity_ratio", frame.ambiguity.score_ratio)
       .field("twin_ambiguous", frame.twin_ambiguous)
       .field("closeness", frame.closeness)
+      .field("alternatives_skipped", frame.alternatives_skipped)
       .field("seconds", frame.timings.total_s);
     // What the scan told apart at the best place (scan_check.check_alternatives).
     if (frame.uniqueness.measured) {
@@ -2072,20 +2392,43 @@ void RelocalizerNode::logShadow(const Request & request, const Result & result)
   std::string message = result.message;
   std::replace(message.begin(), message.end(), ',', ';');
   line << result.scores.num_inliers << "," << fixed(result.scores.scan_hit_ratio, 3) << ","
-       << fixed(result.scores.elapsed_s, 3) << "," << message;
+       << fixed(result.scores.elapsed_s, 3) << "," << fixed(result.scores.closeness, 3) << ","
+       << (result.scores.stopped_early ? 1 : 0) << ",";
+  if (!std::isnan(result.scores.scan_alternative_gap)) {
+    line << fixed(result.scores.scan_alternative_gap, 3);
+  }
+  line << "," << message;
   try {
     const bool fresh = !std::filesystem::exists(settings_.shadow_log_path);
     std::ofstream out(settings_.shadow_log_path, std::ios::app);
     if (fresh) {
       out << "stamp_ns,trigger,status,frames_used,pose_stamp_ns,x,y,yaw,localization_x,"
              "localization_y,localization_yaw,error_m,error_deg,localization_std_xy,"
-             "localization_std_yaw_deg,inliers,scan_hit_ratio,elapsed_s,message\n";
+             "localization_std_yaw_deg,inliers,scan_hit_ratio,elapsed_s,closeness,stopped_early,"
+             "scan_alternative_gap,message\n";
     }
     out << line.str() << "\n";
   } catch (const std::exception & e) {
     RCLCPP_WARN_THROTTLE(
       get_logger(), *get_clock(), 10000, "cannot write shadow.log_path: %s", e.what());
   }
+}
+
+std::optional<Pose2> RelocalizerNode::currentLocalizationAt(int64_t stamp_ns) const
+{
+  std::optional<Pose2> correction;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    correction = correction_;
+  }
+  if (correction) {
+    if (
+      const auto odom_T_base =
+        lookup(settings_.frame_odom, settings_.frame_base, timePoint(stamp_ns))) {
+      return compose(*correction, toPose2(*odom_T_base));
+    }
+  }
+  return localizationAt(stamp_ns);
 }
 
 std::optional<Pose2> RelocalizerNode::localizationAt(int64_t stamp_ns) const

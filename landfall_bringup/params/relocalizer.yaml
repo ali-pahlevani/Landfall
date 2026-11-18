@@ -14,8 +14,9 @@
       time_offset: 0.0         # negative latency of a camera that stamps images late
     camera_info:
       topic: camera_info
-    scan_check:
+    scan:
       topic: scan              # the LaserScan AMCL uses
+    scan_check:
       mode: required           # every pose is checked against the scan before it is published
     imu:
       topic: imu               # optional: orientation gives gravity on ramps
@@ -29,11 +30,13 @@
       delay: 2.0
       max_attempts: 3
       retry_interval: 5.0
+    localization:
+      pose_topic: amcl_pose    # AMCL's pose and covariance (auto trigger, monitors, shadow log)
     auto_trigger:
       enabled: false           # relocalize on its own while AMCL stays uncertain
-      pose_topic: amcl_pose
     kidnap_watchdog:
-      enabled: true            # check AMCL's pose every 10 s and relocalize when vision keeps
+      enabled: true            # check AMCL's pose every 10 s, and at once when its pose jumps or
+                               # the scan stops fitting at it; relocalize when vision keeps
                                # disagreeing with it: AMCL can stay confident after a kidnap
     bond:
       enabled: true            # heartbeat with nav2_lifecycle_manager

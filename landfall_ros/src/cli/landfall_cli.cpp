@@ -637,7 +637,7 @@ void setQueryParameter(QuerySettings & q, const std::string & assignment)
       throw UsageError("--set scan_check.mode: required, optional or disabled");
     }
     l.scan_mode = *mode;
-  } else if (name == "scan_check.max_time_offset") {
+  } else if (name == "scan.max_time_offset") {
     q.scan_max_time_offset = number();
   } else if (name == "scan_check.max_range") {
     l.scan.max_range = number();

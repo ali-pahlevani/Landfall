@@ -8,7 +8,10 @@
 #
 # The landfall-deps:<distro> image is built once and reused; dependencies added to a package.xml
 # later are installed into each throwaway container by scripts/in_container.sh, so editing a
-# manifest doesn't cost a new ~1.7 GB image layer.
+# manifest doesn't cost a new ~1.7 GB image layer. LANDFALL_REBUILD_IMAGE=1 builds it again from
+# the newest ros base image and the apt repository as they are now, without Docker's build cache
+# (which would keep the old packages), e.g. for the simulation image after a ROS sync
+# (docker/README.md).
 #
 # Build output stays in .docker_ws/<distro>[-<variant>]/ (git-ignored), so variants never share a
 # CMake cache with the plain build. The source tree is mounted read-only, and the build itself
@@ -25,7 +28,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="landfall-deps:${distro}"
 ws="${repo_root}/.docker_ws/${distro}${LANDFALL_VARIANT:+-${LANDFALL_VARIANT}}"
 
-if [[ "${LANDFALL_REBUILD_IMAGE:-0}" == 1 ]] || ! docker image inspect "${image}" > /dev/null 2>&1; then
+if [[ "${LANDFALL_REBUILD_IMAGE:-0}" == 1 ]]; then
+  docker build --pull --no-cache --target deps --build-arg ROS_DISTRO="${distro}" \
+    -t "${image}" -f "${repo_root}/docker/Dockerfile" "${repo_root}"
+elif ! docker image inspect "${image}" > /dev/null 2>&1; then
   docker build --target deps --build-arg ROS_DISTRO="${distro}" \
     -t "${image}" -f "${repo_root}/docker/Dockerfile" "${repo_root}"
 fi

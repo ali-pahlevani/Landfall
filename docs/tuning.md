@@ -164,11 +164,16 @@ poses before what it does to successes. All parameters are listed in `docs/param
   `duration` seconds. A localization that is confidently wrong doesn't: AMCL after the M6 kidnaps,
   and after global localization in the benchmark, reported a few centimetres while metres off.
   That case is the kidnap watchdog's.
-- **Kidnap watchdog** (`kidnap_watchdog.*`, on by default since PLAN V64): a shorter `period`
-  notices a kidnap sooner and costs one request per period (at 10 s, about 15 % of one core of a
-  laptop CPU in the depot; `docs/relocalization.md`). The limits (1 m, 20°) are far above AMCL's
-  normal error; keep `confirmations` at 2 or more.
-- **Extrinsics monitor** (`extrinsics_monitor.*`): `max_amcl_std_xy` (5 cm) must be at or above
+- **Kidnap watchdog** (`kidnap_watchdog.*`, on by default since PLAN V64): it checks every
+  `period` seconds, and at once when the localization's pose jumps or the scan stops fitting the
+  map at it; early checks take the place of scheduled ones, so the cost stays at one request per
+  `period` on average (about 8 % of one core of a laptop CPU in the depot simulation; `docs/relocalization.md`). A shorter `period` costs
+  more and catches what the triggers miss sooner (a localization that is wrong where the scan
+  still fits, as in a look-alike aisle). Where the map misses much of what the LiDAR sees, the
+  scan-fit trigger fires at right poses too and spends the budget early: lower `min_scan_fit`, or
+  -1 to turn it off. The limits (1 m, 20°) are far above AMCL's normal error; keep
+  `confirmations` at 2 or more.
+- **Extrinsics monitor** (`extrinsics_monitor.*`): `max_localization_std_xy` (5 cm) must be at or above
   what your AMCL reports while it is right, or the monitor never samples.
 
 ## Backends

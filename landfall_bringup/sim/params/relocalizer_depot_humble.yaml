@@ -12,7 +12,7 @@
       base: base_link
     gravity:
       source: flat_floor
-    scan_check:
+    scan:
       topic: /scan
     startup:
       delay: 2.0

@@ -14,7 +14,7 @@ ros2 run landfall_ros relocalizer_node --ros-args \
   -p database_path:=/path/to/site.landfall.db \
   -p image.topic:=/camera/image_raw -p image.transport:=raw \
   -p camera_info.topic:=/camera/camera_info \
-  -p scan_check.topic:=/scan \
+  -p scan.topic:=/scan \
   -p frames.base:=base_footprint \
   -p autostart:=true
 ```
@@ -51,9 +51,9 @@ Before it uses any image, the request answers **`NOT_READY`** when one of these 
 | `… is not the map YAML/image the database was built with` | `map_yaml` is set and points at other files |
 | `no camera_info on '…'` / `the camera is W×H, the database was built for W×H` | Camera topics, or rebuild for this camera |
 | `nothing subscribes to /initialpose` / `AMCL (amcl) is inactive, not active` | Only when publishing: AMCL must be up and active (`output.amcl_node`; empty skips the check) |
-| `no LaserScan on 'scan' (scan_check.mode is required)` | `scan_check.topic`; no LiDAR at all: `scan_check.mode: optional` or `disabled` (see *The LiDAR check*) |
+| `no LaserScan on 'scan' (scan_check.mode is required)` | `scan.topic`; no LiDAR at all: `scan_check.mode: optional` or `disabled` (see *The LiDAR check*) |
 | `no transform odom -> base_footprint at the image` / `… -> camera` | TF at the image stamps (see `tf_timeout` and `image.time_offset`) |
-| `no scan on 'scan' within 0.50 s of the image` | Scan and image clocks (`scan_check.max_time_offset`) |
+| `no scan on 'scan' within 0.50 s of the image` | Scan and image clocks (`scan.max_time_offset`) |
 | `no image on '…' within N s` | Image topic and transport |
 
 Then it collects frames at least `consistency.min_frame_interval` apart. It continues until
@@ -151,7 +151,7 @@ the PnP solution as it is (6 DoF), with a covariance taken there.
 ## The LiDAR check
 
 For every pose that passed the sanity checks, the node takes the `LaserScan` nearest the image
-(at most `scan_check.max_time_offset` apart). It moves the scan to the image's time with odometry
+(at most `scan.max_time_offset` apart). It moves the scan to the image's time with odometry
 and lays its beams on the occupancy map at the pose. Beams outside `range_min` and
 `scan_check.max_range` don't count; neither do beams that end in unknown space.
 - A **hit** is a beam that ends within `scan_check.hit_tolerance` of an occupied cell.
@@ -183,7 +183,8 @@ beyond 1 m or 30°, at least `scan_check.alternative_margin` (0.01) better than 
 ratio less violation ratio), the frame is `AMBIGUOUS`: the message says the scan fits another place
 better. Places that are truly identical for the LiDAR, such as twin aisles, fit alike and stay
 vision's to decide. The search takes about 20 ms per frame on 16 threads, and about 0.25 s of CPU
-time: 60 % of a frame's (T-016).
+time: 60 % of a frame's. Background checks whose pose the localization confirms skip it (PLAN
+V67).
 
 **What the scan tells apart.** Where the LiDAR settles the place by itself, fewer inliers suffice. A
 pose with at least `sanity.min_inliers_unique` (20) but fewer than `sanity.min_inliers` (40)
@@ -235,7 +236,7 @@ the true poses and at the symmetric poses that pass.
 ## Automatic relocalization
 
 With `auto_trigger.enabled: true`, the node watches the localization's own uncertainty on
-`auto_trigger.pose_topic` (AMCL's `amcl_pose`). If the reported standard deviation stays above
+`localization.pose_topic` (AMCL's `amcl_pose`). If the reported standard deviation stays above
 `auto_trigger.max_std_xy` or `auto_trigger.max_std_yaw_deg` for `auto_trigger.duration` seconds,
 it runs a request on its own (trigger `auto`). After that it waits at least `auto_trigger.cooldown`
 seconds before the next one. It never starts while another request runs.
@@ -255,38 +256,85 @@ by default since PLAN V64 (`kidnap_watchdog.enabled`): every `kidnap_watchdog.pe
 (trigger `watchdog`). Like the extrinsics monitor's requests, these checks give way to any other
 request and never appear on `~/status`.
 
-A check that passes every test is compared with the localization's pose at the check's stamp. It
-disagrees when the two are further apart than `kidnap_watchdog.max_translation` (1 m) or
-`kidnap_watchdog.max_rotation_deg` (20°). The extrinsics monitor's checks count too; checks that
-find no pose say nothing. After `kidnap_watchdog.confirmations` (2) disagreeing checks in a row,
-with no agreeing one between them, the node runs a normal relocalization (trigger `watchdog`),
-which publishes only if every check passes again. After a pose it published, its next waits
-`kidnap_watchdog.cooldown` seconds (30); one that published nothing is tried again at the next two
-disagreeing checks (since PLAN V64). Any published pose restarts the count, which `/diagnostics`
+It doesn't wait for the next one when something suggests the localization is wrong (since PLAN
+V70). An early check starts at once:
+
+- to confirm a check that disagreed with the localization;
+- when the localization's pose jumps further than the watchdog's limits (below) and neither the
+  odometry nor a pose the relocalizer published explains the jump: someone's 2D Pose Estimate in
+  RViz, another node's `/initialpose`, AMCL jumping on its own;
+- when the scan stops fitting the map at the localization's pose. Twice a second the node scores
+  the newest scan there (0.2 to 0.8 ms on one core of a laptop CPU, under 0.2 % of the core): the
+  share of its beams that end on an obstacle of the map minus the share that see through one.
+  Below `kidnap_watchdog.min_scan_fit` (0.2) two scans in a row, a check starts, once, until the
+  scan fits again. After a kidnap the
+  localization stays where the robot was, and a scan taken somewhere else fits there far worse
+  than it does at a right pose: in the depot recordings the scan at AMCL's pose never scored below
+  0.2, at poses 1 m or 20° away or more it did 96 % of the time. Where the map misses much of what
+  the LiDAR sees (shelving it sees through, drawn solid; goods), a right pose scores low too: in
+  the warehouse simulation 2.8 % of the scans, about 16 times an hour.
+
+An early check that finds no pose (the camera sees nothing it knows, a wall, say) says nothing
+about the localization; its suspicion waits until the robot moved 0.5 m or turned 30° since, and
+is checked again. A robot that stands still meanwhile gets the scheduled checks, which leave the
+budget full for what comes next.
+
+Early checks take the place of scheduled ones, so they cost nothing more: every check spends from a
+budget that refills at one check per period, up to `kidnap_watchdog.confirmations` + 2 (four),
+and a scheduled check waits until the budget is full. However often something looks suspicious,
+the watchdog runs at most one check per period on average, and with a full budget a suspicion, one
+more look and its confirmation run back to back. Where the scan-fit trigger fires often, it spends
+the budget before a kidnap needs it, and the watchdog falls back to its scheduled checks; -1 turns
+it off.
+
+A check that passes every test is compared with the localization's pose at the check's stamp: its
+latest correction (map → odom, from its pose topic `localization.pose_topic`) with the odometry at
+the stamp. TF would show a jump of the localization late: AMCL dates its map → odom ahead by its
+`transform_tolerance`. A check disagrees when the two are further apart than
+`kidnap_watchdog.max_translation` (1 m) or `kidnap_watchdog.max_rotation_deg` (20°). The
+extrinsics monitor's checks count too; checks that find no pose say nothing. After
+`kidnap_watchdog.confirmations` (2) disagreeing checks in a row, with no agreeing one between them,
+the watchdog relocalizes (trigger `watchdog`). When the last two checks agree with each other (the
+earlier one moved by the odometry since, within the same limits), it publishes the last one's
+pose: a full request that passed every check (since PLAN V70). Otherwise it runs a normal
+relocalization, which publishes only if every check passes again. After a pose it published, its next waits `kidnap_watchdog.cooldown` seconds (10);
+one that published nothing is tried again at the next two disagreeing checks, the first as soon as
+the budget allows (since PLAN V64). Any published pose restarts the count, which `/diagnostics`
 shows.
 
-The cost is one request every 10 s. In the depot navigation laps a check took a median 0.76 s
-(three frames), one that found nothing its 5 s, and the relocalizer used 31 % of one core of a
-laptop CPU (Intel i7-13620H) with the watchdog against 16 % without it: about 15 % for the checks.
-Most of that is the search for other places the scan fits (`scan_check.check_alternatives`), which
-every frame that passes the scan check runs on all threads (`backend.num_threads`), so it costs
-more CPU time than its wall time shows (T-016). A longer `kidnap_watchdog.period` costs less in
-proportion and notices a kidnap later; measure it on a CPU-only robot.
+In the depot's kidnap benchmark (docs/benchmark.md) the watchdog noticed and undid 98 of 100
+kidnaps, a median 6.0 s after the kidnap (90 % within 22.4 s; 34.1 and 63.1 s before PLAN V70),
+and 99 of 100 wrong poses given to AMCL, as from RViz's 2D Pose Estimate, a median 5.9 s after
+them (90 % within 25.7 s), without a wrong pose in either. The scan-fit trigger fired within 1.4 s of 99 of the kidnaps; the rest of the time
+went into finding a view the recording knew, as the robot turned slowly.
+
+The cost is at most one request every 10 s on average. In two 15-minute runs of the depot
+navigation laps the relocalizer used 24.8 and 24.4 % of one core of a laptop CPU (Intel
+i7-13620H) with the watchdog, against 16.3 % without it: about 8 % for the checks, of which the
+scan-fit trigger, timed alone, is under 0.2 %. A check took a median 0.74 s (three frames),
+one that found nothing its 5 s. Most of a check's cost is the search for other places the scan
+fits (`scan_check.check_alternatives`), which every frame that passes the scan check runs on all
+threads (`backend.num_threads`); a check whose pose agrees with the localization's and has at
+least `sanity.min_inliers` inliers skips it (PLAN V67). A longer
+`kidnap_watchdog.period` costs less in proportion, and early checks are spaced by it too once the
+budget is spent; measure it on a CPU-only robot.
 
 The risk is a relocalization that a right localization didn't need. For one, two checks in a row
-and the relocalization after them must all put the robot at the same wrong place, each passing
-every check, the LiDAR's included: it publishes a wrong pose. It never happened in the depot: no
-relocalization in 47 minutes of the kidnap benchmark with a right localization, nor in 68 minutes
-of navigation laps with no kidnap (101 goals), where the 341 checks that found a pose lay at most
-10.6 cm and 2.2° from AMCL's pose (docs/benchmark.md).
+must put the robot at the same wrong place, each passing every check, the LiDAR's included: it
+publishes a wrong pose. It never happened in the depot: no
+needless relocalization in the kidnap benchmark's 49 minutes with a right localization, nor in
+its 50 minutes after the wrong poses, nor in navigation laps with no kidnap: 68 minutes (101 goals) with PLAN V64's
+watchdog and 30 minutes (52 goals) with V70's, where the checks that found a pose lay at most
+10.7 cm and 2.2° from AMCL's pose (docs/benchmark.md).
 
-A watchdog relocalization happens outside the navigator's behavior tree. On Jazzy, and on Lyrical
-whose tree checks the same way, a goal under way then fails: the path planned from the wrong pose no
-longer reaches the robot, and the tree's recovery doesn't run for that controller error
-(`INVALID_PATH`; docs/nav2_integration.md, runs 12 to 16; T-015). The robot stops with its pose
-right, and the goal has to be sent again. In the depot runs the pose was right again 21 to 32 s
-after the kidnap; without the watchdog the robot drove on blind for 72 s to 6 minutes, until the
-tree's recovery relocalized it.
+A watchdog relocalization happens outside the navigator's behavior tree. The path planned from the
+wrong pose then no longer reaches the robot, and the controller fails with `INVALID_PATH`, an error
+Nav2's own trees don't run a recovery for. The example trees clear both costmaps and plan again
+from the new pose, and the goal goes on (since PLAN V66; a tree of your own needs the same,
+docs/nav2_integration.md). In five depot navigation runs the pose was right again 10 to 17 s after
+the kidnap, once the robot turned toward its goal (23 to 35 s before PLAN V70), and the robot
+reached its goal every time. A goal can still end on a wrong pose: Nav2 judges it
+reached by the localization, which may get there before the watchdog notices (T-018).
 
 Turn the watchdog off (`kidnap_watchdog.enabled: false`) in shadow mode, where nothing may publish
 (docs/field_validation.md), and where another node owns the localization's pose.
@@ -306,7 +354,7 @@ default) watches for that. It only reports and never changes a transform: recali
 URDF change.
 
 Every `extrinsics_monitor.period` seconds (default 60), while the localization reports a standard
-deviation below `extrinsics_monitor.max_amcl_std_xy`, the node runs a full request without
+deviation below `extrinsics_monitor.max_localization_std_xy`, the node runs a full request without
 publishing (trigger `monitor`). A service request preempts it instead of being answered `BUSY`.
 When it succeeds, its latest frame where the robot was slow (`extrinsics_monitor.max_linear_speed`,
 `extrinsics_monitor.max_angular_speed`) gives one sample: the camera pose from vision against the
@@ -329,7 +377,7 @@ scan_hit_ratio,elapsed_s,message
 
 This is shadow mode. Leave the node running beside AMCL, with the monitor's period shortened, and
 the log shows how often relocalization would have succeeded, missed or been wrong, without ever
-publishing. The field validation (PLAN M8) is built on it.
+publishing. Validating Landfall on a robot (`docs/field_validation.md`) is built on it.
 
 ## Diagnostics and debugging
 

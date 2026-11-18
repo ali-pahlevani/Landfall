@@ -86,6 +86,19 @@ struct LocalizerParams
 };
 
 /// One query image with what the robot knew at its stamp.
+/// The localization's pose at a frame's stamp, given to the background checks of the kidnap watchdog
+/// and the extrinsics monitor (plan §7.20). A frame whose pose agrees with it, within both limits,
+/// and has at least sanity.min_inliers inliers skips the search for other places the scan fits
+/// (scan_check.check_alternatives): the localization already confirms the place, and the search is
+/// most of a frame's CPU time. Poses with fewer inliers stand only where that search shows the
+/// scan unique, so they still run it. Requests that may publish never get a prior.
+struct LocalizationPrior
+{
+  Pose2 pose;
+  double max_translation = 1.0;    ///< m
+  double max_rotation_deg = 20.0;  ///< deg
+};
+
 struct QueryFrame
 {
   int64_t stamp_ns = 0;
@@ -97,6 +110,7 @@ struct QueryFrame
   /// LiDAR scan taken near the image, its laser pose expressed in the base frame *at the image
   /// stamp* (the odometry between the two stamps folded in).
   std::optional<PlanarScan> scan;
+  std::optional<LocalizationPrior> localization;  ///< background checks only
 };
 
 /// A pose candidate from one place (group of retrieved keyframes).
@@ -187,6 +201,9 @@ struct FrameResult
   /// Ambiguous because the pose rests on landmarks of keyframes whose scans fitted a second place
   /// within 1 m (scan_check.max_twin_support).
   bool twin_ambiguous = false;
+  /// The search for other places the scan fits was skipped: a pose with at least
+  /// sanity.min_inliers inliers that the localization prior confirms.
+  bool alternatives_skipped = false;
   int best = -1;  ///< index of the winning hypothesis, -1 without a valid one
   /// How close the frame came to a pose (V63): the best of its hypotheses' closeness, 1 when it has
   /// a pose (or is ambiguous: places passed every check), 0 without any place. A weak winner the
@@ -213,6 +230,8 @@ struct ScoreSummary
   bool scan = false;  ///< a scan score exists
   double scan_hit_ratio = 0.0;
   double scan_violation_ratio = 0.0;
+  bool alternative_gap_measured = false;  ///< a frame with a pose measured its scan gap
+  double scan_alternative_gap = 0.0;      ///< the smallest such gap (ScanUniqueness)
 };
 
 ScoreSummary summarizeScores(const std::vector<FrameResult> & frames);

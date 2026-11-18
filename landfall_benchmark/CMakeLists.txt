@@ -57,7 +57,8 @@ target_link_libraries(sample_placements PRIVATE landfall_benchmark_lib)
 landfall_set_cxx_standard(sample_placements)
 landfall_set_warnings(sample_placements)
 
-# The field validation (PLAN M8): the relocalizer's shadow log against the localization.
+# Validating on a robot (docs/field_validation.md): the relocalizer's shadow log against the
+# localization.
 add_executable(summarize_shadow src/summarize_shadow.cpp)
 target_link_libraries(summarize_shadow PRIVATE landfall_benchmark_lib)
 landfall_set_cxx_standard(summarize_shadow)

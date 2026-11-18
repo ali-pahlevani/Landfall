@@ -13,7 +13,7 @@
       topic: /imu
       # Gazebo stamps the IMU with its scoped sensor name, which is not a TF frame.
       frame: imu_link
-    scan_check:
+    scan:
       topic: /scan
     startup:
       delay: 2.0

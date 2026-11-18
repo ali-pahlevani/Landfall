@@ -22,7 +22,9 @@
 //    the spot, the baseline;
 //  - method `watchdog`: the robot turns slowly where it was put, and the relocalizer's kidnap
 //    watchdog has to notice and relocalize; then the runner counts the watchdog's needless
-//    relocalizations while the localization is right.
+//    relocalizations while the localization is right. With `watchdog.wrong_pose`, the robot goes
+//    to the placement with the localization given its true pose, and then the localization gets
+//    a wrong one instead (the next placement's, as from RViz's 2D Pose Estimate).
 // Every placement is compared with Gazebo's ground truth and written as one CSV row;
 // `summarize_benchmark` turns the rows into the results tables.
 //
@@ -280,6 +282,7 @@ public:
     }
     home_ = Pose2{home[0], home[1], rad(home[2])};
     watchdog_reset_s_ = declare_parameter<double>("watchdog.reset_wait", 25.0);
+    watchdog_wrong_pose_ = declare_parameter<bool>("watchdog.wrong_pose", false);
     limits_.success_translation = declare_parameter<double>("limits.success_translation", 0.25);
     limits_.success_rotation_deg = declare_parameter<double>("limits.success_rotation_deg", 5.0);
     limits_.wrong_translation = declare_parameter<double>("limits.wrong_translation", 0.5);
@@ -358,6 +361,9 @@ public:
       row.method = method_;
       row.index = i;
       row.placement = placements[static_cast<std::size_t>(i)];
+      next_placement_ = static_cast<std::size_t>(i) + 1 < placements.size()
+                          ? placements[static_cast<std::size_t>(i) + 1].pose
+                          : home_;
       const auto started = Clock::now();
       try {
         runPlacement(row, stop);
@@ -431,6 +437,10 @@ private:
 
   void runPlacement(Row & row, const std::atomic<bool> & stop)
   {
+    if (method_ == "watchdog" && watchdog_wrong_pose_) {
+      runWrongPose(row, stop);
+      return;
+    }
     if (method_ == "watchdog" && needs_reset_) {
       resetLocalization();
     }
@@ -478,15 +488,47 @@ private:
     if (!truth) {
       return false;
     }
+    giveAmcl(truth->pose, truth->stamp_ns, 0.1, 3.0);
+    return true;
+  }
+
+  /// Publishes AMCL's initial pose with these standard deviations.
+  void giveAmcl(const Pose2 & map_pose, int64_t stamp_ns, double std_xy, double std_yaw_deg)
+  {
     PoseCov pose;
     pose.header.frame_id = "map";
-    pose.header.stamp = landfall::ros::toStamp(truth->stamp_ns);
-    pose.pose.pose = landfall::ros::toPoseMsg(landfall::toPose3(truth->pose));
-    pose.pose.covariance[0] = 0.01;
-    pose.pose.covariance[7] = 0.01;
-    pose.pose.covariance[35] = rad(3.0) * rad(3.0);
+    pose.header.stamp = landfall::ros::toStamp(stamp_ns);
+    pose.pose.pose = landfall::ros::toPoseMsg(landfall::toPose3(map_pose));
+    pose.pose.covariance[0] = std_xy * std_xy;
+    pose.pose.covariance[7] = std_xy * std_xy;
+    pose.pose.covariance[35] = rad(std_yaw_deg) * rad(std_yaw_deg);
     initial_pose_pub_->publish(pose);
-    return true;
+  }
+
+  /// `watchdog.wrong_pose`: the robot goes to the placement and the localization gets the true
+  /// pose; once the watchdog's checks had time to agree with it, the localization gets a wrong
+  /// one, the next placement's (at least 2 m away; the home pose for the last), with the
+  /// covariance RViz's 2D Pose Estimate gives (0.5 m, 15 degrees). The watchdog has to notice, as
+  /// after a kidnap. Not the previous placement's: the teleports leave the odometry where it was,
+  /// so that is where the relocalizer's last pose still puts the robot, and a jump there would
+  /// look like the localization taking that pose.
+  void runWrongPose(Row & row, const std::atomic<bool> & stop)
+  {
+    const Pose2 wrong = next_placement_;
+    if (!teleport(row.placement.pose) || !giveAmclTheTruth()) {
+      row.outcome = Outcome::kInvalid;
+      row.message = "teleport failed";
+      return;
+    }
+    sleepFor(watchdog_reset_s_);
+    const auto truth = latestTruth();
+    if (stop || !truth) {
+      return;
+    }
+    giveAmcl(wrong, truth->stamp_ns, 0.5, 15.0);
+    kidnapped_at_ = Clock::now();
+    row.prior = wrong;
+    runWatchdog(row, stop);
   }
 
   void runLandfall(Row & row, const std::atomic<bool> & stop)
@@ -881,6 +923,8 @@ private:
   std::optional<Pose2> settled_;    // the ground truth once the teleport settled
   Clock::time_point kidnapped_at_;  // when the last teleport was asked for
   bool needs_reset_ = false;        // watchdog: the localization may be wrong
+  bool watchdog_wrong_pose_ = false;
+  Pose2 next_placement_;  // watchdog.wrong_pose: the wrong pose of the current placement
 
   rclcpp::Client<SetEntityPose>::SharedPtr set_pose_client_;
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr reinitialize_client_;

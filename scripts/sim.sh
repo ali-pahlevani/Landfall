@@ -11,7 +11,9 @@
 # /data (outputs) and .docker_ws/sim/fuel at /fuel (Gazebo Fuel model cache: the depot is
 # downloaded on the first run). LANDFALL_SIM_DOCKER_ARGS adds docker arguments, e.g. the learned
 # models: -v ~/.local/share/landfall/models:/models:ro -e LANDFALL_MODELS_DIR=/models.
-# Humble runs on Cyclone DDS (LANDFALL_SIM_RMW picks another RMW).
+# Humble runs on Cyclone DDS (LANDFALL_SIM_RMW picks another RMW). LANDFALL_SIM_GUI=1 lets the
+# container open windows on this display (X11 or XWayland), for Gazebo's window and RViz:
+#   LANDFALL_SIM_GUI=1 scripts/sim.sh 'bash /ws/install/landfall_bringup/share/landfall_bringup/sim/scripts/try_depot.sh /data/depot.landfall.db'
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,15 +39,34 @@ gpu_args=()
 if docker info --format '{{json .Runtimes}}' 2> /dev/null | grep -q nvidia; then
   gpu_args=(--gpus all -e NVIDIA_DRIVER_CAPABILITIES=all)
 fi
+# Windows on this display: the X socket, and the X authority file when there is one.
+gui_args=()
+if [[ "${LANDFALL_SIM_GUI:-0}" == 1 ]]; then
+  if [[ -z "${DISPLAY:-}" ]]; then
+    echo "LANDFALL_SIM_GUI=1 needs a display (DISPLAY is not set)" >&2
+    exit 1
+  fi
+  gui_args=(-e DISPLAY="${DISPLAY}" -e QT_X11_NO_MITSHM=1 -v /tmp/.X11-unix:/tmp/.X11-unix:ro)
+  xauthority="${XAUTHORITY:-${HOME}/.Xauthority}"
+  if [[ -f "${xauthority}" ]]; then
+    gui_args+=(-v "${xauthority}:/tmp/.Xauthority:ro" -e XAUTHORITY=/tmp/.Xauthority)
+  fi
+fi
 # Humble: Cyclone DDS (see docker/Dockerfile.sim); LANDFALL_SIM_RMW picks another.
 rmw_args=()
 if [[ "${distro}" == humble ]]; then
   rmw_args=(-e RMW_IMPLEMENTATION="${LANDFALL_SIM_RMW:-rmw_cyclonedds_cpp}")
 fi
 
+# The container runs as your user, and so does a `docker exec` shell in it: a shell of another user
+# (root) sees the simulation's topics, but their messages never reach it, nor its own the
+# simulation (DDS shared memory belongs to the user that made it).
 docker run --rm ${LANDFALL_SIM_DOCKER_ARGS:-} \
   "${gpu_args[@]}" \
+  "${gui_args[@]}" \
   "${rmw_args[@]}" \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/home/sim \
   -e HOST_UID="$(id -u)" \
   -e HOST_GID="$(id -g)" \
   -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}" \
@@ -56,5 +77,4 @@ docker run --rm ${LANDFALL_SIM_DOCKER_ARGS:-} \
   -v "${sim_dir}/home:/home/sim" \
   -w /data \
   "${image}" \
-  setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups -- \
-  env HOME=/home/sim bash -c "source /opt/ros/${distro}/setup.bash && source /ws/install/setup.bash && $*"
+  bash -c "source /opt/ros/${distro}/setup.bash && source /ws/install/setup.bash && $*"

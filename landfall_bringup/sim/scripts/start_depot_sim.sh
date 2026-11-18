@@ -12,6 +12,10 @@
 # SIM_LAUNCH replaces the launch (package and file, or a file's path), e.g. Nav2 with Landfall's
 # relocalization: SIM_LAUNCH=<landfall_bringup share>/sim/launch/depot_navigation.launch.xml
 # (sim/scripts/navigate_depot.sh). Arguments of this script go to the launch.
+#
+# GUI=1 also opens Gazebo's window and RViz (rviz/landfall.rviz) on the display (the container
+# started with LANDFALL_SIM_GUI=1, scripts/sim.sh). The depot world then loads its scene
+# broadcaster, which sends the scene to Gazebo's window; the sensors still render headless.
 set -euo pipefail
 
 robot_name="${ROBOT_NAME:-nav2_turtlebot4}"
@@ -24,7 +28,11 @@ world="${WORLD:-${share_tb4}/worlds/depot.sdf}"
 work="$(mktemp -d)"
 trap 'kill $(jobs -p) 2> /dev/null; wait; rm -rf "${work}"' EXIT
 
-xacro -o "${work}/world.sdf" headless:=true "${world}"
+headless=true
+if [[ "${GUI:-0}" == 1 ]]; then
+  headless=false
+fi
+xacro -o "${work}/world.sdf" headless:="${headless}" "${world}"
 # Worlds, and the share directory that resolves the robot's model://<package>/meshes URIs.
 share_root="$(ros2 pkg prefix nav2_minimal_tb4_description)/share"
 export GZ_SIM_RESOURCE_PATH="${share_tb4}/worlds:${share_root}${GZ_SIM_RESOURCE_PATH:+:${GZ_SIM_RESOURCE_PATH}}"
@@ -43,4 +51,10 @@ ros2 run ros_gz_bridge parameter_bridge \
 until ros2 topic list 2> /dev/null | grep -qx /robot_description; do sleep 1; done
 ros2 run ros_gz_sim create -name "${robot_name}" -topic robot_description \
   -x "${x_pose}" -y "${y_pose}" -z 0.01 -Y "${yaw}"
+
+if [[ "${GUI:-0}" == 1 ]]; then
+  gz sim -g > /dev/null 2>&1 &
+  rviz2 -d "${share_bringup}/rviz/landfall.rviz" --ros-args -p use_sim_time:=true \
+    > /dev/null 2>&1 &
+fi
 wait

@@ -18,7 +18,6 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `auto_trigger.enabled` | bool | `false` |  | at startup | Relocalize on its own while the localization stays uncertain |
 | `auto_trigger.max_std_xy` | double | `0.5` | [0.05, 10] | at runtime | The localization is uncertain above this std in x or y, metres |
 | `auto_trigger.max_std_yaw_deg` | double | `15` | [1, 180] | at runtime | The localization is uncertain above this std in yaw, degrees |
-| `auto_trigger.pose_topic` | string | `"amcl_pose"` |  | at startup | PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor, kidnap watchdog) |
 | `autostart` | bool | `false` |  | at startup | relocalizer_node executable: configure and activate on start |
 | `backend.execution_provider` | string | `"cpu"` |  | at startup | Where learned backends run: cpu, cuda or tensorrt (the last two need an ONNX Runtime built with them) |
 | `backend.models_dir` | string | `""` |  | at startup | Models of learned backends (docs/models.md); empty: $LANDFALL_MODELS_DIR, else ~/.local/share/landfall/models |
@@ -36,9 +35,9 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `extrinsics_check.warn_rotation_deg` | double | `0.5` | [0.1, 10] | at startup | Startup check: warn if base->camera differs from the database's by more degrees |
 | `extrinsics_check.warn_translation` | double | `0.01` | [0.001, 1] | at startup | Startup check: warn if base->camera differs from the database's by more metres |
 | `extrinsics_monitor.enabled` | bool | `true` |  | at startup | Compare vision's camera pose with TF's while the localization is confident |
-| `extrinsics_monitor.max_amcl_std_xy` | double | `0.05` | [0.01, 1] | at runtime | The monitor samples only while the localization's std is below this, metres |
 | `extrinsics_monitor.max_angular_speed` | double | `0.1` | [0, 5] | at runtime | The monitor samples only while the robot turns slower than this, rad/s |
 | `extrinsics_monitor.max_linear_speed` | double | `0.2` | [0, 5] | at runtime | The monitor samples only while the robot is slower than this, m/s |
+| `extrinsics_monitor.max_localization_std_xy` | double | `0.05` | [0.01, 1] | at runtime | The monitor samples only while the localization's std is below this, metres |
 | `extrinsics_monitor.min_samples` | integer | `10` | [3, 1000] | at runtime | Samples needed before the monitor reports an offset |
 | `extrinsics_monitor.period` | double | `60` | [1, 3600] | at startup | Seconds between the monitor's dry-run requests |
 | `extrinsics_monitor.warn_rotation_deg` | double | `1` | [0.1, 10] | at runtime | WARN when the camera turned this much on its mount, degrees (ERROR at 2.5 times) |
@@ -57,11 +56,13 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `imu.max_angular_rate` | double | `0.1` | [0, 2] | at runtime | IMU gravity is used only below this turn rate, rad/s |
 | `imu.topic` | string | `"imu"` |  | at startup | sensor_msgs/Imu with orientation |
 | `kidnap_watchdog.confirmations` | integer | `2` | [1, 10] | at runtime | Disagreeing checks in a row (any check: the monitor's too) before relocalizing |
-| `kidnap_watchdog.cooldown` | double | `30` | [0, 3600] | at runtime | Seconds after a pose the watchdog published before it relocalizes again (a relocalization that published nothing leaves no cooldown) |
+| `kidnap_watchdog.cooldown` | double | `10` | [0, 3600] | at runtime | Seconds after a pose the watchdog published before it relocalizes again (a relocalization that published nothing leaves no cooldown) |
 | `kidnap_watchdog.enabled` | bool | `true` |  | at startup | Check the localization's pose with dry-run requests, and relocalize when they keep disagreeing with it |
 | `kidnap_watchdog.max_rotation_deg` | double | `20` | [1, 180] | at runtime | A check disagrees with the localization when their headings differ by more degrees |
 | `kidnap_watchdog.max_translation` | double | `1` | [0.1, 10] | at runtime | A check disagrees with the localization when their poses differ by more metres |
-| `kidnap_watchdog.period` | double | `10` | [1, 3600] | at startup | Seconds between the watchdog's dry-run requests |
+| `kidnap_watchdog.min_scan_fit` | double | `0.2` | [-1, 1] | at runtime | An early check starts when, for a second, the scan at the localization's pose fits the map worse than this: its hit ratio minus the share of beams that see through obstacles (-1: never) |
+| `kidnap_watchdog.period` | double | `10` | [1, 3600] | at startup | Seconds between the watchdog's scheduled checks (dry-run requests). Early checks take the place of scheduled ones: on average at most one check per period |
+| `localization.pose_topic` | string | `"amcl_pose"` |  | at startup | PoseWithCovarianceStamped of the localization (auto trigger, extrinsics monitor, kidnap watchdog, shadow log) |
 | `map_yaml` | string | `""` |  | at startup | Optional map_server YAML; its file hashes must equal the database's |
 | `matching.min_cosine` | double | `0.82` | [0, 1] | at runtime | Smallest cosine for float descriptors (mutual nearest) |
 | `matching.ratio` | double | `0.8` | [0.5, 1] | at runtime | Lowe ratio for binary descriptors (with a mutual check) |
@@ -97,11 +98,12 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `sanity.min_inliers` | integer | `40` | [6, 10000] | at runtime | Fewest PnP inliers |
 | `sanity.min_inliers_unique` | integer | `20` | [6, 10000] | at runtime | Fewest PnP inliers where the LiDAR scan fits nowhere else nearly as well (scan_check.unique_margin, no place within 1 m almost as good); above sanity.min_inliers it is sanity.min_inliers |
 | `sanity.require_free_space` | bool | `true` |  | at runtime | The base must stand on a known-free map cell |
+| `scan.max_time_offset` | double | `0.5` | [0, 5] | at runtime | Largest time between an image and the scan that checks it, seconds |
+| `scan.topic` | string | `"scan"` |  | at startup | sensor_msgs/LaserScan topic (the one AMCL uses) |
 | `scan_check.alternative_margin` | double | `0.01` | [0, 0.5] | at runtime | How much better (hit ratio less violation ratio) the scan must fit elsewhere to make a pose ambiguous |
 | `scan_check.check_alternatives` | bool | `true` |  | at runtime | Search where else in the map the scan fits; a place it fits clearly better makes the pose ambiguous |
 | `scan_check.hit_tolerance` | double | `0.1` | [0.01, 1] | at runtime | A beam ending this close to an obstacle is a hit, metres |
 | `scan_check.max_range` | double | `10` | [0.5, 100] | at runtime | Longer readings are ignored, metres |
-| `scan_check.max_time_offset` | double | `0.5` | [0, 5] | at runtime | Largest time between an image and the scan that checks it, seconds |
 | `scan_check.max_twin_support` | double | `0.5` | [0, 1] | at runtime | A pose whose inliers come for more than this share from keyframes whose scans fitted a second place within 1 m (the build's flag) is AMBIGUOUS; 1: never |
 | `scan_check.max_violation_ratio` | double | `0.05` | [0, 1] | at runtime | Largest fraction of beams that see through an obstacle |
 | `scan_check.min_hit_ratio` | double | `0.85` | [0, 1] | at runtime | Smallest fraction of hits among the beams ending in known space |
@@ -111,7 +113,6 @@ Relocalizer node (`relocalizer_node`, component `landfall::ros::RelocalizerNode`
 | `scan_check.refine_pose` | bool | `false` |  | at runtime | Publish the scan check's best pose of its search window instead of vision's |
 | `scan_check.search_angle_deg` | double | `3` | [0, 10] | at runtime | Local search window around a pose, degrees |
 | `scan_check.search_radius` | double | `0.1` | [0, 0.5] | at runtime | Local search window around a pose, metres |
-| `scan_check.topic` | string | `"scan"` |  | at startup | sensor_msgs/LaserScan topic |
 | `scan_check.unique_margin` | double | `0.05` | [0, 1] | at runtime | How much worse (hit ratio less violation ratio) the scan must fit at every other place for sanity.min_inliers_unique inliers to suffice |
 | `shadow.log_path` | string | `""` |  | at startup | If set, every request that publishes nothing (dry runs, the monitor's and the watchdog's checks) is appended there as CSV with the localization's pose |
 | `startup.delay` | double | `2` | [0, 60] | at startup | Seconds after activation before the first attempt |

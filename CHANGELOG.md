@@ -4,14 +4,110 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) (see `docs/PLAN.md` §11.1).
 
-## [Unreleased]
+## [1.0.0] - 2026-11-18
+
+The first release. Nothing was released before it: the entries below record what the development
+milestones (`docs/PLAN.md`, M0 to M7) added and how it changed on the way. *Frozen interfaces*
+lists what 1.x keeps compatible.
+
+### Frozen interfaces
+
+From 1.0.0 on, these keep their names and meaning in every 1.x release. 1.x may add parameters
+(with defaults that keep today's behavior), launch arguments, CLI options and file columns (read
+CSV files by their header), but changes no message or service (a changed field changes the type
+over the wire) and changes the database schema only with a migration (`landfall migrate`; the
+relocalizer refuses a database of another schema version). Anything else waits for 2.0.
+
+- **Messages and services** (`landfall_msgs`):
+  - `srv/Relocalize`: request `num_frames`, `timeout`, `dry_run`; response `result`.
+  - `msg/RelocalizationResult`: constants `SUCCESS` 0, `AMBIGUOUS` 1, `NO_MATCH` 2,
+    `REJECTED_SANITY` 3, `REJECTED_SCAN_CHECK` 4, `REJECTED_CONSISTENCY` 5, `NOT_READY` 6, `BUSY` 7;
+    fields `stamp`, `status`, `trigger` (`service`, `startup`, `auto`, `watchdog`), `message`,
+    `published`, `pose`, `scores`, `hypotheses`.
+  - `msg/RelocalizationScores`: `frames_used`, `num_inliers`, `inlier_ratio`,
+    `mean_reprojection_error_px`, `height_error_m`, `tilt_error_deg`, `inlier_coverage`,
+    `ambiguity_ratio`, `scan_hit_ratio`, `scan_violation_ratio`,
+    `consistency_translation_error_m`, `consistency_rotation_error_deg`, `elapsed_s`, `closeness`,
+    `stopped_early`, `scan_alternative_gap`.
+  - `msg/Hypothesis`: constants `STAGE_RETRIEVED` 0, `STAGE_SOLVED` 1, `STAGE_SANITY_PASSED` 2,
+    `STAGE_SCAN_PASSED` 3; fields `pose`, `cluster_id`, `num_inliers`, `inlier_ratio`,
+    `keyframe_ids`, `stage_reached`, `rejection_reason`.
+  - `msg/RecorderStatus`: `stamp`, `session`, `recording`, `paused`, `frames_seen`, `keyframes`,
+    `rejected_pose_uncertain`, `rejected_no_motion`, `rejected_speed`, `rejected_tilt`,
+    `rejected_blur`, `rejected_exposure`, `rejected_no_pose`, `last_keyframe_pose`.
+- **Nodes** (lifecycle, components in `landfall_ros`):
+  - `landfall_relocalizer` (`landfall::ros::RelocalizerNode`, executable `relocalizer_node`):
+    subscribes the image (`image.topic`, raw or `<topic>/compressed`), `camera_info.topic`,
+    `scan.topic`, `map`, `imu.topic` and `localization.pose_topic`; publishes `output.topic`
+    (`/initialpose`), `~/status` (latched), `~/markers`, `~/debug_image` and `/diagnostics`;
+    serves `~/relocalize`; calls `output.service` (`/set_initial_pose`) in service mode and the
+    localization's `get_state` (`output.amcl_node`).
+  - `landfall_recorder` (`landfall::ros::RecorderNode`, executable `recorder_node`): subscribes the
+    image, camera info, `scan.topic`, `imu.topic` and `pose_source.covariance_topic`; publishes
+    `~/status` (latched) and `~/markers`; serves `~/set_paused`.
+- **Parameters**, with their types, defaults and ranges as `docs/parameters.md` lists them
+  (generated from the code; CI keeps it current):
+  - `landfall_relocalizer`: `autostart`, `database_path`, `map_yaml`, `require_map_match`,
+    `tf_timeout`; `ambiguity.*`: `cluster_angle_deg`, `cluster_radius`, `max_score_ratio`;
+    `auto_trigger.*`: `cooldown`, `duration`, `enabled`, `max_std_xy`, `max_std_yaw_deg`;
+    `backend.*`: `execution_provider`, `models_dir`, `num_threads`; `bond.*`: `enabled`;
+    `camera_info.*`: `topic`; `consistency.*`: `max_rotation_error_deg`, `max_translation_error`,
+    `min_frame_interval`, `num_frames`; `debug.*`: `dump_dir`, `publish_image`, `publish_markers`;
+    `extrinsics_check.*`: `warn_rotation_deg`, `warn_translation`; `extrinsics_monitor.*`:
+    `enabled`, `max_angular_speed`, `max_linear_speed`, `max_localization_std_xy`, `min_samples`,
+    `period`, `warn_rotation_deg`, `warn_translation`; `frames.*`: `base`, `camera`, `global`,
+    `odom`; `gravity.*`: `ramp_tilt_deg`, `source`; `image.*`: `time_offset`, `topic`, `transport`;
+    `imu.*`: `frame`, `max_age`, `max_angular_rate`, `topic`; `kidnap_watchdog.*`: `confirmations`,
+    `cooldown`, `enabled`, `max_rotation_deg`, `max_translation`, `min_scan_fit`, `period`;
+    `localization.*`:
+    `pose_topic`; `matching.*`: `min_cosine`, `ratio`; `output.*`: `amcl_node`, `compensate_motion`,
+    `covariance`, `map_std_xy`, `map_std_yaw_deg`, `mode`, `service`, `std_xy`, `std_yaw_deg`,
+    `topic`, `vision_std_scale`; `pnp.*`: `floor_height_std`, `floor_tilt_std_deg`,
+    `max_iterations`, `max_reproj_error_px`, `refinement`, `solver`, `success_prob`; `query.*`:
+    `early_stop_closeness`, `early_stop_frames`, `timeout`, `top_k`; `sanity.*`:
+    `max_floor_elevation`, `max_height_error`, `max_mean_reproj_error_px`, `max_tilt_error_deg`,
+    `min_inlier_coverage`, `min_inlier_ratio`, `min_inliers`, `min_inliers_unique`,
+    `require_free_space`; `scan.*`: `max_time_offset`, `topic`; `scan_check.*`:
+    `alternative_margin`, `check_alternatives`, `hit_tolerance`, `max_range`, `max_twin_support`,
+    `max_violation_ratio`, `min_hit_ratio`, `min_known_ratio`, `min_valid_beams`, `mode`,
+    `refine_pose`, `search_angle_deg`, `search_radius`, `unique_margin`; `shadow.*`: `log_path`;
+    `startup.*`: `delay`, `enabled`, `max_attempts`, `retry_interval`.
+  - `landfall_recorder`: `autostart`, `max_keyframes`, `output_dir`, `session_name`, `tf_timeout`;
+    `bond.*`: `enabled`; `camera_info.*`: `topic`; `frames.*`: `base`, `camera`, `global`, `odom`;
+    `gating.*`: `covariance`, `max_angular_speed`, `max_linear_speed`, `max_std_xy`,
+    `max_std_yaw_deg`, `max_tilt_deg`, `min_rotation_deg`, `min_translation`, `speed_window`;
+    `gravity.*`: `source`; `image.*`: `format`, `jpeg_quality`, `time_offset`, `topic`, `transport`;
+    `imu.*`: `frame`, `max_age`, `topic`; `pose_source.*`: `covariance_topic`, `max_covariance_age`,
+    `type`; `quality.*`: `max_mean_intensity`, `max_saturated_fraction`, `min_mean_intensity`,
+    `min_sharpness`; `scan.*`: `max_time_offset`, `topic`.
+- **Behavior tree nodes** (`landfall_nav2_bt_nodes`): `ReLocalize` (input ports `service_name`,
+  `num_frames`, `timeout`, `dry_run`, `server_timeout`, `wait_for_service_timeout`; output ports
+  `status`, `pose`) and `IsLocalized` (`pose_topic`, `max_std_xy`, `max_std_yaw_deg`, `max_age`,
+  `latched`); the example tree `navigate_to_pose_w_relocalization.xml`, one per Nav2 release.
+- **Launch files** (`landfall_bringup`): `bringup.launch.xml` and `localization.launch.xml` (`map`,
+  `database`, `params_file`, `relocalizer_params_file`, `startup_relocalization`, `autostart`,
+  `namespace`, `use_sim_time`, `log_level`), `navigation.launch.xml` (`params_file`,
+  `behavior_tree`, `autostart`, `namespace`, `use_sim_time`, `log_level`),
+  `relocalizer.launch.xml` (`database`, `params_file`, `startup_relocalization`,
+  `use_lifecycle_manager`, `autostart`, `namespace`, `use_sim_time`, `log_level`).
+- **The `landfall` command**: `build`, `inspect`, `report`, `verify`, `migrate`, `query` and
+  `--version`, with the options `landfall` prints without arguments.
+- **Files**: the map database, schema version 1 (`docs/database.md`: application id `LDFA`, the
+  tables `meta`, `maps`, `cameras`, `sessions`, `keyframes`, `backends`, `local_features`,
+  `global_descriptors`, `landmarks`, `observations`, `covisibility`, `vocabulary`, `pca`, and the
+  keyframe flag bits); staging folders, format 2 (`docs/recording.md`); the builder configuration
+  keys of `landfall build --config` (`docs/recording.md`); the shadow log's columns
+  (`shadow.log_path`: `stamp_ns`, `trigger`, `status`, `frames_used`, `pose_stamp_ns`, `x`, `y`,
+  `yaw`, `localization_x`, `localization_y`, `localization_yaw`, `error_m`, `error_deg`,
+  `localization_std_xy`, `localization_std_yaw_deg`, `inliers`, `scan_hit_ratio`, `elapsed_s`,
+  `closeness`, `stopped_early`, `scan_alternative_gap`, `message`).
 
 ### Added
 - Implementation plan (`docs/PLAN.md`).
 - Package skeletons: `landfall_core`, `landfall_msgs`, `landfall_ros`, `landfall_nav2`,
   `landfall_bringup`, `landfall_benchmark`, plus `landfall_tools` (Python, not a ROS package).
 - Interface definitions in `landfall_msgs`: `Relocalize.srv`, `RelocalizationResult`,
-  `RelocalizationScores`, `Hypothesis`, `RecorderStatus` (not frozen until v1.0.0-rc.1).
+  `RelocalizationScores`, `Hypothesis`, `RecorderStatus` (frozen in 1.0.0, see above).
 - Distro compatibility layer with compiled probes: Ceres 2.0/2.2 manifolds, `cv_bridge` headers,
   rosbag2 receive timestamps, bond and diagnostics on plain lifecycle nodes, Nav2 `BtServiceNode`
   with BehaviorTree.CPP v3/v4, and CMake helpers for packages without exported targets.
@@ -177,6 +273,21 @@ All notable changes to this project are documented here. The format follows
   the database's landmarks from 4567 to 5376 (5378 with true poses). The rest of the tail is
   aisles where one scan fits two positions equally and AMCL sat on the wrong one (T-011).
 
+- `RelocalizationScores` reports how close a request came to a pose (`closeness`), whether it
+  ended early (`stopped_early`) and how much better the scan fits the pose than any other place
+  (`scan_alternative_gap`, NaN when that search didn't run); the shadow log gains the same three
+  columns, and the debug dump `alternatives_skipped`.
+- Trying Landfall by hand: `sim/scripts/try_depot.sh` starts the depot simulation with Gazebo's
+  window and RViz (Nav2 with the example tree, the startup relocalization, the kidnap watchdog);
+  `scripts/sim.sh` opens windows on the display with `LANDFALL_SIM_GUI=1`, and the simulation
+  image has RViz (`docs/nav2_integration.md`, "Trying it by hand").
+- The kidnap benchmark in the TurtleBot 4 warehouse, run locally (its shelves are non-commercial
+  models): `SITE=warehouse` for `sim/scripts/benchmark_depot.sh`, `scenarios/warehouse.yaml`, the
+  recording route `sim/routes/warehouse_loop.txt`; `sim/scripts/record_depot.sh` takes another
+  world and its turns on the spot at leg ends from the environment. Landfall `classical` localized
+  all 100 placements there (a median 7.8 s, no wrong pose); AMCL's global localization was right
+  once and claimed 88 wrong poses.
+
 ### Changed
 - The recorder and `landfall build --bag` no longer gate frames that come with a LiDAR scan on the
   localization's covariance (PLAN V57; `gating.covariance`, `without_scan` by default, `always`
@@ -286,8 +397,8 @@ All notable changes to this project are documented here. The format follows
   the next two disagreeing checks. In the kidnap benchmark it noticed and undid 94 of the 100
   kidnaps (M7: 85), a median 34 s after the kidnap, without a wrong pose, and in 68 minutes of
   navigation laps it never relocalized a right localization. Its checks cost about 15 % of one core
-  of a laptop CPU (T-016). A goal under way fails when it relocalizes, on Jazzy and Lyrical: their
-  trees don't run the controller's recovery for `INVALID_PATH` (T-015). The simulation's parameters
+  of a laptop CPU (cheaper since, below). A goal under way failed when it relocalized, until the
+  example trees planned again after a pose jump (below). The simulation's parameters
   (`sim/params/relocalizer_depot_sim.yaml`, `relocalizer_depot_humble.yaml`) turn it off, so that
   the kidnap benchmark's request and AMCL runs and the navigation runs measure what they did;
   `navigate_depot.sh` takes `RELOCALIZER_PARAMS` (`relocalizer_depot_watchdog.yaml` turns it on).
@@ -330,8 +441,66 @@ All notable changes to this project are documented here. The format follows
   Cyclone DDS); `scripts/sim.sh` takes `LANDFALL_SIM_DISTRO`.
 - The M0 compile probe `test_compat_bt` gave way to the behavior tree nodes' tests.
 - README: the benchmark results, how it works, a quick start and the documentation index.
+- Renamed before the freeze, without aliases: the relocalizer's `auto_trigger.pose_topic` is
+  `localization.pose_topic` (the auto trigger, the extrinsics monitor, the kidnap watchdog and the
+  shadow log read it), `extrinsics_monitor.max_amcl_std_xy` is
+  `extrinsics_monitor.max_localization_std_xy`, and `scan_check.topic` and
+  `scan_check.max_time_offset` are `scan.topic` and `scan.max_time_offset`, the recorder's names
+  (also for `landfall query --set`); `RecorderStatus.rejected_tf` is `rejected_no_pose`, the name
+  `/diagnostics` uses.
+- The example trees on Jazzy and Lyrical plan again when the controller reports that the path no
+  longer reaches the robot (`INVALID_PATH`, after the localization's pose jumped: a relocalization
+  by the kidnap watchdog or the auto trigger, or AMCL's own): they clear both costmaps and plan
+  from the new pose, and the goal goes on instead of failing; the outer recovery also takes that
+  error. In five depot navigation runs with the watchdog the robot's pose was right again 23 to 35 s
+  after the kidnap and it reached the goal in four (before: the goal failed in all five); in the
+  fifth, Nav2 judged the goal reached on AMCL's wrong pose 0.5 s before the watchdog published
+  (T-018).
+- The background checks of the kidnap watchdog and the extrinsics monitor skip the search for
+  other places the scan fits when their pose agrees with the localization's (within the
+  watchdog's limits) and has at least `sanity.min_inliers` inliers: the localization confirms the
+  place, and the search took most of their CPU time. In 15 minutes of depot navigation laps (26
+  goals) the relocalizer used 23.8 % of one core with the watchdog (31.3 % before, 16.3 % with the
+  watchdog off), and no check that found a pose lay further than 8.6 cm and 1.5° from AMCL's.
+  Requests that may publish search as before.
+- The kidnap watchdog checks at once when something suggests the localization is wrong, instead of
+  at its next 10 s check: to confirm a check that disagreed; when the localization's pose jumps and
+  neither the odometry nor a pose the relocalizer published explains it (a wrong 2D Pose Estimate
+  in RViz, another node's `/initialpose`); and when the scan, scored twice a second at the
+  localization's pose, stops fitting the map (`kidnap_watchdog.min_scan_fit`, 0.2: hits minus beams
+  that see through obstacles), as after a kidnap. A check that finds no pose leaves its suspicion
+  waiting until the robot moved 0.5 m or turned 30°. Early checks take the
+  place of scheduled ones, from a budget that refills at one check per `kidnap_watchdog.period`:
+  never more than one check per period on average. Its cooldown after a pose it published is
+  10 s (was 30 s). A check is compared with the localization's latest pose (its pose topic and
+  the odometry) rather than TF, which AMCL dates ahead. When the last two checks agree with each
+  other, the watchdog publishes the last one's pose, a full request that passed every check,
+  instead of starting a third request, which while the robot moves took up to 9 s and sometimes
+  found nothing; checks that don't agree with each other still get a fresh request. In the depot
+  kidnap benchmark the watchdog undid 98 of 100 kidnaps, a median 6.0 s after them (before: 94,
+  a median 34 s), and 99 of 100 wrong poses given to AMCL, a median 5.9 s after them, without a
+  wrong pose or a needless relocalization; in navigation runs the pose was right again 10 to 17 s
+  after a kidnap (before: 23 to 35 s), and the robot reached its goal every time.
+- The kidnap benchmark's watchdog runs take `watchdog.wrong_pose`: at each placement AMCL gets the
+  true pose, then a wrong one (the next placement's, with RViz's covariance), and the watchdog
+  has to notice.
+- Version 1.0.0 in every package. `docs/field_validation.md` is the procedure for validating
+  Landfall on a robot before relying on it; no real robot has run it yet.
 
 ### Fixed
+- The simulation image could mix Nav2 releases, and Nav2's navigator then crashed (`bt_navigator`,
+  exit code -11): built on a `landfall-deps` image older than the apt repository's Nav2 release, it
+  held the dependency image's Nav2 packages next to newer ones. Its packages now install in one
+  layer, and the build stops when Nav2's packages come from more than one release;
+  `LANDFALL_REBUILD_IMAGE=1 scripts/docker_ci.sh` refreshes the dependency image without Docker's
+  build cache (`docker/README.md`, "Simulation image").
+- `scripts/sim.sh` starts the simulation container as your user (it started it as root and ran the
+  command as you), so a `docker exec` shell is yours too and receives the simulation's messages; a
+  root shell saw the topics but none of their messages.
+- With the kidnap watchdog on, the extrinsics monitor never sampled: its 60 s timer fired together
+  with the watchdog's 10 s timer, whose check made the node busy first, every minute (0 monitor
+  checks in three 15-minute navigation runs, 6 with the watchdog off). The watchdog's checks now
+  follow its budget instead of a timer: 4 and 5 monitor checks in two runs.
 - The auto-trigger node test expected no third automatic request after shortening the cooldown,
   but with the localization still uncertain the trigger rightly keeps firing; it failed on GitHub's
   arm64 runner. The odometry-consistency and preemption tests no longer depend on timing, and the
@@ -344,3 +513,5 @@ All notable changes to this project are documented here. The format follows
 - The accuracy table in `docs/relocalization.md` counted images instead of requests: a frame that
   finds nothing doesn't end a request, so run 1 gives 434 successes in 440 requests, not 434 of
   448 (re-run in M5; same successes and wrong poses).
+
+[1.0.0]: https://github.com/ali-pahlevani/Landfall/releases/tag/v1.0.0

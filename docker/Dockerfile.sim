@@ -5,18 +5,30 @@
 #  - Humble: the TurtleBot 4's own simulator on Gazebo Fortress, for the Humble demo
 #    (docs/nav2_integration.md); nav2_minimal_tb4_sim isn't released for Humble.
 #
-#   docker build -f docker/Dockerfile.sim --build-arg BASE=landfall-deps:jazzy -t landfall-sim:jazzy .
+#   docker build -f docker/Dockerfile.sim --build-arg BASE=landfall-deps:jazzy -t landfall-sim:jazzy docker
 ARG BASE=landfall-deps:jazzy
 FROM ${BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# ROS_DISTRO comes from the ros base image.
+# Everything in one layer, from one apt index (ROS_DISTRO comes from the ros base image):
+#  - the simulation, Nav2 and its bringup;
+#  - Humble: Cyclone DDS (scripts/sim.sh), since with Fast DDS the lifecycle managers lost service
+#    responses under the simulation's load ("failed to send response ... client will not receive
+#    response") and waited for them forever;
+#  - RViz, for trying Landfall with its windows (sim/scripts/try_depot.sh, LANDFALL_SIM_GUI=1 in
+#    scripts/sim.sh).
+# The base image already holds the Nav2 packages landfall_nav2 builds against, and the image keeps
+# their release: Nav2's packages from two releases crash its navigator (bt_navigator "process has
+# died", exit code -11). After a ROS sync the apt index offers a newer Nav2 than the base image's,
+# and the check at the end stops the build; refresh the base image and the workspace first
+# (docker/README.md, "Simulation image"). The nav2_minimal_* simulation packages have releases of
+# their own.
 RUN if [ "${ROS_DISTRO}" = humble ]; then \
-      robot="ros-humble-turtlebot4-simulator ros-humble-turtlebot4-navigation"; \
+      extra="ros-humble-turtlebot4-simulator ros-humble-turtlebot4-navigation ros-humble-rmw-cyclonedds-cpp"; \
     else \
-      robot="ros-${ROS_DISTRO}-nav2-minimal-tb4-sim"; \
+      extra="ros-${ROS_DISTRO}-nav2-minimal-tb4-sim"; \
     fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -26,19 +38,22 @@ RUN if [ "${ROS_DISTRO}" = humble ]; then \
       "ros-${ROS_DISTRO}-ros-gz-bridge" \
       "ros-${ROS_DISTRO}-ros-gz-image" \
       "ros-${ROS_DISTRO}-ros-gz-sim" \
+      "ros-${ROS_DISTRO}-rviz2" \
       "ros-${ROS_DISTRO}-xacro" \
-      ${robot} \
- && rm -rf /var/lib/apt/lists/*
+      ${extra} \
+ && rm -rf /var/lib/apt/lists/* \
+ && releases="$( { dpkg-query -W -f='${db:Status-Abbrev} ${Package} ${Version}\n' \
+        "ros-${ROS_DISTRO}-navigation2" "ros-${ROS_DISTRO}-nav2-*" "ros-${ROS_DISTRO}-opennav-*" \
+        "ros-${ROS_DISTRO}-dwb-*" "ros-${ROS_DISTRO}-nav-2d-*" "ros-${ROS_DISTRO}-costmap-queue" \
+        2> /dev/null || true; } \
+      | awk '$1 == "ii" && $2 !~ /-nav2-minimal-/ { sub(/-.*/, "", $3); print $3 }' | sort -u)" \
+ && if [ "$(echo ${releases} | wc -w)" -ne 1 ]; then \
+      echo "Nav2 packages from more than one release: $(echo ${releases}). The base image is older" \
+           "than the apt repository's Nav2 release; refresh it and the workspace, then build this" \
+           "image again (docker/README.md, \"Simulation image\")." >&2; \
+      exit 1; \
+    fi
 
 # Gazebo downloads Fuel models (the depot) into this cache; scripts/sim.sh mounts it. Fortress
 # (Humble) reads the IGN_ name.
 ENV GZ_FUEL_CACHE_PATH=/fuel IGN_FUEL_CACHE_PATH=/fuel
-
-# Humble's simulation runs on Cyclone DDS (scripts/sim.sh): with Fast DDS, the lifecycle managers
-# lost service responses under the simulation's load ("failed to send response ... client will not
-# receive response") and waited for them forever.
-RUN if [ "${ROS_DISTRO}" = humble ]; then \
-      apt-get update \
-      && apt-get install -y --no-install-recommends ros-humble-rmw-cyclonedds-cpp \
-      && rm -rf /var/lib/apt/lists/*; \
-    fi

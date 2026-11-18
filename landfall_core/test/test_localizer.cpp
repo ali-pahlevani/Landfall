@@ -586,6 +586,56 @@ TEST_F(LocalizerTest, FewInliersStandWhereTheScanIsUnique)
   EXPECT_GE(localized, queries * 3 / 4);
 }
 
+TEST_F(LocalizerTest, BackgroundChecksTheLocalizationConfirmsSkipTheAlternativesSearch)
+{
+  // The kidnap watchdog's and the extrinsics monitor's checks carry the localization's pose. A pose
+  // with at least sanity.min_inliers inliers within its limits needs no search for other places the
+  // scan fits; the same frame searches without a prior, against a prior beyond the limits (a
+  // kidnap), and with too few inliers to stand without the search (V61).
+  const auto map = landfall::LocalizationMap::load(*db_path_);
+  landfall::Localizer localizer(map, {});
+  const auto path = landfall::test::loopBothWays(0, 0, 10, 6, 1.0);
+  int checked = 0;
+  for (std::size_t k = 0; k < path.size(); k += 4) {
+    const Pose2 & truth = path[k];
+    auto frame = query(*world_, truth, 700 + static_cast<int>(k));
+    const auto plain = localizer.localize(frame);
+    if (!plain.pose) {
+      continue;
+    }
+    ++checked;
+    EXPECT_FALSE(plain.alternatives_skipped) << k;
+    EXPECT_TRUE(plain.uniqueness.measured) << k;
+
+    // The localization 0.5 m and 5 degrees off: within the watchdog's limits (1 m, 20 degrees).
+    frame.localization =
+      landfall::LocalizationPrior{landfall::compose(truth, Pose2{0.5, 0.0, deg(5.0)}), 1.0, 20.0};
+    const auto confirmed = localizer.localize(frame);
+    ASSERT_TRUE(confirmed.pose) << k;
+    EXPECT_TRUE(confirmed.alternatives_skipped) << k;
+    EXPECT_FALSE(confirmed.uniqueness.measured) << k;
+    EXPECT_FALSE(confirmed.ambiguity.ambiguous) << k;
+    EXPECT_LT(landfall::translationDistance(*confirmed.pose, truth), 0.05) << k;
+
+    // A localization 3 m away: the check may be the one that finds a kidnap, so it searches.
+    frame.localization->pose = landfall::compose(truth, Pose2{3.0, 0.0, 0.0});
+    const auto disagreeing = localizer.localize(frame);
+    EXPECT_FALSE(disagreeing.alternatives_skipped) << k;
+    EXPECT_TRUE(disagreeing.uniqueness.measured) << k;
+
+    // 30 of the room's landmarks: fewer inliers than sanity.min_inliers, so the search decides.
+    auto weak = frame;
+    weak.features = thin(*weak.features, 30);
+    weak.localization->pose = truth;
+    const auto weak_result = localizer.localize(weak);
+    EXPECT_FALSE(weak_result.alternatives_skipped) << k;
+    if (weak_result.pose) {
+      EXPECT_TRUE(weak_result.uniqueness.unique) << k;
+    }
+  }
+  EXPECT_GE(checked, 4);
+}
+
 TEST_F(LocalizerTest, PosesOnFlaggedKeyframesAreAmbiguous)
 {
   // The same database with every keyframe flagged as the build flags those whose scan fits a

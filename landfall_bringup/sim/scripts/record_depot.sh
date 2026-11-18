@@ -10,6 +10,12 @@
 #   - drives the route with Nav2 (NavigateThroughPoses), forwards and then backwards.
 #
 #   record_depot.sh <output directory> [route file]
+#
+# Another world of the TurtleBot 4 simulation (the warehouse), through the environment: WORLD (its
+# SDF), MAP (its map yaml), X_POSE / Y_POSE / YAW (the spawn pose in Gazebo's frame, as
+# start_depot_sim.sh), INITIAL_POSE ("x y yaw_rad", AMCL's first pose in the map frame; default
+# "0 0 0", the depot's spawn), SESSION_NAME (default depot) and SPIN_AT_LEG_ENDS=1 (a full turn on
+# the spot after every leg: the driving protocol's turns at aisle ends, docs/recording.md).
 set -euo pipefail
 # Job control: background jobs keep the default SIGINT handling (a non-interactive shell would
 # start them with SIGINT ignored), so `kill -INT` stops them cleanly.
@@ -32,7 +38,11 @@ stop() {
 }
 trap stop EXIT
 
-bash "${share}/sim/scripts/start_depot_sim.sh" > "${out}/sim.log" 2>&1 &
+map_args=()
+if [[ -n "${MAP:-}" ]]; then
+  map_args=(map:="${MAP}")
+fi
+bash "${share}/sim/scripts/start_depot_sim.sh" "${map_args[@]}" > "${out}/sim.log" 2>&1 &
 sim_pid=$!
 
 # Nav2's planner activates only once AMCL publishes map->odom, i.e. after the initial pose.
@@ -40,9 +50,13 @@ echo "waiting for AMCL..."
 until ros2 lifecycle get /amcl 2> /dev/null | grep -q '^active'; do sleep 2; done
 ros2 param load /amcl "${share}/sim/params/amcl_depot_sim.yaml" > /dev/null
 
-# The robot spawns at the depot map's origin, facing +x.
+# The robot spawns at the depot map's origin, facing +x (INITIAL_POSE for another world).
+read -r ix iy iyaw <<< "${INITIAL_POSE:-0 0 0}"
+qz="$(awk -v a="${iyaw}" 'BEGIN { printf "%.6f", sin(a / 2) }')"
+qw="$(awk -v a="${iyaw}" 'BEGIN { printf "%.6f", cos(a / 2) }')"
 ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped \
-  "{header: {frame_id: map}, pose: {pose: {orientation: {w: 1.0}},
+  "{header: {frame_id: map}, pose: {pose: {position: {x: ${ix}, y: ${iy}},
+    orientation: {z: ${qz}, w: ${qw}}},
     covariance: [0.0025, 0, 0, 0, 0, 0, 0, 0.0025, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.003]}}" > /dev/null
 echo "waiting for Nav2..."
@@ -50,7 +64,8 @@ until ros2 lifecycle get /bt_navigator 2> /dev/null | grep -q '^active'; do slee
 
 "$(ros2 pkg prefix landfall_ros)/lib/landfall_ros/recorder_node" --ros-args \
   --params-file "${share}/sim/params/recorder_depot_sim.yaml" -p autostart:=true \
-  -p output_dir:="${out}/sessions" -p session_name:=depot > "${out}/recorder.log" 2>&1 &
+  -p output_dir:="${out}/sessions" -p session_name:="${SESSION_NAME:-depot}" \
+  > "${out}/recorder.log" 2>&1 &
 pids+=($!)
 
 ros2 bag record --use-sim-time -s sqlite3 -o "${out}/bag" \
@@ -94,6 +109,11 @@ for leg in "${legs[@]}"; do
   if ! echo "${result}" | grep -q 'SUCCEEDED'; then
     echo "navigation failed; stopping the recording" >&2
     exit 1
+  fi
+  if [[ "${SPIN_AT_LEG_ENDS:-0}" == 1 ]]; then
+    echo "turning on the spot"
+    timeout 120 ros2 action send_goal /spin nav2_msgs/action/Spin "{target_yaw: 6.283}" \
+      2>&1 | tail -n 1 || true
   fi
 done
 sleep 2

@@ -33,6 +33,7 @@
 #include "bondcpp/bond.hpp"
 #include "diagnostic_updater/diagnostic_updater.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "landfall/grid/scan_verifier.hpp"
 #include "landfall/query/auto_trigger.hpp"
 #include "landfall/query/early_stop.hpp"
 #include "landfall/query/extrinsics_monitor.hpp"
@@ -142,7 +143,7 @@ private:
     ExtrinsicsMonitorParams monitor;
     KidnapWatchdogParams watchdog;
     EarlyStopParams early_stop;
-    double monitor_max_amcl_std_xy = 0.05;
+    double monitor_max_localization_std_xy = 0.05;
     double monitor_max_linear_speed = 0.2;
     double monitor_max_angular_speed = 0.1;
     double scan_max_time_offset = 0.5;
@@ -194,6 +195,7 @@ private:
   void declareParameters();
   Settings readSettings() const;
   Thresholds readThresholds() const;
+  KidnapWatchdogParams readWatchdogParams() const;
   rcl_interfaces::msg::SetParametersResult validateParameters(
     const std::vector<rclcpp::Parameter> & parameters) const;
 
@@ -206,9 +208,16 @@ private:
   void autoTriggerTick();
   void monitorTick();
   void watchdogTick();
+  /// The kidnap watchdog's scan-fit trigger: the newest scan at the localization's pose, at most
+  /// twice a second (V70).
+  void checkScanFit(double t);
   /// After a request: feeds a background check that passed to the kidnap watchdog. Returns the
-  /// relocalization to run next when the watchdog fires.
+  /// relocalization to run next when the watchdog fires and the last two checks don't agree with
+  /// each other (when they do, it publishes the last one's pose itself).
   std::optional<Request> watch(const Request & request, const Result & result);
+  /// Publishes the pose of a check the one before it confirmed, as the watchdog's relocalization
+  /// (on `~/status` too). False when it can't (the localization not ready, not delivered).
+  bool publishConfirmedCheck(Result result, const Pose2 & pose);
 
   void submit(Request request);
   void answer(const Request & request, Result result);
@@ -239,6 +248,10 @@ private:
   void logShadow(const Request & request, const Result & result);
   /// The localization's base pose at `stamp_ns`, through TF (map -> odom -> base).
   std::optional<Pose2> localizationAt(int64_t stamp_ns) const;
+  /// The localization's latest correction (from its pose topic) with the odometry at `stamp_ns`:
+  /// its pose now, which TF gives only a little later (its map -> odom is dated ahead). Through TF
+  /// before the pose topic delivered one.
+  std::optional<Pose2> currentLocalizationAt(int64_t stamp_ns) const;
   /// For a valid frame of a monitor request: the camera pose from vision and the one the
   /// localization and TF predict. nullopt while the robot moves too fast or TF lacks a transform.
   std::optional<std::pair<Pose3, Pose3>> extrinsicsSample(
@@ -273,6 +286,14 @@ private:
   std::deque<sensor_msgs::msg::LaserScan> scans_;  ///< the last few seconds, by stamp
   std::optional<rclcpp::Time> last_scan_;
   std::optional<LocalizationEstimate> estimate_;
+  std::optional<Pose2> correction_;            ///< the localization's map -> odom, latest pose
+  std::optional<Pose2> published_correction_;  ///< the map -> odom our last published pose gives
+  int64_t scan_fit_settle_ns_ = 0;  ///< scans before this aren't judged (a pose just published)
+  /// The last check that disagreed with the localization: its pose and the odometry at its stamp.
+  std::optional<std::pair<Pose2, Pose2>> disagreeing_;
+  // The kidnap watchdog's last check: why, and where the odometry was when it started.
+  std::optional<Pose2> check_odom_;
+  WatchdogCheck check_reason_ = WatchdogCheck::kNone;
   ExtrinsicsMonitor monitor_;
   KidnapWatchdog watchdog_;
 
@@ -292,6 +313,11 @@ private:
   bool startup_done_ = false;
   std::chrono::steady_clock::time_point startup_next_;
   AutoTrigger auto_trigger_;  ///< executor thread only
+  // The kidnap watchdog's scan-fit trigger: executor thread only.
+  std::unique_ptr<ScanVerifier> scan_fit_verifier_;
+  double scan_fit_next_ = 0.0;  ///< steady seconds of the next evaluation
+  int64_t scan_fit_stamp_ = 0;  ///< the newest scan judged
+  ScanFitTrigger scan_fit_trigger_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr compressed_sub_;

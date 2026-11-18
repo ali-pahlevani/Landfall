@@ -15,6 +15,12 @@
   After a relocalization, the tree waits a second for AMCL's map -> odom to follow the new pose,
   then clears both costmaps (while the pose was wrong, scans marked obstacles in the wrong places)
   and, in the recovery, plans the path again from the new pose before navigation resumes.
+  - The localization's pose can also jump outside the tree: the relocalizer's kidnap watchdog or
+    auto trigger publishes a pose, or AMCL jumps by itself. The path planned from the old pose then
+    no longer reaches the robot, and the controller fails with INVALID_PATH (103), a code Nav2's
+    controller recovery doesn't take (WouldAControllerRecoveryHelp). Here it clears both costmaps
+    and plans again from the new pose, and the goal goes on; if that fails too, the recoveries
+    below run, relocalizing first.
   Each ReLocalize lets the relocalizer take 2.5 s (timeout) and waits 12.5 s for its answer
   (server_timeout, default: timeout + 10 s); where the camera sees nothing near a pose, the
   relocalizer answers after two frames (query.early_stop_frames).
@@ -54,16 +60,25 @@
           </RateController>
           <RecoveryNode number_of_retries="1" name="FollowPath">
             <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
-            <Sequence>
-              <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
-              <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
-            </Sequence>
+            <Fallback name="FollowPathRecovery">
+              <Sequence name="ReplanAfterPoseJump">
+                <AreErrorCodesPresent error_code="{follow_path_error_code}" error_codes_to_check="103"/>
+                <ClearEntireCostmap name="ClearLocalCostmap-PoseJump" service_name="local_costmap/clear_entirely_local_costmap"/>
+                <ClearEntireCostmap name="ClearGlobalCostmap-PoseJump" service_name="global_costmap/clear_entirely_global_costmap"/>
+                <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+              </Sequence>
+              <Sequence>
+                <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+                <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+              </Sequence>
+            </Fallback>
           </RecoveryNode>
         </PipelineSequence>
         <Sequence>
           <Fallback>
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
             <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+            <AreErrorCodesPresent error_code="{follow_path_error_code}" error_codes_to_check="103"/>
           </Fallback>
           <ReactiveFallback name="RecoveryFallback">
             <GoalUpdated/>

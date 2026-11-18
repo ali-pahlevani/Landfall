@@ -34,7 +34,7 @@ A frame becomes a keyframe when it passes every gate, in this order:
 | Sharpness (variance of the Laplacian, image scaled to at most 640 px wide) above `quality.min_sharpness` (60) | | `rejected_blur` |
 | Mean intensity in [`quality.min_mean_intensity`, `quality.max_mean_intensity`] ([30, 225]); at most `quality.max_saturated_fraction` (20 %) of pixels at 250 or brighter | | `rejected_exposure` |
 
-Frames without a pose at their stamp (TF missing) count as `rejected_tf`. The motion gate runs
+Frames without a pose at their stamp (TF missing) count as `rejected_no_pose`. The motion gate runs
 first, so the other counters tell how many *due* keyframes each gate cost.
 
 **AMCL's covariance.** With the scan recorded (`scan.topic`) this gate only holds back frames

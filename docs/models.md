@@ -5,17 +5,17 @@ beyond OpenCV. The learned backends run on ONNX Runtime and are optional: `landf
 them when it finds ONNX Runtime (rosdep's `onnxruntime_vendor`, the CPU release), and
 `-DLANDFALL_WITH_ONNXRUNTIME=OFF` leaves them out.
 
-> **Status (M5):** the backends work through the builder, the database and the relocalizer. Their
-> parity with PyTorch holds on the real models, and they've had a first comparison with the
-> classical backends in simulation (below). The exported models are published as GitHub release
-> `models-v1`.
+> **Status (1.0):** the backends work through the builder, the database and the relocalizer, and
+> their parity with PyTorch holds on the real models. In the kidnap benchmark `learned_cpu`
+> succeeded less often than `classical` (`docs/benchmark.md`), which stays the default. The
+> exported models are published as GitHub release `models-v1`.
 
 ## Presets
 
 | Preset | Local features | Global descriptor | Matcher | Status |
 |---|---|---|---|---|
 | `classical` (default) | `orb` | `bow` | `ratio` | covered by the v1.0 guarantees |
-| `learned_cpu` | `xfeat`, 2048 keypoints | `eigenplaces` (ResNet-18, 512-D) | `mnn` | measured in simulation (below); presets are settled by the M7 benchmark |
+| `learned_cpu` | `xfeat`, 2048 keypoints | `eigenplaces` (ResNet-18, 512-D) | `mnn` | covered by the v1.0 guarantees; less often successful than `classical` in the benchmark |
 | `learned_gpu` (experimental) | `xfeat`, 4096 keypoints | `megaloc` (8448-D) | `lighterglue` (T-008) | `mnn` until LighterGlue lands |
 
 ALIKED, the plan's first choice for the GPU preset, can't run on ONNX Runtime: neither 1.23.2 nor
@@ -158,8 +158,8 @@ frames, at about twice the classical time.
 
 These are clean renders of one simulated building, timed on the development laptop (i7-13620H).
 Building run 1's database took 84 s with `classical`, 125 s with `learned_cpu` and 80 s with ORB
-and EigenPlaces, for 21.3, 17.1 and 10.9 MB. The benchmark (M7) and the field validation (M8)
-settle the presets and their tuning, such as XFeat's keypoint count.
+and EigenPlaces, for 21.3, 17.1 and 10.9 MB. The kidnap benchmark (`docs/benchmark.md`) compares
+the presets; on a real site, measure them on your own recordings (`docs/field_validation.md`).
 
 ## Licenses and provenance
 

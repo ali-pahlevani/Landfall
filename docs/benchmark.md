@@ -4,8 +4,9 @@ How well does a robot get its pose back after it was moved without its localizat
 "kidnap")? The benchmark measures it in simulation for Landfall, for AMCL's own global
 localization, and for Landfall's kidnap watchdog. The numbers in the README come from here.
 
-Everything here runs in the TurtleBot 4 depot simulation (Gazebo Harmonic, Jazzy; PLAN A8). The
-field validation on a real robot is PLAN M8 (`docs/field_validation.md`).
+Everything here runs in the TurtleBot 4 simulation (Gazebo Harmonic, Jazzy; PLAN A8): Nav2's depot
+world, and its warehouse locally. No real robot has run it; `docs/field_validation.md` is how to
+measure it on yours.
 
 ## Setup
 
@@ -49,8 +50,13 @@ true pose; the start isn't measured. Then, for each placement:
      on the spot while AMCL updates. AMCL claims a pose when its reported standard deviation drops
      below 0.5 m (the relocalizer's auto trigger limit).
    - `watchdog`: nothing is called. The robot turns slowly (0.1 rad/s) where it stands, and the
-     relocalizer's kidnap watchdog (default settings: a check every 10 s, two disagreeing checks
-     in a row) has 90 s to notice and relocalize.
+     relocalizer's kidnap watchdog (default settings: a check every 10 s, and at once when the
+     scan stops fitting at AMCL's pose or AMCL's pose jumps; two disagreeing checks in a row) has
+     90 s to notice and relocalize.
+   - `watchdog` with `-p watchdog.wrong_pose:=true`: a wrong pose instead of a kidnap. The robot
+     goes to the placement and AMCL gets the true pose; 25 s later AMCL gets a wrong one, the
+     next placement's (at least 2 m away; the home pose for the last), with the covariance of
+     RViz's 2D Pose Estimate (0.5 m, 15°), as an operator's mistake would. Then as `watchdog`.
 3. **AMCL converges.** After a published pose, the robot turns once on the spot so that AMCL's
    filter settles on it.
 4. **Scoring** against Gazebo's ground truth, each estimate at its own stamp:
@@ -63,7 +69,7 @@ true pose; the start isn't measured. Then, for each placement:
    poses in 100 placements, the true rate is below 3.6 % at 95 % confidence.
 5. **Time to localize**: from the first request (Landfall) or the global localization call (AMCL)
    to the published answer or AMCL's first confident estimate, turns included. For the watchdog,
-   the time from the kidnap to its published relocalization.
+   the time from the kidnap (or the wrong pose) to its published relocalization.
 6. **Needless relocalizations** (watchdog): after the robot's pose is back, the robot keeps
    turning slowly for 30 s, and every watchdog relocalization then is counted: the localization was
    right.
@@ -82,7 +88,12 @@ The arguments are the output file, the condition (`nominal`, `lighting`, `added_
 `crates_removed`), the method, the label in the tables and the relocalizer's database.
 `SAMPLING_DATABASE` draws the placements near another database's keyframes (to give a learned
 database's run the classical run's placements); `-p first_placement:=N` resumes a run. A learned
-database needs its models (`LANDFALL_SIM_DOCKER_ARGS`, see `scripts/sim.sh`).
+database needs its models (`LANDFALL_SIM_DOCKER_ARGS`, see `scripts/sim.sh`). The watchdog's runs
+take the method `watchdog`, and its wrong-pose runs `-p watchdog.wrong_pose:=true` too.
+`SITE=warehouse` runs it in the TurtleBot 4 warehouse (condition `nominal` only), with a database
+of a warehouse recording: `sim/scripts/record_depot.sh` records it with `WORLD`, `MAP`,
+`INITIAL_POSE`, `SPIN_AT_LEG_ENDS=1` and the route `sim/routes/warehouse_loop.txt` (the script's
+header lists them), and `scenarios/warehouse.yaml` holds its `world_to_map`.
 
 ## Development: two wrong poses, and the scan alternatives check
 
@@ -345,7 +356,74 @@ database. The tables are `summarize_benchmark`'s output; the runner's CSV files 
   most 9.4 cm and 1.6°. The relocalizer used 31 % of one core of the laptop's CPU with the
   watchdog (its process's CPU time, sampled every 30 s in the second segment), and 16 % in 15
   minutes of the same laps with the watchdog off: the checks cost about 15 % of one core
-  (`docs/relocalization.md`, T-016).
+  (`docs/relocalization.md`; with PLAN V67's cheaper checks, below).
+- **The 1.0 runs** (2026-11-17 and 18, PLAN V69 and V70), on the build of v1.0.0, with the same
+  databases and placements. Since V70 the kidnap watchdog checks at once when the scan stops
+  fitting the map at AMCL's pose or AMCL's pose jumps, looks again from a new view when its check
+  found nothing, and publishes the confirming check's pose (`docs/relocalization.md`):
+
+  | Scenario | Method | Placements | Success | Wrong (95 % upper bound) | Inaccurate | Miss | First heading | Time to localize (median / p90) | Published error (median) |
+  |---|---|---|---|---|---|---|---|---|---|
+  | nominal (classical) | watchdog | 100 | 98.0 % | 0 (3.6 %) | 0.0 % | 2.0 % | - | - / - | 2.7 cm |
+  | nominal; wrong pose (classical) | watchdog | 100 | 99.0 % | 0 (3.6 %) | 0.0 % | 1.0 % | - | - / - | 2.4 cm |
+  | warehouse (classical) | landfall | 100 | 100.0 % | 0 (3.6 %) | 0.0 % | 0.0 % | 34.0 % | 7.8 s / 20.5 s | 5.5 cm |
+  | warehouse (AMCL) | amcl | 100 | 1.0 % | 88 (93.6 %) | 1.0 % | 10.0 % | - | 7.9 s / 7.9 s | - |
+
+  | Scenario | Detected | Time to detect (median / p90) | Needless relocalizations | Observed with a right localization |
+  |---|---|---|---|---|
+  | nominal (classical) | 98.0 % | 6.0 s / 22.4 s | 0 (0.0 per hour) | 49 min |
+  | nominal; wrong pose (classical) | 99.0 % | 5.9 s / 25.7 s | 0 (0.0 per hour) | 50 min |
+
+  The watchdog noticed and undid 98 of the 100 kidnaps (V64: 94), a median 6.0 s after the kidnap
+  (90 % within 22.4 s; V64: 34.1 and 63.1 s; 39 within 3 s), without a wrong pose (median error
+  2.7 cm, at most 11.1 cm) and without a needless relocalization in 49 minutes with a right
+  localization afterwards. Its scan-fit trigger fired within 1.4 s of the kidnap at 99 of them (a
+  median 1.0 s); at the other, the scan fitted the old pose well enough for 27.5 s. What took
+  longer was the view: 158 of its checks found nothing the recording saw (`NO_MATCH`), and the
+  robot, turning at 0.1 rad/s, needs 5 s for the 30° after which the watchdog looks again. 98 of
+  its relocalizations published the confirming check's pose; at one the last two checks disagreed
+  with each other, and the fresh request it started then found nothing.
+
+  With a wrong pose given to AMCL instead (`watchdog.wrong_pose`), it noticed and undid 99 of the
+  100, a median 5.9 s after the wrong pose (90 % within 25.7 s; 39 within 3 s), again without a
+  wrong pose (median error 2.4 cm, at most 16.5 cm) or a needless relocalization in 50 minutes.
+  The jump of AMCL's pose started a check at once at every placement; the one miss is the kidnap
+  run's first miss, a place whose views the recording doesn't cover. The run was interrupted when
+  the host went down after 67 placements, and resumed at the next one with the same build.
+
+  *The warehouse* (`SITE=warehouse`, `scenarios/warehouse.yaml`): nav2_bringup's map of the
+  TurtleBot 4 warehouse (30 x 50 m, long aisles of shelving that look alike), recorded along
+  `sim/routes/warehouse_loop.txt` (7 legs, 242 m each way, a full turn at every leg end; 22
+  minutes) into a `classical` database of 895 keyframes and 26,793 landmarks. Its build report
+  found a view within 1 m of 52.5 % of the 714 m² the robot can reach (30.4 % in two or more
+  directions): the route drives the main aisles, not every lane, and the placements are drawn
+  within 1 m of the keyframes, as in the depot. Landfall localized all 100 placements, a median
+  7.8 s after the first request (34 at the first heading), 5.5 cm off in the median (at most
+  19.3 cm). AMCL's global localization claimed a pose 90 times: once right, once inaccurate, and
+  88 times wrong, a median 18 m off (up to 42 m). The
+  warehouse's map frame is Gazebo's world frame to within the fit of AMCL's poses on the
+  recording drive (2.6 cm, 8.1 cm and 0.03°, `world_to_map`). Its shelves are CC-BY-NC models:
+  these runs are local, and nothing the camera saw there is committed.
+
+  *Navigation laps* again, 15 minutes twice (26 goals each, all reached): the watchdog checked 91
+  times in each, started no early check and never relocalized; the checks that found a pose lay at
+  most 10.7 cm and 1.3° from AMCL's. The relocalizer used 24.8 and 24.4 % of one core, against
+  16.3 % with the watchdog off: about 8 % for the watchdog. A run between them lost a goal's
+  response in the simulation's DDS after 14 goals ("Failed to send goal response") and stood still
+  for its last 10 minutes; it had no early check or relocalization either, and its CPU share isn't
+  one of driving laps. The scan-fit trigger's own work, timed alone, takes 0.2 to 0.8 ms a scan
+  (640 to 1,440 beams, the depot's and the warehouse's maps), under 0.2 % of one core at two scans
+  a second. V67's run with the watchdog had measured 23.8 % (31.3 % before it), but in that run
+  and V64's the extrinsics monitor never sampled: its 60 s timer fired with the watchdog's 10 s
+  timer, whose check took the node first, every minute (6 monitor checks with the watchdog off, 4
+  and 5 in the V70 runs). The five navigation runs of
+  `docs/nav2_integration.md` (runs 23 to 27) had the pose right again 9.9 to 17.0 s after the
+  kidnap (V66: 22.6 to 34.5 s) and reached every goal. The other M7 rows (lighting with
+  `classical`, the `learned_cpu` rows) were not run again on this build, for time: they stand as
+  M7 measured them, with M7's relocalizer. The `classical` rows of V63's re-runs (nominal,
+  `added_objects`, `crates_removed`) stand for the 1.0 build: its requests are unchanged since
+  (V64 to V70 changed the watchdog, the background checks and names). The result files are
+  in [`landfall_benchmark/results/seed2027_v1.0/`](../landfall_benchmark/results/seed2027_v1.0/).
 - **Runs.** Two runs were interrupted when the host went down and resumed at the next placement
   (`first_placement`) with the same build, models and database: `learned_cpu` nominal after
   placement 8, `learned_cpu` lighting after placement 21. The runner's startup fallback (above)

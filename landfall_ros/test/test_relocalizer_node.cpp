@@ -38,6 +38,8 @@
 #include "lifecycle_msgs/msg/state.hpp"
 #include "lifecycle_msgs/srv/get_state.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "tf2/buffer_core.hpp"
+#include "tf2/exceptions.hpp"
 
 namespace
 {
@@ -87,8 +89,8 @@ protected:
       {"backend.num_threads", 2},
       {"consistency.num_frames", 2},
       {"query.timeout", 15.0},
-      {"scan_check.topic", "/reloc_test/scan"},
-      {"auto_trigger.pose_topic", "/reloc_test/amcl_pose"},
+      {"scan.topic", "/reloc_test/scan"},
+      {"localization.pose_topic", "/reloc_test/amcl_pose"},
       {"extrinsics_monitor.enabled", false},
       {"kidnap_watchdog.enabled", false},  // on by default; the watchdog's tests turn it on
     });
@@ -177,6 +179,9 @@ protected:
       ASSERT_EQ(node->configure().id(), State::PRIMARY_STATE_INACTIVE);
       ASSERT_EQ(node->activate().id(), State::PRIMARY_STATE_ACTIVE);
       tf_static_pub->publish(tf_static);
+      for (const auto & t : tf_static.transforms) {
+        tf_buffer.setTransform(t, "harness", true);
+      }
       if (with_map) {
         map_pub->publish(*map_);
       }
@@ -213,6 +218,7 @@ protected:
             // A localization that is wrong by map_offset_x (a kidnapped robot's AMCL).
             if (t.header.frame_id == "map") {
               t.transform.translation.x += map_offset_x;
+              t.transform.translation.y += map_offset_y;
             }
             // Injected odometry error: past each step, the robot seems odom_step further ahead.
             if (t.header.frame_id == "odom") {
@@ -222,6 +228,9 @@ protected:
                 static_cast<double>(std::count_if(
                   odom_steps.begin(), odom_steps.end(), [at](int64_t step) { return step <= at; }));
             }
+          }
+          for (const auto & t : message.transforms) {
+            tf_buffer.setTransform(t, "harness", false);
           }
           tf_pub->publish(message);
           ++next_tf;
@@ -276,6 +285,20 @@ protected:
       pose.header.stamp = driver->now();
       pose.header.frame_id = "map";
       pose.pose.pose.orientation.w = 1.0;
+      if (realistic_localization) {
+        // As AMCL publishes it: the pose its map -> odom gives at its latest update, the latest
+        // time the TF played reaches.
+        try {
+          const auto T = tf_buffer.lookupTransform(
+            "map", node->get_parameter("frames.base").as_string(), tf2::TimePointZero);
+          pose.header.stamp = T.header.stamp;
+          pose.pose.pose.position.x = T.transform.translation.x;
+          pose.pose.pose.position.y = T.transform.translation.y;
+          pose.pose.pose.orientation = T.transform.rotation;
+        } catch (const tf2::TransformException &) {
+          return;  // no TF played yet
+        }
+      }
       pose.pose.covariance[0] = std_xy * std_xy;
       pose.pose.covariance[7] = std_xy * std_xy;
       pose.pose.covariance[35] = std::pow(std_yaw_deg * M_PI / 180.0, 2);
@@ -346,6 +369,11 @@ protected:
     std::vector<int64_t> odom_steps;  ///< stamps where the odometry jumps ahead by odom_step
     double odom_step = 0.0;           ///< m
     double map_offset_x = 0.0;        ///< m added to the recorded map -> odom
+    double map_offset_y = 0.0;        ///< likewise in y
+    /// publishLocalization() publishes the localization's pose (map -> base through the TF
+    /// played), not a covariance at the origin.
+    bool realistic_localization = false;
+    tf2::BufferCore tf_buffer;  ///< the TF played
   };
 
   // Error of a published map pose against the ground truth at its stamp.
@@ -887,6 +915,48 @@ TEST_F(RelocalizerNodeTest, KidnapWatchdogIsSilentWhileTheLocalizationIsRight)
   EXPECT_TRUE(h.statuses.empty());
   const std::string watchdog = h.diagnosticValue("kidnap_watchdog");
   EXPECT_EQ(watchdog.rfind("0 disagreeing", 0), 0U) << watchdog;
+}
+
+TEST_F(RelocalizerNodeTest, KidnapWatchdogChecksAtOnceWhenTheLocalizationJumps)
+{
+  // Scheduled checks a minute apart and no scan-fit trigger: only the jump can start a check now.
+  rclcpp::NodeOptions o = watchdogOptions(options(*db_path_));
+  o.append_parameter_override("kidnap_watchdog.period", 60.0);
+  o.append_parameter_override("kidnap_watchdog.min_scan_fit", -1.0);
+  Harness h(o);
+  h.realistic_localization = true;
+  h.subscribeInitialPose();
+  h.up();
+  const std::size_t next = h.playFor(4, std::chrono::milliseconds(3000), 0.02);
+  EXPECT_EQ(h.countTrigger("watchdog"), 0U);
+  // Someone gives the localization a pose 3 m off: it jumps, and the watchdog checks the pose,
+  // confirms the check and relocalizes, all within seconds.
+  h.map_offset_x = 3.0;
+  h.playFor(next, std::chrono::milliseconds(8000), 0.02);
+  h.spinFor(std::chrono::milliseconds(500));
+  ASSERT_EQ(h.countTrigger("watchdog"), 1U);
+  ASSERT_EQ(h.poses.size(), 1U);
+  expectNearTruth(h.poses.front(), 0.25, 5.0);
+}
+
+TEST_F(RelocalizerNodeTest, KidnapWatchdogChecksAtOnceWhenTheScanStopsFitting)
+{
+  // Scheduled checks a minute apart, and the localization is 4.2 m off from the start (no jump):
+  // only the scan's fit at the localization's pose can start a check now. Off by 3 m in x alone,
+  // 30 to 55 % of the fixture's beams would still hit the map, and the scheduled checks would be
+  // the ones to notice.
+  rclcpp::NodeOptions o = watchdogOptions(options(*db_path_));
+  o.append_parameter_override("kidnap_watchdog.period", 60.0);
+  Harness h(o);
+  h.map_offset_x = 3.0;
+  h.map_offset_y = 3.0;
+  h.subscribeInitialPose();
+  h.up();
+  h.playFor(4, std::chrono::milliseconds(8000), 0.02);
+  h.spinFor(std::chrono::milliseconds(500));
+  ASSERT_EQ(h.countTrigger("watchdog"), 1U);
+  ASSERT_EQ(h.poses.size(), 1U);
+  expectNearTruth(h.poses.front(), 0.25, 5.0);
 }
 
 TEST_F(RelocalizerNodeTest, ValidatesParameters)

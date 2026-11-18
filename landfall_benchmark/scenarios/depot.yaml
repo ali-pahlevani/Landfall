@@ -39,6 +39,8 @@ kidnap_runner:
     watchdog:
       wait: 90.0          # s for the watchdog to notice and relocalize
       angular_speed: 0.1  # rad/s: the robot turns slowly meanwhile
+      # true: AMCL gets the true pose at each placement, then a wrong one (the next placement's)
+      wrong_pose: false
       observe: 30.0       # s of right localization afterwards, counting needless relocalizations
       # After a placement the watchdog didn't undo, the robot goes back here (the spawn pose, where
       # vision localizes), AMCL gets the true pose, and the watchdog's checks get time to agree.

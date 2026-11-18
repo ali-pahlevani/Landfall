@@ -90,9 +90,9 @@ IMU, and the recorder skips keyframes on ramps (`gating.max_tilt_deg`; the reloc
 
 The recorder stores the scan with each keyframe (`scan.topic`), and the build matches the
 keyframe's pose to the map with it (`docs/recording.md`). The relocalizer checks every pose
-against the occupancy map with a `LaserScan` (`scan_check.topic`). Use the scan AMCL uses, which
+against the occupancy map with a `LaserScan` (`scan.topic`). Use the scan AMCL uses, which
 matches the map, for both. A merged scan of several scanners works if its frame is in TF. The scan
-must be within `scan_check.max_time_offset` (0.5 s) of an image; the relocalizer moves it to the
+must be within `scan.max_time_offset` (0.5 s) of an image; the relocalizer moves it to the
 image's time with odometry.
 
 On coarse maps, `scan_check.hit_tolerance` (0.10 m) must be at least one cell: a 0.1 m map needs
@@ -110,5 +110,5 @@ against wrong poses; it is an explicit opt-in (PLAN A4).
 
 The base frame must lie on the floor (z = 0 in the map): the height check and the triangulation's
 floor limit use it. A robot whose root frame sits above the floor (`base_link` on a TurtleBot, a
-forklift's `chassis_link`) needs a floor frame in its URDF, or `frames.base` set to the root with
-the camera height checked against it.
+`chassis_link` at axle height) needs a floor frame in its URDF, or `frames.base` set to the root
+with the camera height checked against it.

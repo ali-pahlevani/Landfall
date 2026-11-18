@@ -15,6 +15,9 @@
 #              method meets the same ones.
 # Runner arguments (e.g. -p placements:=10) override landfall_benchmark's scenarios/depot.yaml.
 # A learned database needs its models: LANDFALL_MODELS_DIR, see docs/models.md.
+#
+# SITE=warehouse runs it in the TurtleBot 4 warehouse instead (nominal only; scenarios/warehouse.yaml,
+# nav2_bringup's warehouse map; its shelves are non-commercial models: local results only).
 set -euo pipefail
 # Job control: background jobs keep the default SIGINT handling (see record_depot.sh).
 set -m
@@ -26,14 +29,22 @@ label="${4:?label}"
 database="${5:?database}"
 shift 5
 share="$(ros2 pkg prefix landfall_bringup)/share/landfall_bringup"
-scenario="$(ros2 pkg prefix landfall_benchmark)/share/landfall_benchmark/scenarios/depot.yaml"
-map="$(ros2 pkg prefix nav2_bringup)/share/nav2_bringup/maps/depot.yaml"
+site="${SITE:-depot}"
+scenario="$(ros2 pkg prefix landfall_benchmark)/share/landfall_benchmark/scenarios/${site}.yaml"
+map="$(ros2 pkg prefix nav2_bringup)/share/nav2_bringup/maps/${site}.yaml"
 world=""
-case "${condition}" in
-  nominal) ;;
-  lighting | added_objects | crates_removed) world="${share}/sim/worlds/depot_${condition}.sdf" ;;
+case "${site}:${condition}" in
+  depot:nominal) ;;
+  depot:lighting | depot:added_objects | depot:crates_removed)
+    world="${share}/sim/worlds/depot_${condition}.sdf"
+    ;;
+  warehouse:nominal)
+    world="$(ros2 pkg prefix nav2_minimal_tb4_sim)/share/nav2_minimal_tb4_sim/worlds/warehouse.sdf"
+    # Its map frame is Gazebo's; the robot spawns in the hall (scenarios/warehouse.yaml: home).
+    export X_POSE="${X_POSE:--3.0}" Y_POSE="${Y_POSE:-2.0}" YAW="${YAW:-0.0}"
+    ;;
   *)
-    echo "unknown condition: ${condition}" >&2
+    echo "unknown site and condition: ${site} ${condition}" >&2
     exit 1
     ;;
 esac
@@ -68,7 +79,7 @@ WORLD="${world}" SIM_LAUNCH="${share}/sim/launch/depot_navigation.launch.xml" \
   relocalizer_params_file:="${relocalizer_params}" > "${log}.sim" 2>&1 &
 pids+=($!)
 ros2 run ros_gz_bridge parameter_bridge \
-  /world/depot/set_pose@ros_gz_interfaces/srv/SetEntityPose > "${log}.bridge" 2>&1 &
+  "/world/${site}/set_pose@ros_gz_interfaces/srv/SetEntityPose" > "${log}.bridge" 2>&1 &
 pids+=($!)
 
 # The runner waits for the services, the ground truth and AMCL's first pose (from the

@@ -15,6 +15,6 @@ uint32 rejected_speed
 uint32 rejected_tilt
 uint32 rejected_blur
 uint32 rejected_exposure
-uint32 rejected_tf
+uint32 rejected_no_pose               # no localization pose at the frame's stamp (TF)
 
 geometry_msgs/PoseStamped last_keyframe_pose   # camera pose in the global frame

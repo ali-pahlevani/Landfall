@@ -1,0 +1,42 @@
+# Route of the recording drive in nav2_bringup's warehouse map (x y in metres, map frame; in the
+# warehouse the map frame is Gazebo's world frame). The robot spawns at (-3.0, 2.0) in the hall.
+# Its shelves are CC-BY-NC models: drive and benchmark there locally only, never commit what the
+# camera saw (docs/benchmark.md).
+#
+# Legs ("---") as in depot_loop.txt: each is one NavigateThroughPoses goal that starts where the
+# previous one ended; the recording drives them in order, then backwards, so every lane is seen in
+# both directions. Down and up the four aisles between the long shelves in the south, through the
+# hall, east and west between the shelves in the north, along the open area above them, and back
+# down beside the barriers.
+-3.0 2.0
+-5.5 1.6
+-5.5 -23.3
+---
+-5.5 -23.3
+-12.8 -23.3
+-12.8 1.6
+---
+-12.8 1.6
+2.8 1.6
+2.8 -23.3
+---
+2.8 -23.3
+10.5 -23.3
+10.5 1.6
+---
+10.5 1.6
+6.0 2.5
+6.0 6.3
+13.8 6.3
+13.8 14.0
+---
+13.8 14.0
+13.8 21.8
+-2.5 21.8
+---
+-2.5 21.8
+13.8 21.8
+13.8 14.0
+-8.8 14.0
+-8.8 6.3
+-3.0 2.0

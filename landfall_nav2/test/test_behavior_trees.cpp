@@ -26,9 +26,12 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "bt_test_support.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_msgs/action/back_up.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/action/follow_path.hpp"
@@ -153,6 +156,71 @@ typename rclcpp_action::Server<ActionT>::SharedPtr succeedingAction(
     });
 }
 
+// Nav2's controller when the localization's pose jumped while it followed a path: the path no
+// longer reaches the robot, and its first goal fails (Jazzy and later: INVALID_PATH; Humble's
+// result has no code). It follows every later path.
+rclcpp_action::Server<nav2_msgs::action::FollowPath>::SharedPtr controllerAfterPoseJump(
+  const rclcpp::Node::SharedPtr & node, std::atomic<int> & goals)
+{
+  using Action = nav2_msgs::action::FollowPath;
+  using Handle = rclcpp_action::ServerGoalHandle<Action>;
+  return rclcpp_action::create_server<Action>(
+    node, "follow_path",
+    [](const rclcpp_action::GoalUUID &, const std::shared_ptr<const Action::Goal> &) {
+      return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    },
+    [](const std::shared_ptr<Handle> &) { return rclcpp_action::CancelResponse::ACCEPT; },
+    [&goals](const std::shared_ptr<Handle> & handle) {
+      auto result = std::make_shared<Action::Result>();
+      if (++goals == 1) {
+#if LANDFALL_BTCPP_V4
+        result->error_code = Action::Result::INVALID_PATH;
+#endif
+        handle->abort(result);
+      } else {
+        handle->succeed(result);
+      }
+    });
+}
+
+// Nav2's planner: a short path in the map frame for every goal.
+rclcpp_action::Server<nav2_msgs::action::ComputePathToPose>::SharedPtr planner(
+  const rclcpp::Node::SharedPtr & node, std::atomic<int> & goals)
+{
+  using Action = nav2_msgs::action::ComputePathToPose;
+  using Handle = rclcpp_action::ServerGoalHandle<Action>;
+  return rclcpp_action::create_server<Action>(
+    node, "compute_path_to_pose",
+    [&goals](const rclcpp_action::GoalUUID &, const std::shared_ptr<const Action::Goal> &) {
+      ++goals;
+      return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    },
+    [](const std::shared_ptr<Handle> &) { return rclcpp_action::CancelResponse::ACCEPT; },
+    [](const std::shared_ptr<Handle> & handle) {
+      auto result = std::make_shared<Action::Result>();
+      result->path.header.frame_id = "map";
+      for (int i = 0; i < 5; ++i) {
+        geometry_msgs::msg::PoseStamped pose;
+        pose.header.frame_id = "map";
+        pose.pose.position.x = 0.5 * i;
+        pose.pose.orientation.w = 1.0;
+        result->path.poses.push_back(pose);
+      }
+      handle->succeed(result);
+    });
+}
+
+template <typename T, typename = void>
+struct HasSuccess : std::false_type
+{
+};
+template <typename T>
+struct HasSuccess<T, std::void_t<decltype(std::declval<T &>().success)>> : std::true_type
+{
+};
+
+// Answers every call; a response with `success` (Nav2 1.5, Lyrical: ClearEntireCostmap) says it
+// worked, as the costmap servers do.
 template <typename ServiceT>
 typename rclcpp::Service<ServiceT>::SharedPtr placeholderService(
   const rclcpp::Node::SharedPtr & node, const std::string & name)
@@ -160,7 +228,11 @@ typename rclcpp::Service<ServiceT>::SharedPtr placeholderService(
   return node->create_service<ServiceT>(
     name, [](
             const std::shared_ptr<typename ServiceT::Request>,
-            std::shared_ptr<typename ServiceT::Response>) {});
+            std::shared_ptr<typename ServiceT::Response> response) {
+      if constexpr (HasSuccess<typename ServiceT::Response>::value) {
+        response->success = true;
+      }
+    });
 }
 
 class BehaviorTreesTest : public landfall::nav2::test::RosTest
@@ -169,11 +241,8 @@ protected:
   void SetUp() override
   {
     servers_ = std::make_shared<rclcpp::Node>("nav2_placeholders");
-    actions_.push_back(
-      placeholderAction<nav2_msgs::action::ComputePathToPose>(servers_, "compute_path_to_pose"));
-    actions_.push_back(placeholderAction<nav2_msgs::action::FollowPath>(servers_, "follow_path"));
+    addPlannerControllerAndWait();
     actions_.push_back(succeedingAction<nav2_msgs::action::Spin>(servers_, "spin", spin_goals_));
-    actions_.push_back(placeholderAction<nav2_msgs::action::Wait>(servers_, "wait"));
     actions_.push_back(placeholderAction<nav2_msgs::action::BackUp>(servers_, "backup"));
     services_.push_back(placeholderService<nav2_msgs::srv::ClearEntireCostmap>(
       servers_, "global_costmap/clear_entirely_global_costmap"));
@@ -189,6 +258,15 @@ protected:
       factory_.registerFromPlugin(loader_.getOSName(plugin));
     }
     factory_.registerFromPlugin(LANDFALL_NAV2_PLUGIN);
+  }
+
+  // Placeholders that refuse their goals; the pose-jump tests replace them.
+  virtual void addPlannerControllerAndWait()
+  {
+    actions_.push_back(
+      placeholderAction<nav2_msgs::action::ComputePathToPose>(servers_, "compute_path_to_pose"));
+    actions_.push_back(placeholderAction<nav2_msgs::action::FollowPath>(servers_, "follow_path"));
+    actions_.push_back(placeholderAction<nav2_msgs::action::Wait>(servers_, "wait"));
   }
 
   BT::Tree createTree() { return factory_.createTreeFromFile(LANDFALL_NAV2_TREE, blackboard_); }
@@ -332,6 +410,49 @@ TEST_F(BehaviorTreesTest, StopsLookingAroundAtTheFirstPose)
   tickUntilDone(tree);
   EXPECT_EQ(relocalizer.requests().size(), 5U);
   EXPECT_EQ(spin_goals_.load(), 4);
+}
+
+// The localization's pose jumps while the robot follows its path: the relocalizer's kidnap watchdog
+// or auto trigger publishes a pose, or AMCL jumps by itself. The controller fails (INVALID_PATH),
+// and the tree clears the costmaps, plans again from the new pose and follows the new path: the
+// goal succeeds, without a relocalization of its own. The tree relocalizes once before navigating
+// (IsLocalized has no pose yet on its first tick).
+class PoseJumpTest : public BehaviorTreesTest
+{
+protected:
+  void addPlannerControllerAndWait() override
+  {
+    actions_.push_back(planner(servers_, plan_goals_));
+    actions_.push_back(controllerAfterPoseJump(servers_, follow_goals_));
+    actions_.push_back(succeedingAction<nav2_msgs::action::Wait>(servers_, "wait", wait_goals_));
+  }
+
+  std::atomic<int> plan_goals_{0};
+  std::atomic<int> follow_goals_{0};
+  std::atomic<int> wait_goals_{0};
+};
+
+TEST_F(PoseJumpTest, PlansAgainWhenThePathNoLongerReachesTheRobot)
+{
+  const MockRelocalizer relocalizer({{Result::SUCCESS, 0ms}});
+  geometry_msgs::msg::PoseStamped goal;
+  goal.header.frame_id = "map";
+  goal.pose.position.x = 2.0;
+  goal.pose.orientation.w = 1.0;
+  blackboard_->set<geometry_msgs::msg::PoseStamped>("goal", goal);
+  BT::Tree tree = createTree();
+  EXPECT_EQ(tickUntilDone(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(follow_goals_.load(), 2);
+  // Only the relocalization before navigating: the pose jump didn't need one.
+  EXPECT_EQ(relocalizer.requests().size(), 1U);
+#if LANDFALL_BTCPP_V4
+  // The pipeline's plan, then the recovery's from the new pose (the pipeline plans once a second).
+  EXPECT_GE(plan_goals_.load(), 2);
+#else
+  // Humble's tree has no error codes: its controller recovery clears the local costmap and follows
+  // the path again.
+  EXPECT_GE(plan_goals_.load(), 1);
+#endif
 }
 
 }  // namespace

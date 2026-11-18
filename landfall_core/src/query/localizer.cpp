@@ -506,7 +506,16 @@ FrameResult Localizer::localize(const QueryFrame & frame)
     !result.ambiguity.ambiguous && result.best >= 0 && check_scan && projected &&
     params_.scan.check_alternatives) {
     const Hypothesis & winner = result.hypotheses[static_cast<std::size_t>(result.best)];
-    if (winner.scan_checked && winner.scan.passed) {
+    const bool confirmed =
+      !weak && frame.localization && result.pose &&
+      translationDistance(*result.pose, frame.localization->pose) <=
+        frame.localization->max_translation &&
+      rotationDistance(*result.pose, frame.localization->pose) * 180.0 / M_PI <=
+        frame.localization->max_rotation_deg;
+    if (winner.scan_checked && winner.scan.passed && confirmed) {
+      // A background check whose pose the localization confirms: the place is settled.
+      result.alternatives_skipped = true;
+    } else if (winner.scan_checked && winner.scan.passed) {
       // Vision may find the wrong one of two places that look alike, e.g. a building's halves,
       // when the right one was recorded from elsewhere. The scan then fits the right place better:
       // if it fits another place clearly better than this one, the frame is ambiguous.
@@ -573,6 +582,12 @@ ScoreSummary summarizeScores(const std::vector<FrameResult> & frames)
   ScoreSummary s;
   for (const FrameResult & f : frames) {
     s.ambiguity_ratio = std::max(s.ambiguity_ratio, f.ambiguity.score_ratio);
+    if (f.uniqueness.measured) {
+      s.scan_alternative_gap = s.alternative_gap_measured
+                                 ? std::min(s.scan_alternative_gap, f.uniqueness.alternative_gap)
+                                 : f.uniqueness.alternative_gap;
+      s.alternative_gap_measured = true;
+    }
     const Hypothesis * h = nullptr;
     if (f.best >= 0) {
       h = &f.hypotheses[static_cast<std::size_t>(f.best)];

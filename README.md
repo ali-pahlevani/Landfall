@@ -1,5 +1,12 @@
 # Landfall
 
+![Landfall at work in Nav2's depot simulation: Gazebo, RViz and Landfall's camera view](docs/images/banner.jpg)
+
+<sub>Left to right: the TurtleBot 4 in Nav2's depot simulation (Gazebo); RViz with the map, the LiDAR
+scan and the pose that Landfall's kidnap watchdog has just given back to AMCL after it was given a
+wrong one; the camera view of a check, with its 115 inliers (green) and the matches the pose rejected
+(red). The depot is the "Depot" model by Open Robotics (Gazebo Fuel, CC-BY-4.0).</sub>
+
 [![CI](https://github.com/ali-pahlevani/Landfall/actions/workflows/ci.yml/badge.svg)](https://github.com/ali-pahlevani/Landfall/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 

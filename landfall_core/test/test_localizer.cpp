@@ -539,6 +539,51 @@ TEST_F(LocalizerTest, SameResultWithAnyThreadCount)
   EXPECT_EQ(ra.hypotheses.size(), rb.hypotheses.size());
 }
 
+TEST(ScanTwinTest, OnlyAFitAtLeastFifteenCentimetresFromThePoseIsAnotherPlace)
+{
+  const landfall::ScanMatchParams window;  // alternative_distance 0.15 m
+  const Pose2 pose{1.0, 2.0, 0.3};
+  landfall::ScanMatch match;
+  match.valid = true;
+  match.pose = Pose2{1.06, 2.0, 0.3};  // the best fit, 6 cm from the pose: its own place
+  match.guess_nats = 0.1;
+  // A near-equal second fit 0.16 m from the best (matchScan reports them from 0.15 m) but 0.10 m
+  // from the pose, which lies between them (seen live: a weak pose refused for a "twin" 0.11 m
+  // away).
+  match.alternative = Pose2{0.90, 2.0, 0.3};
+  match.alternative_nats = 0.2;
+  landfall::ScanUniqueness near;
+  landfall::findScanTwin(match, pose, window, near);
+  EXPECT_FALSE(near.twin);
+  EXPECT_NEAR(near.twin_distance, 0.10, 1e-9);
+  EXPECT_DOUBLE_EQ(near.twin_nats, 0.2);
+
+  match.alternative = Pose2{1.40, 2.0, 0.3};  // 0.40 m from the pose: another place
+  landfall::ScanUniqueness far;
+  landfall::findScanTwin(match, pose, window, far);
+  EXPECT_TRUE(far.twin);
+  EXPECT_NEAR(far.twin_distance, 0.40, 1e-9);
+
+  match.alternative_nats = 3.0;  // there, but clearly worse: the scan tells the two apart
+  landfall::ScanUniqueness worse;
+  landfall::findScanTwin(match, pose, window, worse);
+  EXPECT_FALSE(worse.twin);
+
+  match.alternative.reset();
+  match.pose = Pose2{1.20, 2.0, 0.3};  // the scan fits best 0.20 m from the pose
+  landfall::ScanUniqueness elsewhere;
+  landfall::findScanTwin(match, pose, window, elsewhere);
+  EXPECT_TRUE(elsewhere.twin);
+  EXPECT_NEAR(elsewhere.twin_distance, 0.20, 1e-9);
+  EXPECT_DOUBLE_EQ(elsewhere.twin_nats, -0.1);
+
+  match.valid = false;  // the best fit on the window's edge: a corridor
+  landfall::ScanUniqueness edge;
+  landfall::findScanTwin(match, pose, window, edge);
+  EXPECT_TRUE(edge.twin);
+  EXPECT_DOUBLE_EQ(edge.twin_distance, window.search_xy);
+}
+
 TEST_F(LocalizerTest, FewInliersStandWhereTheScanIsUnique)
 {
   // Frames that see 30 of the room's landmarks: fewer inliers than sanity.min_inliers (40). In the

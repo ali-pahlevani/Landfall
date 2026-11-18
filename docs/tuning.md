@@ -131,6 +131,12 @@ poses before what it does to successes. All parameters are listed in `docs/param
   limits (`sanity.min_inliers`, 40) apply to every backend. `sanity.min_inlier_ratio` is 0.1:
   repeated structure (boxes, shelving) adds many wrong 2D–3D matches around a right pose; in the
   warehouse 0.25 refused 28 right poses that 0.1 kept, and no wrong one passed.
+  `sanity.min_inlier_coverage` (0.15) refuses inliers bunched in one part of the image (a poster,
+  one patch of repeated structure). In the URDF Maker warehouse it refused 107 of 904 single
+  requests, 78 of them with 20 to 39 inliers; turning it off (0) gave 7 more right poses there and no
+  wrong one, and changed nothing on the depot's cross-session frames, where it never decided a
+  request (Landfall 1.0, 2026-11-18). Neither world has the single textured patch it guards
+  against: lower it only after measuring your site.
 
 ## The published pose and covariance
 

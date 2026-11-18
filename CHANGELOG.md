@@ -488,6 +488,12 @@ relocalizer refuses a database of another schema version). Anything else waits f
   Landfall on a robot before relying on it; no real robot has run it yet.
 
 ### Fixed
+- A pose with 20 to 39 inliers was refused for a second fit of the LiDAR scan closer than 15 cm to
+  the pose (`… where the scan fits a place 0.11 m away almost as well`), though a pose that close
+  is right either way; where it happened, the kidnap watchdog couldn't correct a wrong pose. A
+  second fit now counts as another place only from 15 cm, as the scan matcher's own do (PLAN V71).
+  On the URDF Maker warehouse's 904 test frames one request changed, from refused to right (250
+  right, 0 wrong); on the depot's 887 cross-session frames none.
 - The simulation image could mix Nav2 releases, and Nav2's navigator then crashed (`bt_navigator`,
   exit code -11): built on a `landfall-deps` image older than the apt repository's Nav2 release, it
   held the dependency image's Nav2 packages next to newer ones. Its packages now install in one

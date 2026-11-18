@@ -35,6 +35,7 @@ path.
 |---|---|---|---|
 | Depot occupancy map (`depot.yaml`, `depot.pgm`) | `landfall_ros/test/fixtures/depot_small/` | Apache-2.0 | from Nav2's `nav2_bringup` 1.3.13 (Open Navigation LLC and contributors), unmodified |
 | Depot camera images in the fixture bag | `landfall_ros/test/fixtures/depot_small/bag/` | CC-BY-4.0 | renders of the "Depot" model by Open Robotics, Gazebo Fuel (`https://fuel.gazebosim.org/1.0/OpenRobotics/models/Depot`) |
+| README banner | `docs/images/banner.jpg` | CC-BY-4.0 | screenshots of the depot simulation (Gazebo and RViz, the "Depot" model by Open Robotics, Gazebo Fuel, as above) with the TurtleBot 4 (`nav2_minimal_tb4_description`, Apache-2.0) and the relocalizer's debug image |
 | Synthetic ONNX models and parity files | `landfall_core/test/data/` | Apache-2.0 | made by `landfall_tools/export/synthetic.py`: no trained weights; the parity reference transcribes XFeat's post-processing (verlab/accelerated_features, Apache-2.0) |
 | TurtleBot 4 description (derived) | `landfall_bringup/sim/urdf/` | Apache-2.0 | derived from `nav2_minimal_tb4_description` (nav2_minimal_turtlebot_simulation, Open Navigation LLC and contributors): 640 × 480 camera and a ground-truth pose publisher; the changes are noted in the files |
 

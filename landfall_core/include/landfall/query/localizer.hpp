@@ -25,6 +25,7 @@
 #include "landfall/features/matchers.hpp"
 #include "landfall/geometry/gravity.hpp"
 #include "landfall/geometry/pnp.hpp"
+#include "landfall/grid/scan_matcher.hpp"
 #include "landfall/grid/scan_verifier.hpp"
 #include "landfall/interfaces/retrieval_index.hpp"
 #include "landfall/query/clustering.hpp"
@@ -160,7 +161,8 @@ struct ScanUniqueness
   /// The test within 1 m ran: it decides only for poses with fewer than sanity.min_inliers inliers.
   bool twin_checked = false;
   /// Within 1 m (matchScan's window): the scan fits best at least 15 cm from the pose, or a second
-  /// place fits within 1 nat of the best. Along that direction the scan can't vouch for the pose.
+  /// place at least 15 cm from the pose fits within 1 nat of the best. Along that direction the
+  /// scan can't vouch for the pose.
   bool twin = false;
   double twin_distance = 0.0;  ///< m from the pose to the other fit (0 without one)
   /// How much worse the other fit is than the pose's (negative: better), in matchScan's nats.
@@ -168,6 +170,14 @@ struct ScanUniqueness
   /// alternative_gap >= scan_check.unique_margin, and the twin test ran and found none.
   bool unique = false;
 };
+
+/// The twin test of ScanUniqueness on a scan matched within `window` (ScanMatchParams) of `pose`:
+/// sets `twin`, `twin_distance` and `twin_nats`. Another fit of the scan counts only from
+/// window.alternative_distance (15 cm) away: a closer one is the pose's own place, the pose that
+/// close either way.
+void findScanTwin(
+  const ScanMatch & match, const Pose2 & pose, const ScanMatchParams & window,
+  ScanUniqueness & uniqueness);
 
 struct FrameTimings
 {

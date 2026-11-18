@@ -190,8 +190,9 @@ V67).
 pose with at least `sanity.min_inliers_unique` (20) but fewer than `sanity.min_inliers` (40)
 inliers passes only where the scan fits every other place (beyond 1 m or 30°) at least
 `scan_check.unique_margin` (0.05) worse, and no place within 1 m almost as well: in the window the
-build matches keyframe scans in (±1 m, ±6°), the scan must fit best at the pose, and a second
-fit, at least 15 cm away, must be at least 1 nat worse. Otherwise the frame is refused, and its best
+build matches keyframe scans in (±1 m, ±6°), the scan must fit best within 15 cm of the pose, and
+a second fit at least 15 cm from the pose must be at least 1 nat worse (a closer one is the pose's
+own place: the pose would be that close either way). Otherwise the frame is refused, and its best
 hypothesis says why (`… inliers < 40 where the scan fits a place 0.47 m away almost as well`).
 Without the search (`scan_check.check_alternatives: false`) or without a scan, 40 inliers it is.
 

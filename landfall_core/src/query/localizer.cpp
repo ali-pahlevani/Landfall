@@ -394,23 +394,32 @@ ScanUniqueness Localizer::measureUniqueness(
   // Within 1 m, the window the build matches its keyframes' scans in (ScanMatchParams).
   const ScanMatchParams window;
   const Pose2 & pose = winner.scan.best_pose;
-  const ScanMatch match = matchScan(map_->field(), scan.endpoints, pose, window);
-  if (!match.valid) {
-    // The best fit on the window's edge: the scan may fit as well beyond it (a corridor).
-    u.twin = true;
-    u.twin_distance = window.search_xy;
-  } else if (translationDistance(match.pose, pose) >= window.alternative_distance) {
-    // The scan fits best elsewhere nearby.
-    u.twin = true;
-    u.twin_distance = translationDistance(match.pose, pose);
-    u.twin_nats = -match.guess_nats;
-  } else if (match.alternative) {
-    u.twin_distance = translationDistance(*match.alternative, pose);
-    u.twin_nats = match.alternative_nats;
-    u.twin = match.alternative_nats < kTwinNats;
-  }
+  findScanTwin(matchScan(map_->field(), scan.endpoints, pose, window), pose, window, u);
   u.unique = u.alternative_gap >= params_.scan.unique_margin && !u.twin;
   return u;
+}
+
+void findScanTwin(
+  const ScanMatch & match, const Pose2 & pose, const ScanMatchParams & window,
+  ScanUniqueness & uniqueness)
+{
+  if (!match.valid) {
+    // The best fit on the window's edge: the scan may fit as well beyond it (a corridor).
+    uniqueness.twin = true;
+    uniqueness.twin_distance = window.search_xy;
+  } else if (translationDistance(match.pose, pose) >= window.alternative_distance) {
+    // The scan fits best elsewhere nearby.
+    uniqueness.twin = true;
+    uniqueness.twin_distance = translationDistance(match.pose, pose);
+    uniqueness.twin_nats = -match.guess_nats;
+  } else if (match.alternative) {
+    // The second fit is at least alternative_distance from the best one, but may be closer to the
+    // pose, between them: then it is no other place than the pose's own.
+    uniqueness.twin_distance = translationDistance(*match.alternative, pose);
+    uniqueness.twin_nats = match.alternative_nats;
+    uniqueness.twin =
+      match.alternative_nats < kTwinNats && uniqueness.twin_distance >= window.alternative_distance;
+  }
 }
 
 FrameResult Localizer::localize(const QueryFrame & frame)

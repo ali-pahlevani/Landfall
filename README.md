@@ -45,6 +45,8 @@ simulated warehouse of the URDF Maker project. **No real robot has run it yet.**
 relies on it, validate it there: [`docs/field_validation.md`](docs/field_validation.md) is the
 procedure (shadow mode, then active trials).
 
+What comes next is in the [Roadmap](#roadmap).
+
 ## Results
 
 The kidnap benchmark, in simulation ([`docs/benchmark.md`](docs/benchmark.md)): a TurtleBot 4 with
@@ -214,6 +216,28 @@ kidnap benchmark) are in [`docs/nav2_integration.md`](docs/nav2_integration.md) 
 - One monocular camera per database; 2D maps on one floor; ramps aren't mapped. The GPU backends
   (CUDA, TensorRT) are experimental.
 
+## Roadmap
+
+1.0 is the base. Next, in this order ([`docs/PLAN.md`](docs/PLAN.md) §15 has the details and the
+measured targets):
+
+1. **LiDAR first (1.1).** In the simulated worlds above, one LiDAR scan searched over the whole map
+   already singles out the right place for 83 to 100 % of the poses. The LiDAR will propose the
+   pose where its scan is unique, and the camera will decide where the scan fits several places,
+   each checking the other: most relocalizations from where the robot stands, in about a second,
+   and before anything is recorded.
+2. **Thresholds that calibrate themselves (1.2).** The checks the relocalizer already runs while
+   the robot is localized will set its thresholds for each site, keeping wrong poses below a stated
+   rate with a statistical bound, instead of tuning by hand.
+3. **A map that maintains itself (1.3).** Recording in the background during normal work: views
+   from new directions added, views of things that moved replaced, the camera's mount estimated, and
+   no recording drive.
+
+Alongside: `landfall doctor` to check a robot's setup and say what to fix, topics and frames found
+automatically, an RViz panel, packages from the ROS build farm; and evidence: comparisons on the
+same data with LiDAR-only global localization, RTAB-Map and NVIDIA's localizer, public datasets, and
+a real robot. New modes keep 1.0's behavior until they are turned on.
+
 ## Documentation
 
 | Document | |
@@ -230,7 +254,7 @@ kidnap benchmark) are in [`docs/nav2_integration.md`](docs/nav2_integration.md) 
 | [`benchmark.md`](docs/benchmark.md) | the kidnap benchmark |
 | [`architecture.md`](docs/architecture.md) | packages and data flow |
 | [`docker/README.md`](docker/README.md) | Docker images, the simulation image |
-| [`PLAN.md`](docs/PLAN.md), [`TODO.md`](docs/TODO.md) | the implementation plan and its decisions, open items |
+| [`PLAN.md`](docs/PLAN.md), [`TODO.md`](docs/TODO.md) | the implementation plan, its decisions and the roadmap (§15); open items |
 
 ## Versioning
 

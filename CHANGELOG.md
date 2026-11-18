@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) (see `docs/PLAN.md` §11.1).
 
+## [Unreleased]
+
+### Added
+
+- The roadmap after 1.0: the README's *Roadmap* and `docs/PLAN.md` §15 (LiDAR first, thresholds
+  that calibrate themselves, a map that maintains itself, tooling, comparisons with other
+  relocalizers).
+
 ## [1.0.0] - 2026-11-18
 
 The first release. Nothing was released before it: the entries below record what the development
@@ -520,4 +528,5 @@ relocalizer refuses a database of another schema version). Anything else waits f
   finds nothing doesn't end a request, so run 1 gives 434 successes in 440 requests, not 434 of
   448 (re-run in M5; same successes and wrong poses).
 
+[Unreleased]: https://github.com/ali-pahlevani/Landfall/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/ali-pahlevani/Landfall/releases/tag/v1.0.0
